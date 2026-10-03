@@ -34,7 +34,8 @@ A misparse degrades suggestion quality, never document integrity.
   details and Windows quirks.
 - Spike 2: clipboard selection round-trip fidelity (plain text vs. LaTeX formats,
   math/inset handling).
-- Spike 3: minimal `.lyx` TS parser against lq's fixture files.
+- Spike 3: DONE - TS read-only .lyx parser (src/lyx/parser.ts, lq grammar
+  port) with 37 passing tests against lq fixtures.
 
 Working Directly with the .lyx Format
 

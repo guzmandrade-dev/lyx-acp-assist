@@ -135,8 +135,12 @@ selection is empty. Useful as a cheap selection probe before `copy`.
 - **Spike 2 — DONE (2026-10-03):** clipboard selection round-trip works,
   in both directions, losslessly. See the clipboard section below and
   `spikes/clipboard-inspect.ps1` / `spikes/clipboard-set-lyx.ps1`.
-- **Spike 3 (next):** minimal `.lyx` read-only TS parser, tested against
-  lq's fixtures (repo `naivej/lq`, use only as grammar reference/fixtures).
+- **Spike 3 — DONE (2026-10-03):** read-only `.lyx` parser implemented in
+  TypeScript (`src/lyx/parser.ts`), a faithful port of lq's grammar
+  (strict + recovering modes, opaque preamble/Formula/ERT handling).
+  37 vitest tests pass, including strict parses of 11 real fixture files
+  copied from lq (MIT) into `test/fixtures/`. Node 22 + TS 5.9 + vitest
+  scaffolded (`npm test`, `npm run typecheck`).
 
 ## House rules (user instructions)
 
@@ -147,7 +151,10 @@ selection is empty. Useful as a cheap selection probe before `copy`.
 
 ## Current state
 
-- No `package.json` yet — project not scaffolded. Next milestone after
-  Spike 2: init an Electron + Express + TS project modeled on Visual
-  Research Pal.
+- Project scaffolded: Node 22 + TS 5.9 + vitest (`npm test`, `npm run
+  typecheck`, `npm run build`). No Electron shell yet.
+- `src/lyx/parser.ts` — read-only `.lyx` parser (lq grammar port).
 - `spikes/spike1-pipe.mjs` — working Node LyXServer client + LFUN CLI.
+- All three spikes DONE. Next milestone: the Electron companion app
+  (ACP client, pipe/clipboard integration, chat sidebar), modeled on
+  Visual Research Pal.
