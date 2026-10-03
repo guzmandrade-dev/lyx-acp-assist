@@ -84,17 +84,59 @@ See that repo's README/AGENTS.md for conventions.
 - Spike script doubles as a CLI: `node spikes/spike1-pipe.mjs undo
   "self-insert:hello" server-get-filename` (colon separates func:arg).
 
+## Clipboard protocol (verified by Spike 2)
+
+LyX's `copy` LFUN puts the selection on the Windows clipboard in these
+formats:
+
+- **`application/x-lyx`** — a complete, valid `.lyx` document (header +
+  body) containing the selection. This is the lossless structured form:
+  layouts, emphasis, math insets, everything.
+- `UnicodeText` / `Text` — flattened plain text.
+- `HTML Format` — HTML with layout-provided styles.
+
+**Read path (selection -> agent):** send `copy` over the pipe, then read
+the `application/x-lyx` bytes from the clipboard.
+
+**Write path (agent -> document):** write a full `.lyx` document to the
+clipboard as a **UTF-8 byte stream** under `application/x-lyx`, then send
+`paste`. LyX parses it and inserts rich content (verified: `\emph on/off`
+survived the round-trip; the HTML flavor showed `<em>`).
+
+- CRITICAL: the payload must be set as a **byte stream (UTF-8)**, not a
+  string. Setting it as a string makes LyX silently fall back to the
+  plain-text format.
+- `paste` **replaces the active selection** — so "rewrite selection" is
+  exactly: set clipboard + `paste`.
+- Selections **persist across pipe commands** (`copy` does not clear the
+  selection; `self-insert` also replaces the selection). Beware of stale
+  whole-document selections — a later `self-insert` will wipe the doc.
+
+## Modal dialogs (hazard)
+
+A modal dialog in LyX **blocks the LFUN dispatch queue** — pipe requests
+time out until the user dismisses it. Known triggers:
+- `buffer-write` on an **unsaved/untitled buffer** opens Save As.
+The real app must avoid dialog-triggering commands (operate only on
+saved files) and detect request hangs (queue timeout + retry).
+
+## Selection statistics
+
+`server-get-statistics` returns "words chars chars-with-spaces" of the
+current selection when one exists (`3 19 21` seen), `0 0 0` when the
+selection is empty. Useful as a cheap selection probe before `copy`.
+
 ## Spike plan (validate before building the real app)
 
 - **Spike 1 — DONE (2026-10-03):** named-pipe round-trip from Node works.
   `server-get-filename`, `server-get-layout`, `buffer-write`, and
   `self-insert` all verified live against LyX 2.5.3. See the protocol
   section above and `spikes/spike1-pipe.mjs`.
-- **Spike 2 (next):** clipboard selection round-trip fidelity — `copy`
-  LFUN + system clipboard read; plain text vs. LaTeX formats LyX registers;
-  math/inset behavior.
-- **Spike 3:** minimal `.lyx` read-only TS parser, tested against lq's
-  fixtures (repo `naivej/lq`, use only as grammar reference/fixtures).
+- **Spike 2 — DONE (2026-10-03):** clipboard selection round-trip works,
+  in both directions, losslessly. See the clipboard section below and
+  `spikes/clipboard-inspect.ps1` / `spikes/clipboard-set-lyx.ps1`.
+- **Spike 3 (next):** minimal `.lyx` read-only TS parser, tested against
+  lq's fixtures (repo `naivej/lq`, use only as grammar reference/fixtures).
 
 ## House rules (user instructions)
 
