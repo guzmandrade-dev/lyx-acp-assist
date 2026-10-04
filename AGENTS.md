@@ -263,6 +263,20 @@ search/read on demand.
     grep/read tools + the file path are the search mechanism; permission
     auto-approval keeps mid-turn tool calls from stalling).
 
+## Custom textclass support (2026-10-04)
+
+`findClassLayouts` (exported, `src/server.ts`) resolves the active
+document's `\textclass` to its style vocabulary: the class `.layout` file
+is searched in `%APPDATA%\LyX2.5\layouts` (custom/journal classes first),
+then the install's `Resources\layouts`, then Linux paths
+(`LYX_LAYOUTS_DIR` overrides). `Input`/`Include` chains are followed
+recursively (article -> stdclass.inc -> stdsections.inc etc.), so
+`article` yields 33 styles and `beamer` 51 (incl. Frame/PlainFrame).
+`buildContextBlock` injects the list into every prompt, and the auto
+prompt tells the agent to use only those names or ones in the outline
+(never invent layouts) — that covers Beamer posters and ported journal
+templates without any per-class work.
+
 ## Fake-LyX test harness (2026-10-04)
 
 `test/mock-lyx-server.ts` (`MockLyxServer`) + `test/mock-lyx-transport.ps1`
