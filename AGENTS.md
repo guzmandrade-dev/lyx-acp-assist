@@ -263,6 +263,45 @@ search/read on demand.
     grep/read tools + the file path are the search mechanism; permission
     auto-approval keeps mid-turn tool calls from stalling).
 
+## Fake-LyX test harness (2026-10-04)
+
+`test/mock-lyx-server.ts` (`MockLyxServer`) + `test/mock-lyx-transport.ps1`
+regression-test the full LFUN choreography in vitest WITHOUT a live LyX:
+an in-memory document model (paragraphs, cursor, selection, clipboard)
+behind REAL Win32 named pipes speaking the wire protocol.
+`test/lyxserver-mock.test.ts` covers handshake, selection stats, disabled
+no-ops, and the insert-after / rewrite / insert-top sequences. Use this
+harness when adding new action verbs — never debug choreography only
+against live LyX.
+
+Windows named-pipe findings (all live-verified while building this;
+each cost a debugging round):
+
+- Node's `net.Server` named pipes are DUPLEX instances; the client's
+  `fs.ReadStream` opens read-only, which registers as an INSTANT
+  half-close against a duplex server. LyX's pipes are OUTBOUND (.out) /
+  INBOUND (.in); replicate with `NamedPipeServerStream` and matching
+  `PipeDirection` — that interops perfectly with fs streams.
+- `NamedPipeServerStream` expects the BARE pipe NAME. Passing the full
+  `\\.\pipe\...` path "succeeds" but creates a pipe nothing else can
+  open (client gets ENOENT forever).
+- `[Console]::In.ReadLineAsync()` in PS 5.1 BLOCKS the success stream
+  when spawned from Node — stdout vanishes after the first flush. Never
+  read stdin in spawned PS helpers; the transport takes commands on a
+  third control pipe (`<base>.ctl`) instead.
+- The client's `isAvailable()` (`fs.accessSync`) opens GHOST connections
+  that steal single-instance pipes (next open gets EBUSY/ENOENT). Like
+  LyX, the transport keeps a POOL of listening instances (top-up on
+  consume) and tolerates ghosts: failed writes drop+replace the instance.
+- `StreamWriter.Dispose()` closes the underlying pipe; after
+  `Disconnect()` a writer dispose throws "Pipe is in a disconnected
+  state", which misclassified live clients as ghosts and caused an
+  infinite reply-redelivery loop. Use leaveOpen ctor overloads and do
+  NOT dispose writers after disconnecting.
+- The duplicate/delayed reply delivery the mock exhibits matches the
+  documented real-LyX per-instance-buffer quirk — the client's
+  waiter-based matching is what makes it harmless in both.
+
 ## Auto mode / intent inference (2026-10-04)
 
 The manual Chat/Rewrite/Insert radio modes are GONE. One input box,
@@ -415,11 +454,13 @@ the selection -> `buffer-write`. Insert-at-cursor and undo also wired.
 - `src/lyx/parser.ts` — read-only `.lyx` parser (lq grammar port).
 - `src/lyx/context.ts` — outline/addressing, paste assembly, markup validation.
 - `src/lyxserver/client.ts` — LyXServer pipe client (LFUN dispatch).
-- `src/clipboard/lyx-clipboard.ts` — x-lyx clipboard abstraction.
+- `src/clipboard/lyx-clipboard.ts` + `src/clipboard/native-clipboard.ts` —
+  x-lyx clipboard abstraction + cross-platform native adapter.
 - `src/acp/` — ACP client (VRP pattern).
 - `src/server.ts` — Express API: session (+ teardown), unified
   `/message/stream` (agent-decided intent: chat/insert/rewrite),
   documents, selection, undo, cancel. `src/electron/main.ts` + `public/` — UI.
-- 53 vitest tests green.
-- Next: agent settings UI (command/args configurable), streaming replies,
-  multi-document sessions, packaging.
+- `test/mock-lyx-server.ts` — fake LyXServer harness (see its section).
+- 66 vitest tests green.
+- Next: UX work (tool-call progress in the stream), custom textclass
+  support, more action verbs (delete-at, move), packaging.
