@@ -6,9 +6,12 @@ let busy = false;
 const chat = document.getElementById('chat');
 const statusEl = document.getElementById('status');
 const docEl = document.getElementById('doc');
+const docSelect = document.getElementById('doc-select');
 const input = document.getElementById('input');
 const sendBtn = document.getElementById('send');
 const undoBtn = document.getElementById('undo');
+const pinBtn = document.getElementById('pin');
+const closeBtn = document.getElementById('close');
 
 function addMessage(role, content, note) {
   const div = document.createElement('div');
@@ -25,7 +28,7 @@ function addMessage(role, content, note) {
   }
   chat.appendChild(div);
   chat.scrollTop = chat.scrollHeight;
-  return div;
+  return bubble;
 }
 
 function setBusy(state, label) {
@@ -34,8 +37,7 @@ function setBusy(state, label) {
   undoBtn.disabled = state;
   document.body.classList.toggle('busy', state);
   if (state) {
-    const div = addMessage('assistant', label ?? 'thinking\u2026');
-    div.id = 'busy-indicator';
+    addMessage('assistant', label ?? 'thinking\u2026');
   } else {
     const indicator = document.getElementById('busy-indicator');
     if (indicator) indicator.remove();
@@ -65,6 +67,43 @@ async function refreshStatus() {
   }
 }
 
+function updateDocSelector(active, documents) {
+  docSelect.innerHTML = '';
+  for (const p of documents) {
+    const opt = document.createElement('option');
+    opt.value = p;
+    opt.textContent = p.split(/[\\/]/).pop();
+    opt.title = p;
+    if (p === active) opt.selected = true;
+    docSelect.appendChild(opt);
+  }
+  docSelect.style.display = documents.length > 0 ? '' : 'none';
+}
+
+docSelect.addEventListener('change', async () => {
+  if (!sessionId || busy) return;
+  try {
+    const r = await api(`/api/session/${sessionId}/documents/switch`, {
+      method: 'POST',
+      body: JSON.stringify({ path: docSelect.value }),
+    });
+    docEl.textContent = r.active ?? '(unsaved document)';
+  } catch (e) {
+    addMessage('assistant', `error: ${e.message}`);
+  }
+});
+
+async function refreshDocuments() {
+  if (!sessionId) return;
+  try {
+    const r = await api(`/api/session/${sessionId}/documents`);
+    updateDocSelector(r.active, r.documents);
+    if (r.active) docEl.textContent = r.active;
+  } catch (e) {
+    /* ignore */
+  }
+}
+
 async function connect() {
   await refreshStatus();
   const cmd = document.getElementById('agent-cmd').value.trim() || 'opencode';
@@ -76,16 +115,66 @@ async function connect() {
   });
   sessionId = info.sessionId;
   docEl.textContent = info.documentPath ?? '(unsaved document)';
+  updateDocSelector(info.documentPath, info.documents ?? []);
+  for (const turn of info.conversation ?? []) {
+    addMessage(turn.role, turn.content);
+  }
   addMessage(
     'assistant',
     info.outline
-      ? `Connected to:\n${info.documentPath}\n\nDocument outline:\n${info.outline}`
+      ? `Connected. Cursor layout: ${info.layout}`
       : 'Connected to LyX (document unsaved \u2014 outline unavailable).'
   );
+  // Keep the selector in sync when the user switches tabs in LyX.
+  setInterval(refreshDocuments, 2000);
 }
 
 function selectedMode() {
   return document.querySelector('input[name=mode]:checked')?.value ?? 'chat';
+}
+
+async function streamChat(message) {
+  const bubble = addMessage('assistant', '');
+  let started = false;
+  const res = await fetch(`/api/session/${sessionId}/chat/stream`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ message }),
+  });
+  if (!res.ok || !res.body) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error ?? `${res.status} ${res.statusText}`);
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let full = '';
+  let error = null;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buffer.indexOf('\n\n')) >= 0) {
+      const frame = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 2);
+      if (!frame.startsWith('data: ')) continue;
+      const payload = JSON.parse(frame.slice(6));
+      if (payload.error) {
+        error = payload.error;
+      } else if (payload.text) {
+        full += payload.text;
+        started = true;
+        bubble.textContent = full;
+        chat.scrollTop = chat.scrollHeight;
+      } else if (payload.done) {
+        // handled below
+      }
+    }
+  }
+  if (error) throw new Error(error);
+  if (!started) bubble.textContent = '(no response)';
+  return full;
 }
 
 async function send() {
@@ -96,25 +185,27 @@ async function send() {
   addMessage('user', message);
   setBusy(true);
   try {
-    let result;
-    let path;
-    if (selectedMode() === 'rewrite') {
-      path = `/api/session/${sessionId}/rewrite-selection`;
-    } else if (selectedMode() === 'insert') {
-      path = `/api/session/${sessionId}/insert`;
+    if (selectedMode() === 'chat') {
+      await streamChat(message);
     } else {
-      path = `/api/session/${sessionId}/chat`;
+      const path = selectedMode() === 'rewrite'
+        ? `/api/session/${sessionId}/rewrite-selection`
+        : `/api/session/${sessionId}/insert`;
+      const result = await api(path, {
+        method: 'POST',
+        body: JSON.stringify({ message }),
+      });
+      const note = result.pasted
+        ? { ok: true, text: '\u2713 applied to the LyX document' }
+        : undefined;
+      addMessage('assistant', stripLyxBlock(result.reply), note);
     }
-    result = await api(path, { method: 'POST', body: JSON.stringify({ message }) });
-    const note = result.pasted
-      ? { ok: true, text: '\u2713 applied to the LyX document' }
-      : undefined;
-    addMessage('assistant', stripLyxBlock(result.reply), note);
   } catch (e) {
-    addMessage('assistant', `error: ${e.message}`, { ok: false, text: '' });
+    addMessage('assistant', `error: ${e.message}`);
   } finally {
     setBusy(false);
     await refreshStatus();
+    await refreshDocuments();
   }
 }
 
@@ -139,6 +230,15 @@ undoBtn.addEventListener('click', async () => {
   } catch (e) {
     addMessage('assistant', `error: ${e.message}`);
   }
+});
+
+pinBtn.addEventListener('click', () => {
+  // Toggle always-on-top through the Electron window.
+  window.electron?.toggleAlwaysOnTop?.();
+});
+
+closeBtn.addEventListener('click', () => {
+  window.electron?.close?.();
 });
 
 connect().catch((e) => {

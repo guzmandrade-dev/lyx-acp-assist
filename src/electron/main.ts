@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, ClipboardItem } from 'electron';
+import { app, BrowserWindow, clipboard, ClipboardItem, ipcMain } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -65,7 +65,8 @@ async function startApp(): Promise<void> {
   if (!fs.existsSync(path.join(publicDir, 'index.html'))) {
     throw new Error(`public dir not found at ${publicDir} (run from built output with public/)`);
   }
-  const server = createServer({ publicDir, clipboard: electronClipboard });
+  const historyDir = path.join(app.getPath('userData'), 'history');
+  const server = createServer({ publicDir, clipboard: electronClipboard, historyDir });
 
   const port = process.env.PORT ? Number.parseInt(process.env.PORT, 10) : 0;
   await new Promise<void>((resolve) => {
@@ -77,11 +78,28 @@ async function startApp(): Promise<void> {
   console.log(`LyX ACP Assist server at ${url}`);
 
   await app.whenReady();
+
+  ipcMain.on('window/toggle-always-on-top', () => {
+    if (mainWindow) {
+      mainWindow.setAlwaysOnTop(!mainWindow.isAlwaysOnTop());
+    }
+  });
+  ipcMain.on('window/close', () => {
+    mainWindow?.close();
+  });
+
   mainWindow = new BrowserWindow({
-    width: 480,
-    height: 760,
+    width: 420,
+    height: 680,
+    frame: false, // floating chat look; header has a drag region
+    resizable: true,
+    alwaysOnTop: true,
+    skipTaskbar: true,
     title: 'LyX ACP Assist',
-    autoHideMenuBar: true,
+    webPreferences: {
+      contextIsolation: true,
+      preload: path.join(__dirname, 'preload.js'),
+    },
   });
   await mainWindow.loadURL(url);
   mainWindow.on('closed', () => {

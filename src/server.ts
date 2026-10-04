@@ -1,14 +1,17 @@
 /**
  * Express API + session orchestration for the LyX ACP companion app.
  *
- * One session = one LyX document (via the running LyX instance) + one ACP
- * agent conversation. All document reads go through the pipe + the saved
- * `.lyx` file; all writes go through the pipe (`paste` via the
- * `application/x-lyx` clipboard), so LyX remains the single writer of truth.
+ * One session = one running LyX instance + one ACP agent. The LyXServer
+ * pipe follows LyX's ACTIVE view, so documents are tracked dynamically:
+ * every request re-reads `server-get-filename`, conversations are keyed
+ * per document path, and the client can list/switch documents. All
+ * document reads go through the pipe + the saved `.lyx` file; all writes
+ * go through the pipe (`paste` via the `application/x-lyx` clipboard).
  */
 
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
+import path from 'node:path';
 import express from 'express';
 import type { ContentBlock } from '@agentclientprotocol/sdk';
 import { LyxServerClient, LyxPipeError } from './lyxserver/client.js';
@@ -30,18 +33,33 @@ export interface AgentSettings {
   env: Record<string, string>;
 }
 
+export interface Turn {
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: string;
+}
+
+/** Key for the unsaved-document pseudo conversation. */
+const UNSAVED_KEY = '(unsaved)';
+
 export interface Session {
   id: string;
   lyx: LyxServerClient;
   clipboard: LyxClipboard;
   agent: AcpClient;
-  conversation: { role: 'user' | 'assistant'; content: string; timestamp: string }[];
+  /** Conversation history per document path. */
+  conversations: Map<string, Turn[]>;
+  /** All document paths seen during this session (for the selector). */
+  knownDocuments: Set<string>;
+  /** Active document path, refreshed from LyX on every request. */
   documentPath: string | null;
 }
 
 export interface ServerOptions {
   publicDir: string;
   clipboard: RawClipboard;
+  /** Directory for persisted chat history (per document). Optional. */
+  historyDir?: string;
 }
 
 export function createServer(options: ServerOptions) {
@@ -65,11 +83,9 @@ export function createServer(options: ServerOptions) {
 
   // --- status ----------------------------------------------------------
 
-  app.get('/api/status', (req, res) => {
+  app.get('/api/status', (_req, res) => {
     const probe = new LyxServerClient();
-    res.json({
-      lyxPipeAvailable: probe.isAvailable(),
-    });
+    res.json({ lyxPipeAvailable: probe.isAvailable() });
   });
 
   // --- session ---------------------------------------------------------
@@ -94,7 +110,8 @@ export function createServer(options: ServerOptions) {
         lyx,
         clipboard: new LyxClipboard(options.clipboard),
         agent,
-        conversation: [],
+        conversations: new Map(),
+        knownDocuments: new Set(),
         documentPath: null,
       };
       sessions.set(id, session);
@@ -114,7 +131,43 @@ export function createServer(options: ServerOptions) {
     }),
   );
 
-  // --- selection -------------------------------------------------------
+  // --- documents ---------------------------------------------------------
+
+  /** List known documents and which one is active right now. */
+  app.get(
+    '/api/session/:id/documents',
+    wrap(async (req, res) => {
+      const session = getSession(req.params['id']);
+      const active = await refreshActiveDocument(session);
+      res.json({
+        active,
+        documents: [...session.knownDocuments],
+      });
+    }),
+  );
+
+  /**
+   * Switch LyX's active tab/window to the given document (it must be
+   * already open). The pipe has no "list buffers" LFUN, so switching is
+   * done via file-open, which activates an already-open buffer.
+   */
+  app.post(
+    '/api/session/:id/documents/switch',
+    wrap(async (req, res) => {
+      const session = getSession(req.params['id']);
+      const target = req.body?.path as string | undefined;
+      if (!target) {
+        res.status(400).json({ error: 'path is required' });
+        return;
+      }
+      await session.lyx.request('file-open', target);
+      await sleep(200); // let the view settle
+      const active = await refreshActiveDocument(session);
+      res.json({ active, documents: [...session.knownDocuments] });
+    }),
+  );
+
+  // --- selection ---------------------------------------------------------
 
   app.get(
     '/api/session/:id/selection',
@@ -124,56 +177,56 @@ export function createServer(options: ServerOptions) {
     }),
   );
 
-  // --- chat ------------------------------------------------------------
+  // --- chat (streaming) ----------------------------------------------------
 
-  app.post(
-    '/api/session/:id/chat',
-    wrap(async (req, res) => {
-      const session = getSession(req.params['id']);
-      const message = (req.body?.message as string | undefined)?.trim();
-      if (!message) {
-        res.status(400).json({ error: 'message is required' });
-        return;
-      }
+  /**
+   * Streaming chat: responds with `text/event-stream`, one `data:` line
+   * per chunk (`{"text": "..."}`), ending with `data: {"done": true}`.
+   */
+  app.post('/api/session/:id/chat/stream', async (req, res) => {
+    const session = sessions.get(param(req.params['id']));
+    if (!session) {
+      res.status(404).json({ error: 'Unknown session' });
+      return;
+    }
+    const message = (req.body?.message as string | undefined)?.trim();
+    if (!message) {
+      res.status(400).json({ error: 'message is required' });
+      return;
+    }
 
+    res.writeHead(200, {
+      'content-type': 'text/event-stream',
+      'cache-control': 'no-cache',
+      connection: 'keep-alive',
+    });
+    const send = (obj: unknown) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
+    const fail = (err: unknown) => {
+      send({ error: err instanceof Error ? err.message : String(err) });
+      send({ done: true });
+      res.end();
+    };
+
+    try {
+      await refreshActiveDocument(session);
       const contextText = await buildContextBlock(session);
       const content: ContentBlock[] = [];
       if (contextText) content.push({ type: 'text', text: contextText });
       content.push({ type: 'text', text: CHAT_KNOWLEDGE });
       content.push({ type: 'text', text: message });
 
-      const reply = await session.agent.prompt(session.id, content);
+      const reply = await session.agent.prompt(session.id, content, {
+        onChunk: (chunk) => send({ text: chunk }),
+        timeoutMs: 240_000,
+      });
       recordTurn(session, message, reply);
-      res.json({ reply });
-    }),
-  );
-
-  async function getValidatedBody(session: Session, prompt: string, purpose: string): Promise<{
-    body: string | null;
-    reply: string;
-  }> {
-    let reply = await session.agent.prompt(session.id, [{ type: 'text', text: prompt }]);
-    let body = extractBodyLayouts(reply);
-    const problems = body ? findMarkupProblems(body) : ['No ```lyx fenced block found.'];
-
-    if (problems.length > 0) {
-      // One retry, showing the agent exactly what was wrong (VRP pattern).
-      const retry =
-        `Your ${purpose} content had problems and must be re-written in valid LyX ` +
-        'internal format (.lyx):\n' +
-        problems.map((p) => `- ${p}`).join('\n') +
-        '\n\nReference example of valid .lyx body markup with emphasis:\n' +
-        '```lyx\n\\begin_layout Standard\n\\emph on\nFuture work\n\\emph default\n' +
-        ' will explore larger datasets.\n\\end_layout\n```\n' +
-        'Math uses \\begin_inset Formula $x^2$\\end_inset. ' +
-        'Do NOT use LaTeX inline commands like \\emph{...}.\n' +
-        'Reply again with ONLY the corrected ```lyx fenced block ' +
-        '(just \\begin_layout...\\end_layout paragraphs, no header).';
-      reply = await session.agent.prompt(session.id, [{ type: 'text', text: retry }]);
-      body = extractBodyLayouts(reply);
+      send({ done: true });
+      res.end();
+    } catch (err) {
+      console.error(`[api] chat/stream: ${err instanceof Error ? err.message : err}`);
+      fail(err);
     }
-    return { body, reply };
-  }
+  });
 
   // --- rewrite selection -----------------------------------------------
 
@@ -183,6 +236,7 @@ export function createServer(options: ServerOptions) {
       const session = getSession(req.params['id']);
       const instruction = (req.body?.message as string | undefined)?.trim() || 'Improve this text.';
 
+      await refreshActiveDocument(session);
       const selection = await readSelection(session);
       if (!selection.hasSelection) {
         res.status(400).json({ error: 'No selection in LyX. Select text and try again.' });
@@ -207,11 +261,7 @@ export function createServer(options: ServerOptions) {
         '- After the fenced block, optionally add one short sentence explaining changes.\n\n' +
         `Selected content:\n\`\`\`lyx\n${selection.lyxBody ?? selection.text}\n\`\`\``;
 
-      const { body: bodyLayouts, reply } = await getValidatedBody(
-        session,
-        prompt,
-        'rewrite',
-      );
+      const { body: bodyLayouts, reply } = await getValidatedBody(session, prompt, 'rewrite');
       if (!bodyLayouts) {
         recordTurn(session, `Rewrite selection: ${instruction}`, reply);
         res.status(422).json({
@@ -221,7 +271,7 @@ export function createServer(options: ServerOptions) {
         return;
       }
 
-      const header = await currentHeader(session) ?? FALLBACK_HEADER;
+      const header = (await currentHeader(session)) ?? FALLBACK_HEADER;
       const doc = assemblePasteDocument(header, bodyLayouts);
       await session.clipboard.writeLyxDocument(doc, bodyLayouts);
       await session.lyx.paste(); // replaces the still-active selection
@@ -243,6 +293,7 @@ export function createServer(options: ServerOptions) {
         return;
       }
 
+      await refreshActiveDocument(session);
       const contextText = await buildContextBlock(session);
       const prompt =
         'You are helping an author write in LyX. The content you generate will be ' +
@@ -251,9 +302,7 @@ export function createServer(options: ServerOptions) {
         'Rules:\n' +
         '- Reply with the content ONLY inside a single ```lyx fenced block, containing\n' +
         '  just the `\\begin_layout ... \\end_layout` paragraphs (no header).\n' +
-        '- Use LyX markup conventions: `\\begin_inset Formula $...$\\end_inset` for math,\n' +
-        '  `\\begin_inset Foot` for footnotes, `\\emph on/off` for emphasis\n' +
-        '  (token format on their own lines, NOT LaTeX \\emph{...}).\n' +
+        '- Use LyX markup conventions from the cheat-sheet above.\n' +
         '- Match the surrounding document style.\n\n' +
         (contextText ? `Document context:\n${contextText}\n\n` : '') +
         `Write (at the cursor): ${instruction}`;
@@ -284,6 +333,7 @@ export function createServer(options: ServerOptions) {
     '/api/session/:id/undo',
     wrap(async (req, res) => {
       const session = getSession(req.params['id']);
+      await refreshActiveDocument(session);
       await session.lyx.undo();
       res.json({ ok: true });
     }),
@@ -291,16 +341,65 @@ export function createServer(options: ServerOptions) {
 
   // --- helpers -----------------------------------------------------------
 
+  function param(id: string | string[] | undefined): string {
+    return Array.isArray(id) ? (id[0] ?? '') : (id ?? '');
+  }
+
   function getSession(id: string | string[] | undefined): Session {
-    const key = Array.isArray(id) ? id[0] : id;
-    const session = key ? sessions.get(key) : undefined;
+    const session = sessions.get(param(id));
     if (!session) throw new Error('Unknown session');
     return session;
   }
 
-  async function sessionInfo(session: Session) {
+  /** Re-read the active document path from LyX and track it. */
+  async function refreshActiveDocument(session: Session): Promise<string | null> {
     const path = await session.lyx.getFilename();
     session.documentPath = path;
+    if (path) {
+      session.knownDocuments.add(path);
+      ensureConversation(session, path);
+    } else {
+      ensureConversation(session, UNSAVED_KEY);
+    }
+    return path;
+  }
+
+  function conversationKey(session: Session): string {
+    return session.documentPath ?? UNSAVED_KEY;
+  }
+
+  function ensureConversation(session: Session, key: string): Turn[] {
+    let turns = session.conversations.get(key);
+    if (!turns) {
+      turns = [];
+      session.conversations.set(key, turns);
+      // Load persisted history if available.
+      if (options.historyDir) {
+        loadHistory(options.historyDir, key).then(
+          (saved) => turns!.push(...saved),
+          () => undefined,
+        );
+      }
+    }
+    return turns;
+  }
+
+  async function recordTurn(session: Session, user: string, assistant: string) {
+    const key = conversationKey(session);
+    const turns = ensureConversation(session, key);
+    turns.push(
+      { role: 'user', content: user, timestamp: new Date().toISOString() },
+      { role: 'assistant', content: assistant, timestamp: new Date().toISOString() },
+    );
+    if (options.historyDir) {
+      saveHistory(options.historyDir, key, turns).catch((e) =>
+        console.error(`[history] save failed: ${e}`),
+      );
+    }
+  }
+
+  async function sessionInfo(session: Session) {
+    const docPath = await refreshActiveDocument(session);
     let outline = '';
     let layout = '';
     try {
@@ -312,16 +411,18 @@ export function createServer(options: ServerOptions) {
     }
     return {
       sessionId: session.id,
-      documentPath: path,
+      documentPath: docPath,
+      documents: [...session.knownDocuments],
       layout,
       outline,
-      conversation: session.conversation,
+      conversation: session.conversations.get(conversationKey(session)) ?? [],
     };
   }
 
   async function readDocumentContext(session: Session) {
-    const path = session.documentPath ?? (await session.lyx.getFilename());
-    const raw = await fs.readFile(path, 'utf8');
+    const filePath = session.documentPath;
+    if (!filePath) throw new Error('Document is not saved on disk.');
+    const raw = await fs.readFile(filePath, 'utf8');
     return buildDocumentContext(raw);
   }
 
@@ -343,7 +444,7 @@ export function createServer(options: ServerOptions) {
       return (
         `Document context\n` +
         `================\n` +
-        `File: ${session.documentPath ?? (await session.lyx.getFilename())}\n` +
+        `File: ${session.documentPath}\n` +
         `Text class: ${ctx.textclass ?? 'unknown'}\n` +
         `LyX format: ${ctx.formatVersion ?? 'unknown'}\n` +
         `Cursor paragraph layout: ${layout}\n\n` +
@@ -351,10 +452,10 @@ export function createServer(options: ServerOptions) {
         `Full body (.lyx markup):\n${ctx.body}\n`
       );
     } catch (e) {
-      // Unsaved document or read failure: fall back to what we know.
-      const filename = await session.lyx.tryRequest('server-get-filename');
-      return `Document context\n================\nFile: ${filename ?? '(unsaved document)'}\n` +
-        `No .lyx file context available (document unsaved?): ${(e as Error).message}\n`;
+      return (
+        `Document context\n================\nFile: ${session.documentPath ?? UNSAVED_KEY}\n` +
+        `No .lyx file context available (document unsaved?): ${(e as Error).message}\n`
+      );
     }
   }
 
@@ -367,7 +468,7 @@ export function createServer(options: ServerOptions) {
     if (hasSelection) {
       await session.lyx.copySelection();
       // Give LyX a moment to put the payload on the clipboard.
-      await new Promise((r) => setTimeout(r, 150));
+      await sleep(150);
       const doc = await session.clipboard.readLyxDocument();
       if (doc) {
         lyxBody = extractBodyLayouts(doc) ?? doc;
@@ -378,16 +479,63 @@ export function createServer(options: ServerOptions) {
     return { hasSelection, stats, lyxBody, text, layout };
   }
 
-  function recordTurn(session: Session, user: string, assistant: string) {
-    session.conversation.push({ role: 'user', content: user, timestamp: new Date().toISOString() });
-    session.conversation.push({
-      role: 'assistant',
-      content: assistant,
-      timestamp: new Date().toISOString(),
-    });
+  async function getValidatedBody(
+    session: Session,
+    prompt: string,
+    purpose: string,
+  ): Promise<{ body: string | null; reply: string }> {
+    let reply = await session.agent.prompt(session.id, [{ type: 'text', text: prompt }]);
+    let body = extractBodyLayouts(reply);
+    const problems = body ? findMarkupProblems(body) : ['No ```lyx fenced block found.'];
+
+    if (problems.length > 0) {
+      // One retry, showing the agent exactly what was wrong (VRP pattern).
+      const retry =
+        `Your ${purpose} content had problems and must be re-written in valid LyX ` +
+        'internal format (.lyx):\n' +
+        problems.map((p) => `- ${p}`).join('\n') +
+        '\n\nReference example of valid .lyx body markup with emphasis:\n' +
+        '```lyx\n\\begin_layout Standard\n\\emph on\nFuture work\n\\emph default\n' +
+        ' will explore larger datasets.\n\\end_layout\n```\n' +
+        'Math uses \\begin_inset Formula $x^2$\\end_inset. ' +
+        'Do NOT use LaTeX inline commands like \\emph{...}.\n' +
+        'Reply again with ONLY the corrected ```lyx fenced block ' +
+        '(just \\begin_layout...\\end_layout paragraphs, no header).';
+      reply = await session.agent.prompt(session.id, [{ type: 'text', text: retry }]);
+      body = extractBodyLayouts(reply);
+    }
+    return { body, reply };
   }
 
   return app;
+}
+
+// --- history persistence ---------------------------------------------------
+
+function historyFile(dir: string, conversationKey: string): string {
+  const hash = createHash('sha256').update(conversationKey).digest('hex').slice(0, 16);
+  return path.join(dir, `${hash}.json`);
+}
+
+async function loadHistory(dir: string, conversationKey: string): Promise<Turn[]> {
+  try {
+    const raw = await fs.readFile(historyFile(dir, conversationKey), 'utf8');
+    const data = JSON.parse(raw) as { key?: string; turns: Turn[] };
+    if (data.key !== conversationKey) return []; // hash collision guard
+    return Array.isArray(data.turns) ? data.turns : [];
+  } catch {
+    return [];
+  }
+}
+
+async function saveHistory(dir: string, conversationKey: string, turns: Turn[]): Promise<void> {
+  await fs.mkdir(dir, { recursive: true });
+  const payload = JSON.stringify({ key: conversationKey, turns }, null, 2);
+  await fs.writeFile(historyFile(dir, conversationKey), payload, 'utf8');
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 /** Minimal header used when the document has never been saved. */
