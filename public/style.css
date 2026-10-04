@@ -9,55 +9,31 @@ body {
   height: 100vh;
   font-family: system-ui, sans-serif;
   font-size: 14px;
-  border: 1px solid rgba(128, 128, 128, 0.4);
-  border-radius: 8px;
-  overflow: hidden;
 }
 
-#titlebar {
+.toolbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 6px 10px;
-  background: rgba(128, 128, 128, 0.15);
-  -webkit-app-region: drag;
-  user-select: none;
+  gap: 8px;
+  padding: 6px 12px 0;
 }
 
-.titlebar-left {
-  display: flex;
-  align-items: center;
-  gap: 10px;
+.toolbar select {
+  flex: 1;
   min-width: 0;
-}
-
-.title {
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-#doc-select {
-  max-width: 200px;
   font-size: 12px;
-  -webkit-app-region: no-drag;
 }
 
-.titlebar-right {
-  display: flex;
-  gap: 4px;
-  -webkit-app-region: no-drag;
-}
-
-.titlebar-right button {
+.pin {
   border: none;
   background: transparent;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 14px;
   padding: 2px 6px;
 }
 
-.titlebar-right button:hover {
-  background: rgba(128, 128, 128, 0.3);
+.pin.off {
+  opacity: 0.45;
 }
 
 .context {
@@ -134,6 +110,41 @@ main {
   margin-top: 4px;
   font-size: 12px;
   color: #cf222e;
+}
+.msg .stopped {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+#typing .dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 3px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.4;
+  animation: typing 1.2s infinite;
+}
+#typing .dot:nth-child(2) { animation-delay: 0.2s; }
+#typing .dot:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes typing {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+  30% { transform: translateY(-3px); opacity: 1; }
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.settings-row button {
+  font-size: 12px;
+  padding: 3px 10px;
 }
 
 .bubble {

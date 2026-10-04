@@ -59,6 +59,17 @@ export class AcpClient {
     this.sessions.set(sessionId, active);
   }
 
+  /** Cancel the ongoing prompt turn (session/cancel notification). */
+  cancel(sessionId: string): void {
+    const active = this.sessions.get(sessionId);
+    if (!active || !this.connection) return;
+    this.connection.agent
+      .notify('session/cancel', { sessionId: active.sessionId })
+      .catch((e: unknown) =>
+        console.error('ACP cancel failed:', e instanceof Error ? e.message : e),
+      );
+  }
+
   /** Send content blocks and return the agent's full text response. */
   async prompt(
     sessionId: string,

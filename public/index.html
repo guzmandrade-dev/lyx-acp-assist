@@ -8,16 +8,10 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <header id="titlebar">
-    <div class="titlebar-left">
-      <span class="title">LyX Assist</span>
-      <select id="doc-select" title="Active LyX document"></select>
-    </div>
-    <div class="titlebar-right">
-      <button id="pin" title="Toggle always on top">&#128204;</button>
-      <button id="close" title="Close">&#10005;</button>
-    </div>
-  </header>
+  <div class="toolbar">
+    <select id="doc-select" title="Active LyX document"></select>
+    <button id="pin" class="pin" title="Float on top while LyX is focused (on)">&#128204;</button>
+  </div>
 
   <div class="context">
     <div id="status" class="status">checking LyX&hellip;</div>
@@ -26,22 +20,21 @@
       <summary>Agent settings</summary>
       <label>Command <input id="agent-cmd" type="text" value="opencode" /></label>
       <label>Args <input id="agent-args" type="text" value="acp" /></label>
-      <small>Examples: opencode acp &middot; copilot --acp &middot; goose acp</small>
+      <div class="settings-row">
+        <button id="reconnect">Reconnect</button>
+        <small>Examples: opencode acp &middot; copilot --acp &middot; goose acp</small>
+      </div>
     </details>
   </div>
 
   <main id="chat" aria-live="polite"></main>
 
   <footer>
-    <div class="mode">
-      <label><input type="radio" name="mode" value="chat" checked /> Chat</label>
-      <label><input type="radio" name="mode" value="rewrite" /> Rewrite selection</label>
-      <label><input type="radio" name="mode" value="insert" /> Insert at cursor</label>
-    </div>
     <textarea id="input" rows="3"
-      placeholder="Message the agent. In Rewrite/Insert modes the reply is applied to the LyX document."></textarea>
+      placeholder="Message the agent. It decides itself: reply in chat, insert at the cursor, or rewrite your selection."></textarea>
     <div class="row">
       <button id="undo" title="Undo the last agent edit inside LyX">Undo edit</button>
+      <button id="stop" title="Stop the running generation" style="display:none">Stop</button>
       <button id="send">Send</button>
     </div>
   </footer>

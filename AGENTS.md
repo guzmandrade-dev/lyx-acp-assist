@@ -166,6 +166,13 @@ selection is empty. Useful as a cheap selection probe before `copy`.
 
 ## Pitfalls found while wiring the app (2026-10-03)
 
+- **"Command disabled" is usually a no-op, not a failure** (per LyX). `undo`
+  (nothing to undo) and `copy` (no usable selection, even when
+  `server-get-statistics` claimed one) hit this in real use and aborted whole
+  requests. `LyxServerClient` now tolerates it for `save`, `undo`, and
+  `copySelection` (the latter returns false so the caller treats a possibly
+  stale clipboard as "no selection").
+
 - **JS escape bug:** in template literals `\begin_body` is a backspace
   escape — assembled payloads were silently malformed. Regression test:
   `assemblePasteDocument` output must strict-parse (`test/context.test.ts`).
@@ -192,6 +199,71 @@ LLMs know LaTeX but not `.lyx` markup. Specialization is done with:
   corrective retry.
 - ACP has no `systemPrompt` field in this SDK version, so prompt-level
   injection is the portable mechanism across agents.
+
+## Auto mode / intent inference (2026-10-04)
+
+The manual Chat/Rewrite/Insert radio modes are GONE. One input box,
+one endpoint: `POST /api/session/:id/message/stream` (SSE). The app reads
+the selection (if any) + document context and lets the AGENT decide the
+intent; the agent must end its reply with a trailing action tag:
+
+- `[ACTION: none]` — prose reply, document untouched
+- `[ACTION: insert]` — paste the ```lyx block at the cursor
+- `[ACTION: insert-top]` — `buffer-begin` (cursor to document start) then
+  paste; for titles/abstracts/front matter
+- `[ACTION: rewrite]` — replace the active selection with the block
+- `[ACTION: rewrite-at pN]` — replace entire paragraph [pN] (outline
+  address): `buffer-begin` + N-1 × `paragraph-down` + `paragraph-select`,
+  then **verify** by copying and comparing the plain text with the outline
+  preview — on mismatch nothing is pasted (mis-targeted pastes cannot
+  happen) and the selection is cleared (selections persist in LyX and
+  would pollute later commands). Note: `server-goto-file-row` is NOT
+  usable for addressing (it maps rows of the generated TeX file, needs an
+  export first).
+
+**Verification pitfall (live-verified):** comparing the outline preview
+with the clipboard text verbatim FAILS on the same paragraph — the .lyx
+file stores straight quotes/ASCII dashes, but LyX's clipboard UnicodeText
+export uses typographic ones (“ ” — …). `normalizeForCompare` (exported,
+unit-tested) strips to case-insensitive letters/digits before comparing
+the first 60 chars.
+
+**Staleness rule:** `/message/stream` saves the buffer (`buffer-write`,
+saved paths only — untitled buffers would open Save As) BEFORE parsing
+the context from disk. Live verification in use: after inserting the
+title without saving, the outline still said [p1] = old first paragraph,
+so rewrite-at p1 landed on the Title and the verification aborted the
+paste.
+
+`parseAction` (exported, unit-tested in `test/server.test.ts`) extracts
+the tag + block; markup problems trigger one corrective retry
+(`buildMarkupRetryPrompt`). The app keeps the mechanical/unsafe part
+(clipboard write + `paste`), the agent owns intent. SSE frames:
+`{"text"}`, `{"applied": "insert"|"insert-top"|"rewrite"}`, `{"action":"none"}`,
+`{"cancelled":true}`, `{"error"}`, `{"done":true}`.
+
+**Insert-top pitfall (live-verified failure):** `buffer-begin` puts the
+cursor INSIDE the first paragraph; pasting there is an intra-paragraph
+insert — LyX merges the pasted content into the existing paragraph and
+DISCARDS its layout (a pasted `Title` paragraph came out as plain text
+glued to the first paragraph). Fix: `buffer-begin` followed by
+`paragraph-break`, which leaves an empty paragraph above the text; the
+paste merges into it and keeps the layout. Undoing an insert-top takes
+two undos (paste + paragraph break).
+
+## Stop / cancel + session teardown (2026-10-04)
+
+- `AcpClient.cancel()` sends the `session/cancel` notification via the
+  SDK's generic `connection.agent.notify('session/cancel', {sessionId})`
+  (`ClientContext` has no typed `cancel` method in this SDK version).
+- `POST /api/session/:id/cancel` stops the running generation; the
+  server checks `session.cancelRequested` before the markup-retry and
+  before pasting, so a cancelled rewrite is never pasted.
+- `DELETE /api/session/:id` tears a session down (stops the agent
+  process and LyX pipe client) — used by the UI's Reconnect button.
+- UI: agent settings (command/args) persist in `localStorage`, Stop
+  button aborts the fetch + sends cancel, animated typing indicator
+  (the old `setBusy` left a permanent "thinking…" bubble — fixed).
 
 ## Agents (verified end-to-end)
 
@@ -229,9 +301,11 @@ genuine replies always reach their waiter directly.
 
 ## Floating window UI (2026-10-03)
 
-Frameless (`frame: false`), always-on-top by default with a pin toggle,
-skipTaskbar, drag region in the title bar. Settings panel persists for
-the session. UI calls Electron window controls through a preload bridge
+Frameless (`frame: false`) has cross-platform issues on Linux/macOS, so
+we now use a normal framed window. It floats on top only while a LyX
+window is the Windows foreground window (polled via PowerShell). The user
+can still disable the floating behavior with the pin toggle in the toolbar.
+UI calls Electron window controls through a preload bridge
 (`window.electron`).
 
 ## Validated end-to-end (2026-10-03, opencode ACP agent)
@@ -250,8 +324,9 @@ the selection -> `buffer-write`. Insert-at-cursor and undo also wired.
 - `src/lyxserver/client.ts` — LyXServer pipe client (LFUN dispatch).
 - `src/clipboard/lyx-clipboard.ts` — x-lyx clipboard abstraction.
 - `src/acp/` — ACP client (VRP pattern).
-- `src/server.ts` — Express API: session, chat, selection, rewrite-selection,
-  insert, undo. `src/electron/main.ts` + `public/` — UI.
-- 46 vitest tests green.
+- `src/server.ts` — Express API: session (+ teardown), unified
+  `/message/stream` (agent-decided intent: chat/insert/rewrite),
+  documents, selection, undo, cancel. `src/electron/main.ts` + `public/` — UI.
+- 53 vitest tests green.
 - Next: agent settings UI (command/args configurable), streaming replies,
   multi-document sessions, packaging.
