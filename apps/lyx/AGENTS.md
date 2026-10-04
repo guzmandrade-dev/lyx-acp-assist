@@ -149,20 +149,32 @@ selection is empty. Useful as a cheap selection probe before `copy`.
 - Record important decisions and findings here and in `notes.md`
   (`notes.md` holds the original brainstorm + the same architecture summary).
 
-## Electron 43 clipboard findings (critical)
+## Clipboard findings (critical; live-verified 2026-10-04)
 
-- Electron 43 replaced the synchronous clipboard API with an async
+- Electron 43+ replaced the synchronous clipboard API with an async
   W3C-style one (`clipboard.read()`, `clipboard.write([ClipboardItem])`).
-- **Chromium writes custom MIME types with the Web Custom Format wrapper**
-  (magic header + name), which LyX cannot parse: writes are silently
-  ignored by LyX, and `paste` then uses LyX's *internal* clipboard
-  (stale content).
-- **Escape hatch (verified):** write/read the RAW OS format using the
-  special MIME `electron application/osclipboard;format="application/x-lyx"`
-  as the ClipboardItem key / read type. Raw bytes, LyX parses them fine.
-  See `src/electron/main.ts` and `spikes/clipboard-electron-test2.mjs`.
+- **Chromium wraps custom MIME types in the Web Custom Format spec**
+  (magic header + name), which LyX cannot parse.
+- **The `electron application/osclipboard;format="..."` escape hatch is
+  UNRELIABLE and has been removed.** Live-verified failure: identical
+  payloads pasted rich via a .NET/WinForms write but literal (plain-text
+  fallback) via the escape hatch; read-back through Electron's own API
+  succeeds (self-consistent wrapper), so in-app verification cannot
+  detect the failure — only LyX sees it.
+- **The app now bypasses Electron entirely**:
+  `src/clipboard/native-clipboard.ts` (a RawClipboard implementation)
+  uses .NET WinForms via PowerShell on Windows (verified against live
+  LyX: Formula + Foot insets paste structured), `wl-copy`/`xclip` on
+  Linux (custom MIME types are native there), NSPasteboard via
+  `osascript` on macOS. No npm package supports arbitrary custom
+  clipboard formats (checked `@mariozechner/clipboard`/`clipboard-rs`
+  bindings: text/image/RTF/HTML/files only).
 - `clipboard.has('application/x-lyx')` returns false for custom formats;
   attempt a read instead.
+- Diagnosis recipe: if a paste comes out as literal markup, the x-lyx
+  format was not readable by LyX — test the payload by writing it via
+  `spikes/clipboard-set-lyx.ps1` (.NET) and pasting through the pipe;
+  that isolates payload content from the write path.
 
 ## Pitfalls found while wiring the app (2026-10-03)
 
@@ -218,8 +230,38 @@ its own tools.
 - Live conversion is regression-tested against a real PDF shipped with LyX
   (skips if LyX/markitdown are absent). Hand-crafted "minimal PDFs" are NOT
   valid fixtures — pdfplumber rejects them ("No /Root object").
+- Attachment excerpts are capped at 40k chars; the prompt tells the agent
+  the excerpt MAY BE TRUNCATED and that it must read/search the full
+  stored file before concluding content is absent — and to search with
+  short distinctive substrings (users misspell/translate terms). Live
+  failure that prompted this: the agent searched only the inlined excerpt
+  of a 300KB .lyx attachment, found nothing, and gave up, although the
+  stored file had the section.
 - UI: `+` button + chips row in the composer; `DELETE .../attachments/:id`
   removes a pending file.
+
+## Lazy document context (outline-only for large docs, 2026-10-04)
+
+Like Claude Code / Copilot CLI treat a repo: attach a map, let the agent
+search/read on demand.
+
+- Bodies up to 16k chars (`OUTLINE_ONLY_BODY_LIMIT`) attach in full (max
+  fidelity). Larger documents attach ONLY the outline + the saved file
+  path + instructions to read/search the file with the agent's own file
+  tools. The buffer is saved before parsing (see staleness rule), so the
+  file the agent reads is the live document.
+- The prompt explains the [pN] ↔ file mapping: [pN] ids correspond to
+  `\begin_layout` blocks in body document order (inset inner layouts
+  count too), so the agent can locate [pN] by counting occurrences.
+- ACP client handlers registered in `AcpClient` (`onRequest`):
+  - `fs/read_text_file`: served from disk (supports line/limit) — lazy
+    fetch for agents that use ACP FS instead of their own tools.
+  - `fs/write_text_file`: REFUSED — LyX is the single writer of the .lyx
+    file; agents must reply with an [ACTION: ...] tag instead.
+  - `session/request_permission`: auto-approves tool calls (this SDK
+    version has NO custom client-tool channel, so the agent's own
+    grep/read tools + the file path are the search mechanism; permission
+    auto-approval keeps mid-turn tool calls from stalling).
 
 ## Auto mode / intent inference (2026-10-04)
 
@@ -232,6 +274,11 @@ intent; the agent must end its reply with a trailing action tag:
 - `[ACTION: insert]` — paste the ```lyx block at the cursor
 - `[ACTION: insert-top]` — `buffer-begin` (cursor to document start) then
   paste; for titles/abstracts/front matter
+- `[ACTION: insert-after pN]` — insert as its own paragraph(s) right after
+  [pN]: walk + verify, collapse the selection to the paragraph end
+  (`char-forward`), `paragraph-break` below it, paste into the fresh empty
+  paragraph (no merge into [pN]); for "add a section/paragraph" requests
+  where the position follows from the outline
 - `[ACTION: rewrite]` — replace the active selection with the block
 - `[ACTION: rewrite-at pN]` — replace entire paragraph [pN] (outline
   address): `buffer-begin` + N-1 × `paragraph-down` + `paragraph-select`,
@@ -241,13 +288,38 @@ intent; the agent must end its reply with a trailing action tag:
   would pollute later commands). Note: `server-goto-file-row` is NOT
   usable for addressing (it maps rows of the generated TeX file, needs an
   export first).
+- Plain `[ACTION: insert]` merges the first pasted paragraph into the
+  cursor's paragraph (it takes that paragraph's layout — live-verified
+  when a pasted Subsubsection swallowed the document Title). The prompt
+  warns the agent about this, and the server collapses any active
+  selection first so a paste can never silently replace selected text.
+
+**Literal-markup paste (root cause found 2026-10-04):** the paste once
+came out as LITERAL markup in the document — the agent's block
+strict-parsed fine and a .NET write of the same constructs pasted rich,
+so the culprit was Electron's clipboard API (see "Clipboard findings").
+Fixed by the native clipboard adapter. `writeLyxDocumentVerified` still
+reads the payload back and retries once, and the server refuses to paste
+(clean error) if it cannot verify. Never paste after an unverified write.
+
+**Caret disturbance while typing (live-reported):** the 2s document poll
+dispatches `server-get-filename` into LyX continuously, which visibly
+disturbs the caret in LyX while the user types. The poll now only runs
+while our app window is FOCUSED (pause on blur, resume on focus). The
+focus watcher also change-detects its `setAlwaysOnTop` calls — no
+redundant Win32 z-order churn while nothing changed.
 
 **Verification pitfall (live-verified):** comparing the outline preview
 with the clipboard text verbatim FAILS on the same paragraph — the .lyx
 file stores straight quotes/ASCII dashes, but LyX's clipboard UnicodeText
-export uses typographic ones (“ ” — …). `normalizeForCompare` (exported,
-unit-tested) strips to case-insensitive letters/digits before comparing
-the first 60 chars.
+export uses typographic ones (“ ” — …). Worse, the export ALSO prepends
+layout environment labels ("Abstract When a probability…") and renders
+math insets inline ($P$ -> "P"), while the parser preview has no inset
+content. `normalizeForCompare` strips to case-insensitive letters/digits
+and `isLikelyMatch` (both exported, unit-tested on the live failures)
+slides overlapping 16-char windows over the expected text, requiring
+>= 60% of them to appear in the actual text — label prefixes and math
+insertions are tolerated, disjoint paragraphs still rejected.
 
 **Staleness rule:** `/message/stream` saves the buffer (`buffer-write`,
 saved paths only — untitled buffers would open Save As) BEFORE parsing
@@ -296,9 +368,9 @@ two undos (paste + paragraph break).
 
 ## Performance note
 
-Response latency is dominated by the agent model. We currently attach the
-full document body with every prompt; for large documents, consider
-outline-only context with lazy body fetch (future work).
+Response latency is dominated by the agent model. Documents up to 16k body
+chars attach in full every prompt; larger ones attach outline-only and the
+agent lazily reads/searches the saved file (see "Lazy document context").
 
 ## Multi-document, streaming, history (2026-10-03)
 

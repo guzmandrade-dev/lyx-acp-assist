@@ -1,7 +1,7 @@
 import { describe, it, expect, afterAll } from 'vitest';
 import type { Server } from 'node:http';
 import type { Express } from 'express';
-import { createServer, parseAction, normalizeForCompare, buildAutoPrompt, extractAttachmentText } from '../src/server.js';
+import { createServer, parseAction, normalizeForCompare, isLikelyMatch, buildAutoPrompt, extractAttachmentText } from '../src/server.js';
 import type { RawClipboard } from '../src/clipboard/lyx-clipboard.js';
 
 /** Stub raw clipboard: enough for routes that never touch LyX. */
@@ -144,6 +144,13 @@ describe('agent action parsing', () => {
     const noTarget = parseAction('```lyx\n\\begin_layout Standard\nX\n\\end_layout\n```\n[ACTION: rewrite-at]');
     expect(noTarget.action).toBe('rewrite-at');
     expect(noTarget.target).toBeNull();
+
+    const after = parseAction(
+      '```lyx\n\\begin_layout Subsubsection\nNew section\n\\end_layout\n```\n[ACTION: insert-after p12]',
+    );
+    expect(after.action).toBe('insert-after');
+    expect(after.target).toBe(12);
+    expect(after.body).toBeTruthy();
   });
 
   it('normalizes typography so file text and clipboard text compare equal', () => {
@@ -155,5 +162,24 @@ describe('agent action parsing', () => {
     expect(normalizeForCompare('well-known  result')).toBe(normalizeForCompare('Well\u2014known result'));
     // But genuinely different text must stay different.
     expect(normalizeForCompare('Apple has confirmed')).not.toBe(normalizeForCompare('Apple News'));
+  });
+
+  it('fuzzy match tolerates layout labels and math in the clipboard export', () => {
+    // Live failure: expected (parsed file, no inset content) vs actual
+    // (LyX export prepends the "Abstract" label and renders $P$ inline).
+    const expected = normalizeForCompare(
+      'When a probability function assigns a value to an expression we usually ' +
+        'assume that we can express it with a language equivalent to propositional logic',
+    );
+    const actual = normalizeForCompare(
+      'Abstract When a probability function P assigns a value to an expression we ' +
+        'usually assume that we can express it with a language equivalent to propositional logic',
+    );
+    expect(isLikelyMatch(expected, actual)).toBe(true);
+
+    // But a genuinely different paragraph must still be rejected.
+    expect(
+      isLikelyMatch(normalizeForCompare('Apple has confirmed that a small number of users'), normalizeForCompare('Apple News')),
+    ).toBe(false);
   });
 });

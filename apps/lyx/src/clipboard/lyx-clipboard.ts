@@ -57,4 +57,26 @@ export class LyxClipboard {
     if (plainText !== undefined) formats['text/plain'] = plainText;
     await this.clipboard.write(formats);
   }
+
+  /**
+   * Write a .lyx document and VERIFY the x-lyx payload actually landed on
+   * the clipboard. Electron's async write can race the subsequent `paste`
+   * LFUN; when the x-lyx format is missing, LyX silently falls back to the
+   * plain-text flavor and inserts LITERAL markup into the document (a
+   * live-verified failure). Retries once; returns false if the payload
+   * still cannot be read back — the caller must NOT paste then.
+   */
+  async writeLyxDocumentVerified(doc: string, plainText?: string): Promise<boolean> {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await this.writeLyxDocument(doc, plainText);
+      if (attempt > 0) await sleep(150);
+      const buf = await this.clipboard.readFormat(LYX_CLIPBOARD_FORMAT);
+      if (buf !== null && buf.toString('utf8') === doc) return true;
+    }
+    return false;
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
 }

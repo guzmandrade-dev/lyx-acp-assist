@@ -1,9 +1,9 @@
-import { app, BrowserWindow, clipboard, ClipboardItem, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain } from 'electron';
 import { spawn, type ChildProcess } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import type { RawClipboard } from '../clipboard/lyx-clipboard.js';
+import { createNativeClipboard } from '../clipboard/native-clipboard.js';
 import { createServer } from '../server.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -13,6 +13,16 @@ let httpServer: import('node:http').Server | null = null;
 /** When true (default), the window floats on top only while LyX is focused. */
 let lyxFollowMode = true;
 let focusWatcher: ChildProcess | null = null;
+/** Last foreground process name seen by the watcher. */
+let watcherLastState: string | null = null;
+/** Last always-on-top value actually applied (avoid redundant Win32 calls). */
+let lastAppliedTop: boolean | null = null;
+
+function applyAlwaysOnTop(top: boolean): void {
+  if (top === lastAppliedTop) return;
+  lastAppliedTop = top;
+  mainWindow?.setAlwaysOnTop(top);
+}
 
 /**
  * Emulate "always-on-top only for LyX": poll the Windows foreground window
@@ -49,14 +59,15 @@ function startLyxFocusWatcher(): void {
       // React only on state CHANGES; ignore our own Electron process.
       if (state === lastState || state === 'electron') continue;
       lastState = state;
-      const isLyx = state === 'LyX';
-      if (mainWindow) mainWindow.setAlwaysOnTop(lyxFollowMode && isLyx);
+      watcherLastState = state;
+      applyAlwaysOnTop(lyxFollowMode && state === 'LyX');
     }
   });
   focusWatcher.on('error', (e) => console.error('focus watcher failed:', e.message));
   focusWatcher.on('exit', () => {
     focusWatcher = null;
-    if (mainWindow) mainWindow.setAlwaysOnTop(false);
+    lastAppliedTop = null;
+    mainWindow?.setAlwaysOnTop(false);
   });
 }
 
@@ -65,55 +76,15 @@ app.on('before-quit', () => {
 });
 
 /**
- * Chromium writes custom MIME types using the Web Custom Format spec
- * (magic header + name), which LyX cannot parse. Writing the RAW OS
- * format requires Electron's escape-hatch MIME:
- *   electron application/osclipboard;format="<format>"
- * Verified against LyX: raw writes are parsed by LyX's clipboard monitor;
- * WCF-wrapped writes are silently ignored (see AGENTS.md).
+ * Clipboard strategy (live-verified 2026-10-04): Electron's W3C clipboard
+ * API cannot reliably write the RAW `application/x-lyx` OS format that LyX
+ * parses — Chromium wraps custom MIME types in the Web Custom Format spec,
+ * and even the `osclipboard` escape-hatch writes are sometimes invisible to
+ * native apps (read-back goes through the same wrapper, so verification is
+ * self-consistent while LyX still falls back to plain text and inserts
+ * LITERAL markup). The native adapter bypasses Electron entirely:
+ * .NET/WinForms on Windows, wl-copy/xclip on Linux, NSPasteboard on macOS.
  */
-function osFormatMime(format: string): string {
-  return `electron application/osclipboard;format="${format}"`;
-}
-
-const electronClipboard: RawClipboard = {
-  async hasFormat(format) {
-    // Electron hides custom formats from clipboard.has(); attempt a read.
-    return (await this.readFormat(format)) !== null;
-  },
-  async readFormat(format) {
-    const items = await clipboard.read();
-    for (const mime of [format, osFormatMime(format)]) {
-      for (const item of items) {
-        if (item.types.includes(mime)) {
-          const value = await item.getType(mime);
-          if (value instanceof Blob) {
-            return Buffer.from(await value.arrayBuffer());
-          }
-          return null;
-        }
-      }
-    }
-    return null;
-  },
-  async write(formats) {
-    const entries: Record<string, string | Blob> = {};
-    for (const [type, data] of Object.entries(formats)) {
-      if (type === 'text/plain') {
-        entries[type] = typeof data === 'string' ? data : data.toString('utf8');
-      } else {
-        // Custom format: write the raw OS format via the escape hatch.
-        const bytes = typeof data === 'string' ? Buffer.from(data, 'utf8') : data;
-        entries[osFormatMime(type)] = new Blob([new Uint8Array(bytes)]);
-      }
-    }
-    await clipboard.write([new ClipboardItem(entries)]);
-  },
-  async readText() {
-    return clipboard.readText();
-  },
-};
-
 async function startApp(): Promise<void> {
   const publicDir = path.join(__dirname, '..', '..', 'public');
   if (!fs.existsSync(path.join(publicDir, 'index.html'))) {
@@ -121,7 +92,12 @@ async function startApp(): Promise<void> {
   }
   const historyDir = path.join(app.getPath('userData'), 'history');
   const attachmentsDir = path.join(app.getPath('userData'), 'attachments');
-  const server = createServer({ publicDir, clipboard: electronClipboard, historyDir, attachmentsDir });
+  const server = createServer({
+    publicDir,
+    clipboard: createNativeClipboard(),
+    historyDir,
+    attachmentsDir,
+  });
 
   const port = process.env.PORT ? Number.parseInt(process.env.PORT, 10) : 0;
   await new Promise<void>((resolve) => {
@@ -135,10 +111,8 @@ async function startApp(): Promise<void> {
   await app.whenReady();
 
   ipcMain.on('window/toggle-always-on-top', () => {
-    if (mainWindow) {
-      lyxFollowMode = !lyxFollowMode;
-      if (!lyxFollowMode) mainWindow.setAlwaysOnTop(false);
-    }
+    lyxFollowMode = !lyxFollowMode;
+    applyAlwaysOnTop(lyxFollowMode && watcherLastState === 'LyX');
   });
 
   mainWindow = new BrowserWindow({
