@@ -1,4 +1,5 @@
 import { app, BrowserWindow, clipboard, ClipboardItem, ipcMain } from 'electron';
+import { spawn, type ChildProcess } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -9,6 +10,59 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 let mainWindow: BrowserWindow | null = null;
 let httpServer: import('node:http').Server | null = null;
+/** When true (default), the window floats on top only while LyX is focused. */
+let lyxFollowMode = true;
+let focusWatcher: ChildProcess | null = null;
+
+/**
+ * Emulate "always-on-top only for LyX": poll the Windows foreground window
+ * with one persistent PowerShell process; float when it belongs to LyX.
+ * When our own window is focused, keep the current state.
+ */
+function startLyxFocusWatcher(): void {
+  if (process.platform !== 'win32' || focusWatcher) return;
+  const script = [
+    'Add-Type @"',
+    'using System;using System.Runtime.InteropServices;',
+    'public class FG{[DllImport("user32.dll")]public static extern IntPtr GetForegroundWindow();',
+    '[DllImport("user32.dll")]public static extern uint GetWindowThreadProcessId(IntPtr h,out uint pid);}',
+    '"@',
+    'while($true){',
+    '  $h=[FG]::GetForegroundWindow(); $fgPid=[uint32]0; [FG]::GetWindowThreadProcessId($h,[ref]$fgPid)|Out-Null',
+    '  $proc = Get-Process -Id $fgPid -ErrorAction SilentlyContinue',
+    '  if($proc -eq $null){ Write-Output "OTHER" } else { Write-Output $proc.ProcessName }',
+    '  Start-Sleep -Milliseconds 500',
+    '}',
+  ].join('\n');
+
+  focusWatcher = spawn(
+    'powershell',
+    ['-NoProfile', '-STA', '-Command', script],
+    { windowsHide: true },
+  );
+  let lastState: string | null = null;
+  focusWatcher.stdout?.setEncoding('utf8');
+  focusWatcher.stdout?.on('data', (chunk: string) => {
+    for (const line of chunk.split('\n')) {
+      const state = line.trim();
+      if (!state) continue;
+      // React only on state CHANGES; ignore our own Electron process.
+      if (state === lastState || state === 'electron') continue;
+      lastState = state;
+      const isLyx = state === 'LyX';
+      if (mainWindow) mainWindow.setAlwaysOnTop(lyxFollowMode && isLyx);
+    }
+  });
+  focusWatcher.on('error', (e) => console.error('focus watcher failed:', e.message));
+  focusWatcher.on('exit', () => {
+    focusWatcher = null;
+    if (mainWindow) mainWindow.setAlwaysOnTop(false);
+  });
+}
+
+app.on('before-quit', () => {
+  focusWatcher?.kill();
+});
 
 /**
  * Chromium writes custom MIME types using the Web Custom Format spec
@@ -81,20 +135,16 @@ async function startApp(): Promise<void> {
 
   ipcMain.on('window/toggle-always-on-top', () => {
     if (mainWindow) {
-      mainWindow.setAlwaysOnTop(!mainWindow.isAlwaysOnTop());
+      lyxFollowMode = !lyxFollowMode;
+      if (!lyxFollowMode) mainWindow.setAlwaysOnTop(false);
     }
-  });
-  ipcMain.on('window/close', () => {
-    mainWindow?.close();
   });
 
   mainWindow = new BrowserWindow({
     width: 420,
     height: 680,
-    frame: false, // floating chat look; header has a drag region
-    resizable: true,
-    alwaysOnTop: true,
-    skipTaskbar: true,
+    // Framed window: frameless has cross-platform issues (Linux/macOS).
+    alwaysOnTop: false, // managed by the LyX-follow watcher below
     title: 'LyX ACP Assist',
     webPreferences: {
       contextIsolation: true,
@@ -105,6 +155,8 @@ async function startApp(): Promise<void> {
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
+
+  startLyxFocusWatcher();
 }
 
 app.on('window-all-closed', () => {
