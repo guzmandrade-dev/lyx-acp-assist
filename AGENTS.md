@@ -179,6 +179,34 @@ selection is empty. Useful as a cheap selection probe before `copy`.
 - On Windows, `opencode` is a PowerShell shim: bare agent commands must
   spawn with `shell: true` (`src/acp/agent-process.ts`).
 
+## Agent specialization (2026-10-03)
+
+LLMs know LaTeX but not `.lyx` markup. Specialization is done with:
+- **Knowledge base** (`src/lyx/knowledge.ts`): a verified cheat-sheet
+  (insets with required inner `Plain Layout`, token-format emphasis,
+  Formula/URL/citation examples) attached to every Insert/Rewrite/Chat
+  prompt. This fixed real failures: empty yellow Note insets, malformed
+  URL insets.
+- **Validation + retry** (`findMarkupProblems`): LaTeX-style inline
+  commands, empty insets, insets missing their inner layout trigger one
+  corrective retry.
+- ACP has no `systemPrompt` field in this SDK version, so prompt-level
+  injection is the portable mechanism across agents.
+
+## Agents (verified end-to-end)
+
+- `opencode acp` (v1.18.4) and **Copilot CLI `copilot --acp`** (1.0.90,
+  ACP public preview) both work as the app's agent.
+- `goose acp` is also installed on this machine.
+- Configurable at runtime via the app's "Agent settings" panel
+  (command + args, sent to POST /api/session).
+
+## Performance note
+
+Response latency is dominated by the agent model. We currently attach the
+full document body with every prompt; for large documents, consider
+outline-only context with lazy body fetch (future work).
+
 ## Validated end-to-end (2026-10-03, opencode ACP agent)
 
 Full flagship loop with the Electron app running against live LyX:

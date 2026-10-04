@@ -85,6 +85,30 @@ footer {
   gap: 8px;
 }
 
+.agent-settings {
+  margin-top: 6px;
+  font-size: 12px;
+}
+.agent-settings label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0;
+}
+.agent-settings input {
+  flex: 1;
+  font-family: inherit;
+  font-size: 12px;
+  padding: 3px 6px;
+}
+.agent-settings summary {
+  cursor: pointer;
+  user-select: none;
+}
+.agent-settings small {
+  opacity: 0.7;
+}
+
 .mode {
   display: flex;
   gap: 14px;

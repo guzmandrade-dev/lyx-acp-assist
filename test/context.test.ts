@@ -62,6 +62,39 @@ describe('findMarkupProblems', () => {
       'No \\begin_layout block found.',
     );
   });
+
+  it('rejects an inset missing its inner layout (renders empty)', () => {
+    const body =
+      '\\begin_layout Standard\n\\begin_inset Note Note\nstatus open\n\n\\end_inset\n\\end_layout';
+    const problems = findMarkupProblems(body);
+    expect(problems.some((p) => p.includes('will render EMPTY'))).toBe(true);
+  });
+
+  it('rejects empty insets', () => {
+    const body =
+      '\\begin_layout Standard\n\\begin_inset Formula $x$\n\\end_inset\n\\end_layout';
+    // Formula is opaque (content on the begin line) - fine.
+    expect(findMarkupProblems(body)).toEqual([]);
+    const empty =
+      '\\begin_layout Standard\n\\begin_inset Note Note\n\\end_inset\n\\end_layout';
+    expect(findMarkupProblems(empty).some((p) => p.includes('Empty inset'))).toBe(true);
+  });
+
+  it('accepts a well-formed Note inset', () => {
+    const body = [
+      '\\begin_layout Standard',
+      '\\begin_inset Note Note',
+      'status open',
+      '',
+      '\\begin_layout Plain Layout',
+      'A note.',
+      '\\end_layout',
+      '',
+      '\\end_inset',
+      '\\end_layout',
+    ].join('\n');
+    expect(findMarkupProblems(body)).toEqual([]);
+  });
 });
 
 describe('buildDocumentContext', () => {
