@@ -173,10 +173,26 @@ async function connect() {
       ? `Connected. Cursor layout: ${info.layout}. The agent decides itself whether to reply or write into the document.`
       : 'Connected to LyX (document unsaved \u2014 outline unavailable).',
   );
-  // Keep the selector in sync when the user switches tabs in LyX.
+  // Keep the selector in sync when the user switches tabs in LyX — but
+  // ONLY while our window is focused. While blurred (e.g. the user is
+  // typing in LyX), polling would dispatch a pipe LFUN into LyX every 2s,
+  // which visibly disturbs the caret there.
   if (docPollTimer) clearInterval(docPollTimer);
   docPollTimer = setInterval(refreshDocuments, 2000);
 }
+
+window.addEventListener('blur', () => {
+  if (docPollTimer) {
+    clearInterval(docPollTimer);
+    docPollTimer = null;
+  }
+});
+window.addEventListener('focus', () => {
+  if (sessionId && !docPollTimer) {
+    docPollTimer = setInterval(refreshDocuments, 2000);
+    refreshDocuments();
+  }
+});
 
 /** Tear down the current session (agent process included) and start a new one. */
 async function reconnect() {
@@ -276,9 +292,11 @@ async function streamMessage(message) {
         ? '\u2713 selection replaced in the LyX document'
         : applied === 'rewrite-at'
           ? `\u2713 paragraph [${target ? 'p' + target : '?'}] replaced in the LyX document`
-          : applied === 'insert-top'
-            ? '\u2713 inserted at the top of the document'
-            : '\u2713 inserted at the cursor in LyX';
+          : applied === 'insert-after'
+            ? `\u2713 inserted after paragraph [${target ? 'p' + target : '?'}] in LyX`
+            : applied === 'insert-top'
+              ? '\u2713 inserted at the top of the document'
+              : '\u2713 inserted at the cursor in LyX';
   } else if (cancelled) {
     note.className = 'stopped';
     note.textContent = '(stopped)';

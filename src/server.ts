@@ -44,6 +44,13 @@ export interface Turn {
 /** Key for the unsaved-document pseudo conversation. */
 const UNSAVED_KEY = '(unsaved)';
 
+/**
+ * Documents with a body larger than this attach only their outline to
+ * prompts; the agent then reads/searches the saved file with its own
+ * tools (lazy fetch, like a coding agent in a repository).
+ */
+const OUTLINE_ONLY_BODY_LIMIT = 16_000;
+
 export interface Session {
   id: string;
   lyx: LyxServerClient;
@@ -359,6 +366,11 @@ export function createServer(options: ServerOptions) {
         let target = outcome.target;
         if (outcome.action === 'rewrite' && !selection.hasSelection) {
           positionError = 'Agent chose [ACTION: rewrite] but LyX has no active selection.';
+        } else if (outcome.action === 'insert' && selection.hasSelection) {
+          // A selection is active: paste would REPLACE it. The agent chose
+          // plain insert, not rewrite — collapse the selection so the
+          // user's text survives and the paste lands at the cursor.
+          await session.lyx.collapseSelection();
         } else if (outcome.action === 'insert-top') {
           const moved = await session.lyx.beginOfDocument();
           if (!moved) {
@@ -370,7 +382,11 @@ export function createServer(options: ServerOptions) {
             await session.lyx.breakParagraph();
           }
         } else if (outcome.action === 'rewrite-at') {
-          const gotoResult = await gotoParagraph(session, outcome.target);
+          const gotoResult = await gotoParagraph(session, outcome.target, 'rewrite');
+          target = gotoResult.target;
+          positionError = gotoResult.error;
+        } else if (outcome.action === 'insert-after') {
+          const gotoResult = await gotoParagraph(session, outcome.target, 'insert-after');
           target = gotoResult.target;
           positionError = gotoResult.error;
         }
@@ -379,9 +395,18 @@ export function createServer(options: ServerOptions) {
         } else {
           const header = (await currentHeader(session)) ?? FALLBACK_HEADER;
           const doc = assemblePasteDocument(header, outcome.body);
-          await session.clipboard.writeLyxDocument(doc, outcome.body);
-          await session.lyx.paste(); // replaces the active selection if any
-          send({ applied: outcome.action, target });
+          const written = await session.clipboard.writeLyxDocumentVerified(doc, outcome.body);
+          if (!written) {
+            send({
+              error:
+                'The .lyx payload could not be written to the clipboard; ' +
+                'nothing was pasted. Please try again.',
+            });
+          } else {
+            await sleep(100); // let the OS clipboard settle before paste
+            await session.lyx.paste(); // replaces the active selection if any
+            send({ applied: outcome.action, target });
+          }
         }
       }
       send({ done: true });
@@ -511,15 +536,28 @@ export function createServer(options: ServerOptions) {
         readDocumentContext(session),
         session.lyx.getLayout(),
       ]);
-      return (
+      const head =
         `Document context\n` +
         `================\n` +
         `File: ${session.documentPath}\n` +
         `Text class: ${ctx.textclass ?? 'unknown'}\n` +
         `LyX format: ${ctx.formatVersion ?? 'unknown'}\n` +
         `Cursor paragraph layout: ${layout}\n\n` +
-        `Document outline ([pN] ids address paragraphs):\n${renderOutline(ctx.outline)}\n\n` +
-        `Full body (.lyx markup):\n${ctx.body}\n`
+        `Document outline ([pN] ids address paragraphs):\n${renderOutline(ctx.outline)}\n\n`;
+      if (ctx.body.length <= OUTLINE_ONLY_BODY_LIMIT) {
+        // Small document: attach the full body for maximum fidelity.
+        return head + `Full body (.lyx markup):\n${ctx.body}\n`;
+      }
+      // Large document: outline only. The agent reads/searches the saved
+      // file itself with its own tools (like a coding agent in a repo).
+      return (
+        head +
+        `The document is LARGE (${ctx.body.length} chars), so only the outline above is\n` +
+        `attached. To see the exact text of any paragraph, read or search the saved\n` +
+        `file "${session.documentPath}" with your file tools — it is the exact live\n` +
+        `document, and it was saved moments ago. The [pN] ids correspond to the\n` +
+        `\\begin_layout blocks of the body in document order (inset inner layouts count\n` +
+        `too), so you can locate paragraph [pN] by counting \\begin_layout occurrences.\n`
       );
     } catch (e) {
       return (
@@ -556,19 +594,25 @@ export function createServer(options: ServerOptions) {
   }
 
   /**
-   * Move the cursor onto paragraph [pN] and select the whole paragraph.
-   * Verifies the target by copying the selection and comparing its text
-   * with the outline preview — a mis-targeted paste never happens; on
-   * mismatch we return an error and nothing is pasted.
+   * Position the cursor for a paragraph-addressed action, with target
+   * verification (copy + normalized comparison against the outline
+   * preview — a mis-targeted paste never happens; on mismatch we return
+   * an error and nothing is pasted):
+   * - mode 'rewrite': the whole paragraph [pN] stays SELECTED, so the
+   *   subsequent paste replaces it.
+   * - mode 'insert-after': the selection is collapsed to the paragraph's
+   *   end and a fresh empty paragraph is created BELOW [pN], so the paste
+   *   lands in it with its own layout (never merges into [pN]).
    */
   async function gotoParagraph(
     session: Session,
     target: number | null,
+    mode: 'rewrite' | 'insert-after',
   ): Promise<{ target: number | null; error: string | null }> {
     if (!target || target < 1) {
       return {
         target,
-        error: 'Agent chose [ACTION: rewrite-at] without a valid paragraph number.',
+        error: `Agent chose an addressed action without a valid paragraph number.`,
       };
     }
     const fail = async (error: string): Promise<{ target: number | null; error: string }> => {
@@ -605,15 +649,25 @@ export function createServer(options: ServerOptions) {
     const text = await session.clipboard.readText();
     const actual = normalizeForCompare(text ?? '');
     const expected = normalizeForCompare(entry.preview);
-    const cmpLen = Math.min(actual.length, expected.length, 60);
-    const isMatch =
-      expected === '' ? actual === '' : cmpLen > 0 && actual.slice(0, cmpLen) === expected.slice(0, cmpLen);
-    if (!isMatch) {
+    if (!isLikelyMatch(expected, actual)) {
       return fail(
         `Paragraph targeting failed: [p${target}] should start with ` +
           `"${expected.slice(0, 60)}\u2026" but the cursor landed on ` +
           `"${actual.slice(0, 60)}\u2026". Nothing was pasted.`,
       );
+    }
+    if (mode === 'insert-after') {
+      // Collapse the selection to the end of [pN] and break a fresh empty
+      // paragraph below it; the paste then merges into that empty
+      // paragraph and keeps its own layout.
+      const collapsed = await session.lyx.collapseSelectionForward();
+      if (!collapsed) {
+        return fail(`Could not move the cursor to the end of [p${target}].`);
+      }
+      const broke = await session.lyx.breakParagraph();
+      if (!broke) {
+        return fail(`Could not create a new paragraph below [p${target}].`);
+      }
     }
     return { target, error: null };
   }
@@ -622,18 +676,20 @@ export function createServer(options: ServerOptions) {
 
 // --- agent action parsing / prompt building -------------------------------
 
-type AgentAction = 'none' | 'insert' | 'insert-top' | 'rewrite' | 'rewrite-at';
+type AgentAction = 'none' | 'insert' | 'insert-top' | 'insert-after' | 'rewrite' | 'rewrite-at';
 
 interface ActionOutcome {
   action: AgentAction;
   body: string | null;
-  /** Paragraph address [pN] for rewrite-at. */
+  /** Paragraph address [pN] for rewrite-at / insert-after. */
   target: number | null;
 }
 
 /** Extract the trailing [ACTION: ...] tag and the ```lyx block from a reply. */
 export function parseAction(reply: string): ActionOutcome {
-  const m = reply.match(/\[ACTION:\s*(rewrite-at|insert-top|rewrite|insert|none)(?:\s+p(\d+))?\s*\]/i);
+  const m = reply.match(
+    /\[ACTION:\s*(rewrite-at|insert-after|insert-top|rewrite|insert|none)(?:\s+p(\d+))?\s*\]/i,
+  );
   const action = ((m?.[1] ?? 'none').toLowerCase() as AgentAction);
   const target = m?.[2] ? Number.parseInt(m[2], 10) : null;
   const body = action === 'none' ? null : extractBodyLayouts(reply);
@@ -662,10 +718,18 @@ export function buildAutoPrompt(
     '- [ACTION: none] to reply in prose only (questions, explanations, ' +
       'discussion, outlines, planning).',
     '- [ACTION: insert] to insert NEW content at the CURSOR (its current ' +
-      'position, which you do not control): include a ```lyx fenced block.',
+      'position, which you do not control): include a ```lyx fenced block. ' +
+      'CAREFUL: the paste happens INSIDE the cursor\'s paragraph, so the ' +
+      'first pasted paragraph merges into it and takes that paragraph\'s ' +
+      'layout — only use this when the user clearly wants the content at ' +
+      'the cursor.',
     '- [ACTION: insert-top] to insert NEW content at the VERY BEGINNING of ' +
       'the document (titles, abstracts, anything that belongs above the ' +
       'first paragraph): include a ```lyx fenced block.',
+    '- [ACTION: insert-after pN] to insert NEW content as its own ' +
+      'paragraph(s) right AFTER paragraph [pN] from the outline (use this ' +
+      'when the user asks to add a section/paragraph to the document and ' +
+      'the position follows from the outline): include a ```lyx fenced block.',
     '- [ACTION: rewrite] to REPLACE the currently selected text (given ' +
       'below): include a ```lyx fenced block with the complete replacement.',
     '- [ACTION: rewrite-at pN] to REPLACE the entire paragraph [pN] from ' +
@@ -712,6 +776,13 @@ export function buildAutoPrompt(
     for (const att of attachments) {
       parts.push('', `--- ${att.name} (stored at: ${att.path}) ---`);
       if (att.text) {
+        parts.push(
+          '[Excerpt below may be TRUNCATED. If you cannot find something ' +
+            'in it, read or search the FULL stored file at the path above ' +
+            'with your file tools before concluding it is absent. When ' +
+            'searching, use short distinctive substrings — the user may ' +
+            'misspell or translate terms.]',
+        );
         parts.push(att.text);
       } else {
         parts.push(
@@ -826,6 +897,31 @@ function buildMarkupRetryPrompt(action: AgentAction, problems: string[]): string
  */
 export function normalizeForCompare(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+/**
+ * Fuzzy paragraph-targeting match. LyX's UnicodeText export differs from
+ * the file's text in ways we cannot normalize away: layout environment
+ * labels are prepended ("Abstract", "Summary"), and math insets render
+ * inline ($P$ -> "P") while the parser preview has no inset content. So
+ * instead of a strict prefix compare, we slide overlapping windows over
+ * the expected text and require most of them to appear in the actual
+ * text. A genuinely different paragraph (disjoint text) still fails.
+ */
+export function isLikelyMatch(expected: string, actual: string): boolean {
+  if (expected === '') return actual === '';
+  const e = expected.slice(0, 160);
+  const a = actual.slice(0, 400);
+  const WIN = 16;
+  const STRIDE = 12;
+  let total = 0;
+  let hits = 0;
+  for (let i = 0; i + WIN <= e.length; i += STRIDE) {
+    total++;
+    if (a.includes(e.slice(i, i + WIN))) hits++;
+  }
+  if (total === 0) return a.startsWith(e);
+  return hits / total >= 0.6;
 }
 
 // --- history persistence ---------------------------------------------------

@@ -5,6 +5,7 @@ import type {
   ActiveSession,
   ClientConnection,
 } from '@agentclientprotocol/sdk';
+import fs from 'node:fs/promises';
 import { spawnAgentProcess, type AgentProcess } from './agent-process.js';
 
 export interface AcpClientOptions {
@@ -31,6 +32,52 @@ export class AcpClient {
   constructor(options: AcpClientOptions) {
     this.options = options;
     this.app = client({ name: 'lyx-acp-assist' });
+    this.registerClientHandlers();
+  }
+
+  /**
+   * Client-side handlers the agent may call mid-turn:
+   * - fs/read_text_file: serve file reads (lazy document access).
+   * - fs/write_text_file: REFUSED. LyX is the single writer of the .lyx
+   *   file; agents must not write behind LyX's back (see AGENTS.md).
+   * - session/request_permission: auto-approve the agent's tool calls.
+   *   This app deliberately delegates all work to the agent process.
+   */
+  private registerClientHandlers(): void {
+    this.app.onRequest('fs/read_text_file', async (context) => {
+      const { path, line, limit } = context.params as {
+        path: string;
+        line?: number | null;
+        limit?: number | null;
+      };
+      const raw = await fs.readFile(path, 'utf8');
+      const lines = raw.split('\n');
+      const start = line && line > 0 ? line - 1 : 0;
+      const slice =
+        limit && limit > 0 ? lines.slice(start, start + limit) : lines.slice(start);
+      return { content: slice.join('\n') };
+    });
+
+    this.app.onRequest('fs/write_text_file', () => {
+      throw new Error(
+        'Writing files is not allowed: LyX is the single writer of the document. ' +
+          'Reply with content and an [ACTION: ...] tag instead.',
+      );
+    });
+
+    this.app.onRequest('session/request_permission', (context) => {
+      const params = context.params as {
+        toolCall?: { title?: string };
+        options: Array<{ optionId: string; kind: string }>;
+      };
+      console.log(`[acp] allowing tool call: ${params.toolCall?.title ?? 'unknown'}`);
+      const best =
+        params.options.find((o) => o.kind === 'allow_once') ??
+        params.options.find((o) => o.kind === 'allow_always') ??
+        params.options[0];
+      if (!best) return { outcome: { outcome: 'cancelled' as const } };
+      return { outcome: { outcome: 'selected' as const, optionId: best.optionId } };
+    });
   }
 
   async start(): Promise<void> {

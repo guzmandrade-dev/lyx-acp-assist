@@ -302,6 +302,17 @@ export class LyxServerClient extends EventEmitter {
     return (await this.tryRequest('paragraph-select')) !== null;
   }
 
+  /** Collapse an active selection, moving the cursor to its end. */
+  async collapseSelectionForward(): Promise<boolean> {
+    return (await this.tryRequest('char-forward')) !== null;
+  }
+
+  /** Collapse an active selection around the current cursor position. */
+  async collapseSelection(): Promise<void> {
+    await this.tryRequest('char-forward');
+    await this.tryRequest('char-backward');
+  }
+
   /**
    * Collapse any active selection (moving the cursor collapses it).
    * Selections persist across pipe commands, so failures must clean up.
