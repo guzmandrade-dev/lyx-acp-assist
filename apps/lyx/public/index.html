@@ -8,8 +8,18 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <header>
-    <h1>LyX ACP Assist</h1>
+  <header id="titlebar">
+    <div class="titlebar-left">
+      <span class="title">LyX Assist</span>
+      <select id="doc-select" title="Active LyX document"></select>
+    </div>
+    <div class="titlebar-right">
+      <button id="pin" title="Toggle always on top">&#128204;</button>
+      <button id="close" title="Close">&#10005;</button>
+    </div>
+  </header>
+
+  <div class="context">
     <div id="status" class="status">checking LyX&hellip;</div>
     <div id="doc" class="doc"></div>
     <details class="agent-settings">
@@ -18,7 +28,7 @@
       <label>Args <input id="agent-args" type="text" value="acp" /></label>
       <small>Examples: opencode acp &middot; copilot --acp &middot; goose acp</small>
     </details>
-  </header>
+  </div>
 
   <main id="chat" aria-live="polite"></main>
 
@@ -31,8 +41,8 @@
     <textarea id="input" rows="3"
       placeholder="Message the agent. In Rewrite/Insert modes the reply is applied to the LyX document."></textarea>
     <div class="row">
-      <button id="send">Send</button>
       <button id="undo" title="Undo the last agent edit inside LyX">Undo edit</button>
+      <button id="send">Send</button>
     </div>
   </footer>
 

@@ -9,16 +9,60 @@ body {
   height: 100vh;
   font-family: system-ui, sans-serif;
   font-size: 14px;
+  border: 1px solid rgba(128, 128, 128, 0.4);
+  border-radius: 8px;
+  overflow: hidden;
 }
 
-header {
-  padding: 10px 14px;
+#titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  background: rgba(128, 128, 128, 0.15);
+  -webkit-app-region: drag;
+  user-select: none;
+}
+
+.titlebar-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.title {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+#doc-select {
+  max-width: 200px;
+  font-size: 12px;
+  -webkit-app-region: no-drag;
+}
+
+.titlebar-right {
+  display: flex;
+  gap: 4px;
+  -webkit-app-region: no-drag;
+}
+
+.titlebar-right button {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 2px 6px;
+}
+
+.titlebar-right button:hover {
+  background: rgba(128, 128, 128, 0.3);
+}
+
+.context {
+  padding: 6px 12px 8px;
   border-bottom: 1px solid rgba(128, 128, 128, 0.3);
-}
-
-h1 {
-  font-size: 16px;
-  margin: 0 0 4px;
 }
 
 .status {
@@ -36,10 +80,34 @@ h1 {
   text-overflow: ellipsis;
 }
 
+.agent-settings {
+  margin-top: 6px;
+  font-size: 12px;
+}
+.agent-settings label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0;
+}
+.agent-settings input {
+  flex: 1;
+  font-family: inherit;
+  font-size: 12px;
+  padding: 3px 6px;
+}
+.agent-settings summary {
+  cursor: pointer;
+  user-select: none;
+}
+.agent-settings small {
+  opacity: 0.7;
+}
+
 main {
   flex: 1;
   overflow-y: auto;
-  padding: 12px 14px;
+  padding: 10px 12px;
 }
 
 .msg {
@@ -79,34 +147,10 @@ main {
 
 footer {
   border-top: 1px solid rgba(128, 128, 128, 0.3);
-  padding: 10px 14px;
+  padding: 10px 12px;
   display: flex;
   flex-direction: column;
   gap: 8px;
-}
-
-.agent-settings {
-  margin-top: 6px;
-  font-size: 12px;
-}
-.agent-settings label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin: 4px 0;
-}
-.agent-settings input {
-  flex: 1;
-  font-family: inherit;
-  font-size: 12px;
-  padding: 3px 6px;
-}
-.agent-settings summary {
-  cursor: pointer;
-  user-select: none;
-}
-.agent-settings small {
-  opacity: 0.7;
 }
 
 .mode {

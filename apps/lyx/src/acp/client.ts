@@ -14,6 +14,13 @@ export interface AcpClientOptions {
   cwd?: string;
 }
 
+export interface PromptOptions {
+  /** Called with each text chunk as it streams in. */
+  onChunk?: (chunk: string) => void;
+  /** Abort with an error if the agent takes longer than this. */
+  timeoutMs?: number;
+}
+
 export class AcpClient {
   private app: ClientApp;
   private process: AgentProcess | null = null;
@@ -53,21 +60,40 @@ export class AcpClient {
   }
 
   /** Send content blocks and return the agent's full text response. */
-  async prompt(sessionId: string, content: ContentBlock[]): Promise<string> {
+  async prompt(
+    sessionId: string,
+    content: ContentBlock[],
+    options: PromptOptions = {},
+  ): Promise<string> {
     const active = this.sessions.get(sessionId);
     if (!active) throw new Error('Session not found');
-    await active.prompt(content);
-    return this.readTextFromResponse(active);
-  }
 
-  private async readTextFromResponse(active: ActiveSession): Promise<string> {
+    const timeoutMs = options.timeoutMs ?? 180_000;
+
+    const nextWithTimeout = async (): Promise<Awaited<ReturnType<ActiveSession['nextUpdate']>>> => {
+      let timer: NodeJS.Timeout | undefined;
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`Agent did not finish within ${timeoutMs}ms.`)),
+          timeoutMs,
+        );
+      });
+      try {
+        return await Promise.race([active.nextUpdate(), timeout]);
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+
+    await active.prompt(content);
     let text = '';
     for (;;) {
-      const message = await active.nextUpdate();
+      const message = await nextWithTimeout();
       if (message.kind === 'stop') return text;
       const update = message.update;
       if (update.sessionUpdate === 'agent_message_chunk' && update.content.type === 'text') {
         text += update.content.text;
+        options.onChunk?.(update.content.text);
       }
     }
   }

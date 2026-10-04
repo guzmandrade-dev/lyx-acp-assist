@@ -207,6 +207,33 @@ Response latency is dominated by the agent model. We currently attach the
 full document body with every prompt; for large documents, consider
 outline-only context with lazy body fetch (future work).
 
+## Multi-document, streaming, history (2026-10-03)
+
+The LyXServer pipe follows LyX's ACTIVE view, so documents are handled
+dynamically:
+- Every request re-reads `server-get-filename`; conversations are keyed
+  per document path (unsaved buffers share the `(unsaved)` key).
+- The app polls `/documents` every 2s, showing a tab selector; switching
+  sends `file-open <path>` which activates an already-open buffer.
+- Chat history persists to `<userData>/history/<hash>.json` per document
+  (Electron userData is `%APPDATA%/Electron` until we set an app id /
+  package the app).
+- Chat streams via SSE (`POST /chat/stream`, `data: {"text": ...}` frames,
+  ending `{"done": true}`); agent updates have a 240s timeout so a stuck
+  agent surfaces an error instead of hanging silently.
+
+**Pipe client rule (important):** never consume stale/unmatched replies
+from the buffer — Windows broadcast duplicates of earlier requests would
+be mistaken for fresh replies. Waiters are registered before sending, so
+genuine replies always reach their waiter directly.
+
+## Floating window UI (2026-10-03)
+
+Frameless (`frame: false`), always-on-top by default with a pin toggle,
+skipTaskbar, drag region in the title bar. Settings panel persists for
+the session. UI calls Electron window controls through a preload bridge
+(`window.electron`).
+
 ## Validated end-to-end (2026-10-03, opencode ACP agent)
 
 Full flagship loop with the Electron app running against live LyX:

@@ -102,8 +102,10 @@ export class LyxServerClient extends EventEmitter {
   /** Send an LFUN and wait for its INFO/ERROR reply. Returns the reply line. */
   async request(func: string, arg = '', timeoutMs?: number): Promise<string> {
     const timeout = timeoutMs ?? this.timeoutMs;
-    const found = this.takeUnconsumed(func);
-    if (found !== undefined) return found;
+    // Note: do NOT consume previously-unmatched replies here. The Windows
+    // pipe broadcasts duplicates, and stale duplicates of earlier requests
+    // would be mistaken for fresh replies. Waiters are registered before
+    // the request is sent, so genuine replies always reach the waiter.
 
     const promise = new Promise<string | undefined>((resolve) => {
       const waiter: Waiter = { func, resolve };
@@ -135,19 +137,6 @@ export class LyxServerClient extends EventEmitter {
     } catch {
       return null;
     }
-  }
-
-  private takeUnconsumed(func: string): string | undefined {
-    const idx = this.unconsumed.findIndex((l) => this.matches(l, func));
-    if (idx >= 0) return this.unconsumed.splice(idx, 1)[0];
-    return undefined;
-  }
-
-  private matches(line: string, func: string): boolean {
-    return (
-      line.startsWith(`INFO:${this.clientName}:${func}:`) ||
-      line.startsWith(`ERROR:${this.clientName}:${func}:`)
-    );
   }
 
   // --- Reply stream ------------------------------------------------------
