@@ -165,6 +165,11 @@ describe('agent action parsing', () => {
     expect(after.action).toBe('insert-after');
     expect(after.target).toBe(12);
     expect(after.body).toBeTruthy();
+
+    const del = parseAction('Removing that paragraph as requested.\n[ACTION: delete-at p3]');
+    expect(del.action).toBe('delete-at');
+    expect(del.target).toBe(3);
+    expect(del.body).toBeNull();
   });
 
   it('normalizes typography so file text and clipboard text compare equal', () => {

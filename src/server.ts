@@ -354,6 +354,21 @@ export function createServer(options: ServerOptions) {
         send({ cancelled: true });
       } else if (outcome.action === 'none') {
         send({ action: 'none' });
+      } else if (outcome.action === 'delete-at') {
+        // Delete needs no ```lyx block: walk, verify, select, delete the
+        // text, then merge the leftover empty paragraph away.
+        const gotoResult = await gotoParagraph(session, outcome.target, 'rewrite');
+        if (gotoResult.error) {
+          send({ error: gotoResult.error });
+        } else {
+          const deleted = await session.lyx.deleteSelection();
+          if (deleted) {
+            await session.lyx.mergeAwayParagraph();
+            send({ applied: 'delete-at', target: outcome.target });
+          } else {
+            send({ error: `LyX could not delete paragraph [p${outcome.target}].` });
+          }
+        }
       } else {
         // A write action: position the cursor, then paste.
         if (!outcome.body) {
@@ -684,7 +699,14 @@ export function createServer(options: ServerOptions) {
 
 // --- agent action parsing / prompt building -------------------------------
 
-type AgentAction = 'none' | 'insert' | 'insert-top' | 'insert-after' | 'rewrite' | 'rewrite-at';
+type AgentAction =
+  | 'none'
+  | 'insert'
+  | 'insert-top'
+  | 'insert-after'
+  | 'rewrite'
+  | 'rewrite-at'
+  | 'delete-at';
 
 interface ActionOutcome {
   action: AgentAction;
@@ -696,7 +718,7 @@ interface ActionOutcome {
 /** Extract the trailing [ACTION: ...] tag and the ```lyx block from a reply. */
 export function parseAction(reply: string): ActionOutcome {
   const m = reply.match(
-    /\[ACTION:\s*(rewrite-at|insert-after|insert-top|rewrite|insert|none)(?:\s+p(\d+))?\s*\]/i,
+    /\[ACTION:\s*(delete-at|rewrite-at|insert-after|insert-top|rewrite|insert|none)(?:\s+p(\d+))?\s*\]/i,
   );
   const action = ((m?.[1] ?? 'none').toLowerCase() as AgentAction);
   const target = m?.[2] ? Number.parseInt(m[2], 10) : null;
@@ -740,6 +762,9 @@ export function buildAutoPrompt(
       'the position follows from the outline): include a ```lyx fenced block.',
     '- [ACTION: rewrite] to REPLACE the currently selected text (given ' +
       'below): include a ```lyx fenced block with the complete replacement.',
+    '- [ACTION: delete-at pN] to DELETE the entire paragraph [pN] from the ' +
+      'outline (use when the user asks to remove a specific paragraph): ' +
+      'NO fenced block, just the tag.',
     '- [ACTION: rewrite-at pN] to REPLACE the entire paragraph [pN] from ' +
       'the outline (use this when the user asks to modify, fix or remove ' +
       'content in a specific paragraph and nothing is selected): include a ' +

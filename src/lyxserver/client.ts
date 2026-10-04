@@ -314,6 +314,33 @@ export class LyxServerClient extends EventEmitter {
   }
 
   /**
+   * Delete the active selection (LyX's delete LFUNs remove the selection
+   * first). Tolerates "Command disabled" as a no-op.
+   */
+  async deleteSelection(): Promise<boolean> {
+    try {
+      await this.request('char-delete-forward', 'confirm');
+      return true;
+    } catch (e) {
+      if (e instanceof LyxPipeError && e.message.includes('Command disabled')) return false;
+      throw e;
+    }
+  }
+
+  /**
+   * Merge an EMPTY paragraph at the cursor away: backspace merges it into
+   * the previous paragraph; if it is the first paragraph, delete merges it
+   * with the next. Either way the paragraph break disappears (LyX's
+   * backspace/delete at a paragraph boundary).
+   */
+  async mergeAwayParagraph(): Promise<void> {
+    // tryRequest resolves successful replies with empty data to '' (falsy),
+    // so compare against null, like all other tryRequest wrappers.
+    if ((await this.tryRequest('char-delete-backward')) !== null) return;
+    await this.tryRequest('char-delete-forward');
+  }
+
+  /**
    * Collapse any active selection (moving the cursor collapses it).
    * Selections persist across pipe commands, so failures must clean up.
    */

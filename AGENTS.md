@@ -332,6 +332,12 @@ intent; the agent must end its reply with a trailing action tag:
   (`char-forward`), `paragraph-break` below it, paste into the fresh empty
   paragraph (no merge into [pN]); for "add a section/paragraph" requests
   where the position follows from the outline
+- `[ACTION: delete-at pN]` — delete paragraph [pN]: walk + verify + select,
+  `char-delete-forward` (removes the text), then `mergeAwayParagraph()`
+  (backspace merges the leftover empty paragraph into the previous one,
+  delete-forward merges with the next when it was the first paragraph).
+  tryRequest resolves successful empty-data replies to '' (falsy!) —
+  always compare `!== null`.
 - `[ACTION: rewrite]` — replace the active selection with the block
 - `[ACTION: rewrite-at pN]` — replace entire paragraph [pN] (outline
   address): `buffer-begin` + N-1 × `paragraph-down` + `paragraph-select`,
