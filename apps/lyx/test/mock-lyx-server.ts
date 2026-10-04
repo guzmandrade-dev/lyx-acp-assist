@@ -249,6 +249,55 @@ export class MockLyxServer {
         this.moveCursor(cursor.p, cursor.offset + 1);
         return { data: '' };
       }
+      case 'char-delete-forward': {
+        if (this.selection) {
+          // Deleting the selection: remove the text and collapse the cursor.
+          const { p, start, end } = this.selection;
+          this.paragraphs[p].text =
+            this.paragraphs[p].text.slice(0, start) + this.paragraphs[p].text.slice(end);
+          this.moveCursor(p, start);
+          return { data: '' };
+        }
+        if (!para) return { error: 'Command disabled' };
+        if (cursor.offset < para.text.length) {
+          para.text = para.text.slice(0, cursor.offset) + para.text.slice(cursor.offset + 1);
+          return { data: '' };
+        }
+        // At the paragraph end: merge the NEXT paragraph into this one
+        // (deleting the paragraph break), like LyX's delete key.
+        if (cursor.p < this.paragraphs.length - 1) {
+          para.text += this.paragraphs[cursor.p + 1].text;
+          this.paragraphs.splice(cursor.p + 1, 1);
+          return { data: '' };
+        }
+        return { error: 'Command disabled' };
+      }
+      case 'char-delete-backward': {
+        if (this.selection) {
+          const { p, start, end } = this.selection;
+          this.paragraphs[p].text =
+            this.paragraphs[p].text.slice(0, start) + this.paragraphs[p].text.slice(end);
+          this.moveCursor(p, start);
+          return { data: '' };
+        }
+        if (!para) return { error: 'Command disabled' };
+        if (cursor.offset > 0) {
+          para.text = para.text.slice(0, cursor.offset - 1) + para.text.slice(cursor.offset);
+          this.moveCursor(cursor.p, cursor.offset - 1);
+          return { data: '' };
+        }
+        // At the paragraph start: merge this paragraph into the PREVIOUS
+        // one (deleting the paragraph break), like LyX's backspace.
+        if (cursor.p > 0) {
+          const prev = this.paragraphs[cursor.p - 1];
+          const at = prev.text.length;
+          prev.text += para.text;
+          this.paragraphs.splice(cursor.p, 1);
+          this.moveCursor(cursor.p - 1, at);
+          return { data: '' };
+        }
+        return { error: 'Command disabled' };
+      }
       case 'char-backward': {
         if (this.selection) {
           this.moveCursor(this.selection.p, this.selection.start);

@@ -108,4 +108,30 @@ describe('LyxServerClient against mock LyX', () => {
     const [words] = await client.getSelectionStats();
     expect(words).toBe(3);
   });
+
+  it('executes the delete-at pN choreography', async () => {
+    const { mock, client } = await startMock([
+      { layout: 'Standard', text: 'first' },
+      { layout: 'Standard', text: 'delete me' },
+      { layout: 'Standard', text: 'third' },
+    ]);
+    // Walk to p2, select, delete the text, merge the empty paragraph away.
+    await client.beginOfDocument();
+    expect(await client.paragraphDown()).toBe(true);
+    expect(await client.paragraphSelect()).toBe(true);
+    expect(await client.deleteSelection()).toBe(true);
+    expect(mock.paragraphs.map((p) => p.text)).toEqual(['first', '', 'third']);
+    await client.mergeAwayParagraph();
+    expect(mock.paragraphs.map((p) => p.text)).toEqual(['first', 'third']);
+    // Deleting the FIRST paragraph merges it into the next one instead.
+    const { mock: m2, client: c2 } = await startMock([
+      { layout: 'Standard', text: 'gone' },
+      { layout: 'Standard', text: 'kept' },
+    ]);
+    await c2.beginOfDocument();
+    await c2.paragraphSelect();
+    await c2.deleteSelection();
+    await c2.mergeAwayParagraph();
+    expect(m2.paragraphs.map((p) => p.text)).toEqual(['kept']);
+  });
 });

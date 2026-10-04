@@ -294,9 +294,11 @@ async function streamMessage(message) {
           ? `\u2713 paragraph [${target ? 'p' + target : '?'}] replaced in the LyX document`
           : applied === 'insert-after'
             ? `\u2713 inserted after paragraph [${target ? 'p' + target : '?'}] in LyX`
-            : applied === 'insert-top'
-              ? '\u2713 inserted at the top of the document'
-              : '\u2713 inserted at the cursor in LyX';
+            : applied === 'delete-at'
+              ? `\u2713 paragraph [${target ? 'p' + target : '?'}] deleted from LyX`
+              : applied === 'insert-top'
+                ? '\u2713 inserted at the top of the document'
+                : '\u2713 inserted at the cursor in LyX';
   } else if (cancelled) {
     note.className = 'stopped';
     note.textContent = '(stopped)';
