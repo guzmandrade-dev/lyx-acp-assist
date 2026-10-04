@@ -2,6 +2,8 @@
 
 let sessionId = null;
 let busy = false;
+let currentAbort = null;
+let docPollTimer = null;
 
 const chat = document.getElementById('chat');
 const statusEl = document.getElementById('status');
@@ -9,9 +11,31 @@ const docEl = document.getElementById('doc');
 const docSelect = document.getElementById('doc-select');
 const input = document.getElementById('input');
 const sendBtn = document.getElementById('send');
+const stopBtn = document.getElementById('stop');
 const undoBtn = document.getElementById('undo');
 const pinBtn = document.getElementById('pin');
-const closeBtn = document.getElementById('close');
+const reconnectBtn = document.getElementById('reconnect');
+const cmdEl = document.getElementById('agent-cmd');
+const argsEl = document.getElementById('agent-args');
+
+const SETTINGS_KEY = 'lyx-acp-agent-settings';
+
+function loadSettings() {
+  try {
+    const s = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
+    if (typeof s.command === 'string' && s.command) cmdEl.value = s.command;
+    if (typeof s.args === 'string' && s.args) argsEl.value = s.args;
+  } catch {
+    /* ignore corrupted settings */
+  }
+}
+
+function saveSettings() {
+  localStorage.setItem(
+    SETTINGS_KEY,
+    JSON.stringify({ command: cmdEl.value.trim(), args: argsEl.value.trim() }),
+  );
+}
 
 function addMessage(role, content, note) {
   const div = document.createElement('div');
@@ -28,19 +52,34 @@ function addMessage(role, content, note) {
   }
   chat.appendChild(div);
   chat.scrollTop = chat.scrollHeight;
-  return bubble;
+  return { div, bubble };
 }
 
-function setBusy(state, label) {
+function showTyping() {
+  hideTyping();
+  const t = document.createElement('div');
+  t.id = 'typing';
+  t.className = 'msg assistant';
+  t.innerHTML = '<span class="bubble"><span class="dot"></span>' +
+    '<span class="dot"></span><span class="dot"></span></span>';
+  chat.appendChild(t);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function hideTyping() {
+  document.getElementById('typing')?.remove();
+}
+
+function setBusy(state) {
   busy = state;
   sendBtn.disabled = state;
   undoBtn.disabled = state;
+  stopBtn.style.display = state ? '' : 'none';
   document.body.classList.toggle('busy', state);
-  if (state) {
-    addMessage('assistant', label ?? 'thinking\u2026');
-  } else {
-    const indicator = document.getElementById('busy-indicator');
-    if (indicator) indicator.remove();
+  if (state) showTyping();
+  else {
+    hideTyping();
+    currentAbort = null;
   }
 }
 
@@ -106,8 +145,9 @@ async function refreshDocuments() {
 
 async function connect() {
   await refreshStatus();
-  const cmd = document.getElementById('agent-cmd').value.trim() || 'opencode';
-  const rawArgs = document.getElementById('agent-args').value.trim() || 'acp';
+  saveSettings();
+  const cmd = cmdEl.value.trim() || 'opencode';
+  const rawArgs = argsEl.value.trim() || 'acp';
   const args = rawArgs.split(/\s+/);
   const info = await api('/api/session', {
     method: 'POST',
@@ -122,24 +162,59 @@ async function connect() {
   addMessage(
     'assistant',
     info.outline
-      ? `Connected. Cursor layout: ${info.layout}`
-      : 'Connected to LyX (document unsaved \u2014 outline unavailable).'
+      ? `Connected. Cursor layout: ${info.layout}. The agent decides itself whether to reply or write into the document.`
+      : 'Connected to LyX (document unsaved \u2014 outline unavailable).',
   );
   // Keep the selector in sync when the user switches tabs in LyX.
-  setInterval(refreshDocuments, 2000);
+  if (docPollTimer) clearInterval(docPollTimer);
+  docPollTimer = setInterval(refreshDocuments, 2000);
 }
 
-function selectedMode() {
-  return document.querySelector('input[name=mode]:checked')?.value ?? 'chat';
+/** Tear down the current session (agent process included) and start a new one. */
+async function reconnect() {
+  if (busy) return;
+  reconnectBtn.disabled = true;
+  try {
+    if (sessionId) {
+      try {
+        await api(`/api/session/${sessionId}`, { method: 'DELETE' });
+      } catch {
+        /* session already gone */
+      }
+      sessionId = null;
+    }
+    chat.innerHTML = '';
+    await connect();
+  } catch (e) {
+    statusEl.textContent = `failed to connect: ${e.message}`;
+    statusEl.className = 'status bad';
+  } finally {
+    reconnectBtn.disabled = false;
+  }
 }
 
-async function streamChat(message) {
-  const bubble = addMessage('assistant', '');
-  let started = false;
-  const res = await fetch(`/api/session/${sessionId}/chat/stream`, {
+/** Strip the [ACTION: ...] tag; when applied, also strip the applied lyx block. */
+function displayText(full, applied) {
+  let text = full.replace(/\[ACTION:\s*\w+\s*\]/gi, '').trim();
+  if (applied) {
+    text = text.replace(/```lyx\s*\n[\s\S]*?```\s*/g, '').trim();
+  }
+  return text;
+}
+
+/**
+ * One unified streaming request. The agent decides whether to reply in prose
+ * or write into the document ([ACTION: none|insert|rewrite]).
+ */
+async function streamMessage(message) {
+  const { bubble } = addMessage('assistant', '');
+  const ctrl = new AbortController();
+  currentAbort = ctrl;
+  const res = await fetch(`/api/session/${sessionId}/message/stream`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ message }),
+    signal: ctrl.signal,
   });
   if (!res.ok || !res.body) {
     const body = await res.json().catch(() => ({}));
@@ -149,7 +224,11 @@ async function streamChat(message) {
   const decoder = new TextDecoder();
   let buffer = '';
   let full = '';
+  let applied = null;
+  let target = null;
+  let cancelled = false;
   let error = null;
+  let started = false;
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -165,16 +244,38 @@ async function streamChat(message) {
       } else if (payload.text) {
         full += payload.text;
         started = true;
+        hideTyping();
         bubble.textContent = full;
         chat.scrollTop = chat.scrollHeight;
-      } else if (payload.done) {
-        // handled below
+      } else if (payload.applied) {
+        applied = payload.applied;
+        target = payload.target;
+      } else if (payload.cancelled) {
+        cancelled = true;
       }
+      // {done: true} ends the stream naturally
     }
   }
   if (error) throw new Error(error);
-  if (!started) bubble.textContent = '(no response)';
-  return full;
+  bubble.textContent = displayText(full, applied) || (started ? '' : '(no response)');
+  const note = document.createElement('span');
+  if (applied) {
+    note.className = 'applied';
+    note.textContent =
+      applied === 'rewrite'
+        ? '\u2713 selection replaced in the LyX document'
+        : applied === 'rewrite-at'
+          ? `\u2713 paragraph [${target ? 'p' + target : '?'}] replaced in the LyX document`
+          : applied === 'insert-top'
+            ? '\u2713 inserted at the top of the document'
+            : '\u2713 inserted at the cursor in LyX';
+  } else if (cancelled) {
+    note.className = 'stopped';
+    note.textContent = '(stopped)';
+  }
+  if (note.textContent) bubble.parentElement.appendChild(note);
+  chat.scrollTop = chat.scrollHeight;
+  return { full, applied, cancelled };
 }
 
 async function send() {
@@ -185,23 +286,13 @@ async function send() {
   addMessage('user', message);
   setBusy(true);
   try {
-    if (selectedMode() === 'chat') {
-      await streamChat(message);
-    } else {
-      const path = selectedMode() === 'rewrite'
-        ? `/api/session/${sessionId}/rewrite-selection`
-        : `/api/session/${sessionId}/insert`;
-      const result = await api(path, {
-        method: 'POST',
-        body: JSON.stringify({ message }),
-      });
-      const note = result.pasted
-        ? { ok: true, text: '\u2713 applied to the LyX document' }
-        : undefined;
-      addMessage('assistant', stripLyxBlock(result.reply), note);
-    }
+    await streamMessage(message);
   } catch (e) {
-    addMessage('assistant', `error: ${e.message}`);
+    if (e.name === 'AbortError') {
+      addMessage('assistant', '(stopped)');
+    } else {
+      addMessage('assistant', `error: ${e.message}`);
+    }
   } finally {
     setBusy(false);
     await refreshStatus();
@@ -209,16 +300,21 @@ async function send() {
   }
 }
 
-function stripLyxBlock(reply) {
-  // The fenced .lyx payload was applied to the document; show only prose.
-  return reply.replace(/```lyx\s*\n[\s\S]*?```\s*/g, '').trim();
-}
-
 sendBtn.addEventListener('click', send);
 input.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
     e.preventDefault();
     send();
+  }
+});
+
+stopBtn.addEventListener('click', async () => {
+  if (!busy || !sessionId) return;
+  currentAbort?.abort();
+  try {
+    await api(`/api/session/${sessionId}/cancel`, { method: 'POST' });
+  } catch {
+    /* the stream ends with the abort anyway */
   }
 });
 
@@ -232,15 +328,19 @@ undoBtn.addEventListener('click', async () => {
   }
 });
 
+reconnectBtn.addEventListener('click', reconnect);
+
+let lyxFollowMode = true;
 pinBtn.addEventListener('click', () => {
-  // Toggle always-on-top through the Electron window.
+  lyxFollowMode = !lyxFollowMode;
+  pinBtn.classList.toggle('off', !lyxFollowMode);
+  pinBtn.title = lyxFollowMode
+    ? 'Float on top while LyX is focused'
+    : 'Floating disabled';
   window.electron?.toggleAlwaysOnTop?.();
 });
 
-closeBtn.addEventListener('click', () => {
-  window.electron?.close?.();
-});
-
+loadSettings();
 connect().catch((e) => {
   statusEl.textContent = `failed to connect: ${e.message}`;
   statusEl.className = 'status bad';

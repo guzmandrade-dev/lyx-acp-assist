@@ -240,9 +240,20 @@ export class LyxServerClient extends EventEmitter {
     }
   }
 
-  /** Copy the current selection to the clipboard (keeps the selection active). */
-  async copySelection(): Promise<void> {
-    await this.request('copy');
+  /**
+   * Copy the current selection to the clipboard (keeps the selection active).
+   * Returns false when LyX rejected the copy ("Command disabled"), i.e. there
+   * is no usable selection — the caller must then treat it as no selection,
+   * since the clipboard may still hold a previous copy.
+   */
+  async copySelection(): Promise<boolean> {
+    try {
+      await this.request('copy');
+      return true;
+    } catch (e) {
+      if (e instanceof LyxPipeError && e.message.includes('Command disabled')) return false;
+      throw e;
+    }
   }
 
   /** Paste the clipboard at the cursor, replacing the active selection. */
@@ -255,8 +266,58 @@ export class LyxServerClient extends EventEmitter {
     await this.request('self-insert', text);
   }
 
+  /** Move the cursor to the very beginning of the document. */
+  async beginOfDocument(): Promise<boolean> {
+    return (await this.tryRequest('buffer-begin')) !== null;
+  }
+
+  /**
+   * Split the paragraph at the cursor. At buffer-begin this leaves an empty
+   * paragraph above the former first paragraph, so a paste merges into it
+   * instead of into the existing text (which would discard the pasted layout).
+   */
+  async breakParagraph(): Promise<boolean> {
+    try {
+      await this.request('paragraph-break');
+      return true;
+    } catch (e) {
+      if (e instanceof LyxPipeError && e.message.includes('Command disabled')) return false;
+      throw e;
+    }
+  }
+
+  /** Move the cursor to the beginning of the next paragraph. */
+  async paragraphDown(): Promise<boolean> {
+    try {
+      await this.request('paragraph-down');
+      return true;
+    } catch (e) {
+      if (e instanceof LyxPipeError && e.message.includes('Command disabled')) return false;
+      throw e;
+    }
+  }
+
+  /** Select the entire paragraph the cursor is in. */
+  async paragraphSelect(): Promise<boolean> {
+    return (await this.tryRequest('paragraph-select')) !== null;
+  }
+
+  /**
+   * Collapse any active selection (moving the cursor collapses it).
+   * Selections persist across pipe commands, so failures must clean up.
+   */
+  async clearSelection(): Promise<void> {
+    await this.tryRequest('buffer-begin');
+  }
+
   async undo(): Promise<void> {
-    await this.request('undo');
+    try {
+      await this.request('undo');
+    } catch (e) {
+      // "Command disabled" means there is nothing to undo: not an error.
+      if (e instanceof LyxPipeError && e.message.includes('Command disabled')) return;
+      throw e;
+    }
   }
 }
 
