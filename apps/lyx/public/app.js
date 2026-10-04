@@ -67,7 +67,13 @@ async function refreshStatus() {
 
 async function connect() {
   await refreshStatus();
-  const info = await api('/api/session', { method: 'POST', body: '{}' });
+  const cmd = document.getElementById('agent-cmd').value.trim() || 'opencode';
+  const rawArgs = document.getElementById('agent-args').value.trim() || 'acp';
+  const args = rawArgs.split(/\s+/);
+  const info = await api('/api/session', {
+    method: 'POST',
+    body: JSON.stringify({ agent: { command: cmd, args } }),
+  });
   sessionId = info.sessionId;
   docEl.textContent = info.documentPath ?? '(unsaved document)';
   addMessage(

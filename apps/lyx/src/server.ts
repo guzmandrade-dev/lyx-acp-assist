@@ -21,6 +21,7 @@ import {
   extractBodyLayouts,
   findMarkupProblems,
 } from './lyx/context.js';
+import { LYX_MARKUP_KNOWLEDGE, CHAT_KNOWLEDGE } from './lyx/knowledge.js';
 import { AcpClient } from './acp/client.js';
 
 export interface AgentSettings {
@@ -138,6 +139,7 @@ export function createServer(options: ServerOptions) {
       const contextText = await buildContextBlock(session);
       const content: ContentBlock[] = [];
       if (contextText) content.push({ type: 'text', text: contextText });
+      content.push({ type: 'text', text: CHAT_KNOWLEDGE });
       content.push({ type: 'text', text: message });
 
       const reply = await session.agent.prompt(session.id, content);
@@ -194,6 +196,7 @@ export function createServer(options: ServerOptions) {
         (selection.layout ? `The cursor paragraph layout is: ${selection.layout}. ` : '') +
         'Rewrite the selection according to this instruction: ' +
         `"${instruction}"\n\n` +
+        `${LYX_MARKUP_KNOWLEDGE}\n\n` +
         'Rules:\n' +
         '- Preserve the meaning; keep references, labels and citations intact.\n' +
         '- Keep the .lyx markup valid and minimal.\n' +
@@ -243,7 +246,8 @@ export function createServer(options: ServerOptions) {
       const contextText = await buildContextBlock(session);
       const prompt =
         'You are helping an author write in LyX. The content you generate will be ' +
-        'pasted at the cursor as rich LyX content (.lyx markup).\n' +
+        'pasted at the cursor as rich LyX content (.lyx markup).\n\n' +
+        `${LYX_MARKUP_KNOWLEDGE}\n\n` +
         'Rules:\n' +
         '- Reply with the content ONLY inside a single ```lyx fenced block, containing\n' +
         '  just the `\\begin_layout ... \\end_layout` paragraphs (no header).\n' +

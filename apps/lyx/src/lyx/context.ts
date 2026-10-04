@@ -154,6 +154,10 @@ export function extractBodyLayouts(text: string): string | null {
  * LyX uses its own token format: `\emph on` ... `\emph default` on their
  * own lines — not `\emph{...}`.
  */
+/**
+ * Detect markup the agent must fix before we paste it. LyX renders
+ * malformed content as literal text or empty insets.
+ */
 export function findMarkupProblems(body: string): string[] {
   const problems: string[] = [];
   const latexInline = /\\(?:emph|textbf|textit|noun|underline)\\?\{/.exec(body);
@@ -164,7 +168,27 @@ export function findMarkupProblems(body: string): string[] {
     );
   }
   if (/\\begin\{document\}/.test(body)) problems.push('\\begin{document} is LaTeX, not LyX.');
-  if (!body.includes('\\begin_layout')) problems.push('No \\begin_layout block found.');
+  if (!body.includes('\\begin_layout')) {
+    problems.push('No \\begin_layout block found.');
+    return problems;
+  }
+
+  // Empty insets: begin_inset line whose args are word-only (type words
+  // only, no content) immediately followed by \end_inset. Formula etc.
+  // keep content on the begin line, so those with real args are not empty.
+  if (/\\begin_inset [A-Za-z][A-Za-z0-9_]*(?: [A-Za-z0-9_]+)*\n\\end_inset/.test(body)) {
+    problems.push('Empty inset found (\\begin_inset with no content). Remove or fill it.');
+  }
+  const insetWithBody = /\\begin_inset (Note|Foot|Flex)\b[\s\S]*?(?=\\end_inset)/g;
+  for (const m of body.matchAll(insetWithBody)) {
+    if (!m[0].includes('\\begin_layout')) {
+      problems.push(
+        `Inset "${m[1]}" has no inner \\begin_layout Plain Layout block — ` +
+          'it will render EMPTY. Every inset with a body must contain ' +
+          '\\begin_layout Plain Layout ... \\end_layout.',
+      );
+    }
+  }
   return problems;
 }
 

@@ -12,6 +12,12 @@
     <h1>LyX ACP Assist</h1>
     <div id="status" class="status">checking LyX&hellip;</div>
     <div id="doc" class="doc"></div>
+    <details class="agent-settings">
+      <summary>Agent settings</summary>
+      <label>Command <input id="agent-cmd" type="text" value="opencode" /></label>
+      <label>Args <input id="agent-args" type="text" value="acp" /></label>
+      <small>Examples: opencode acp &middot; copilot --acp &middot; goose acp</small>
+    </details>
   </header>
 
   <main id="chat" aria-live="polite"></main>
