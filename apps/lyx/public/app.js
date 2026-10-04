@@ -17,6 +17,12 @@ const pinBtn = document.getElementById('pin');
 const reconnectBtn = document.getElementById('reconnect');
 const cmdEl = document.getElementById('agent-cmd');
 const argsEl = document.getElementById('agent-args');
+const attachBtn = document.getElementById('attach');
+const fileInput = document.getElementById('file-input');
+const chipsEl = document.getElementById('chips');
+
+/** Attachment ids waiting to be sent with the next message. */
+const pendingAttachments = [];
 
 const SETTINGS_KEY = 'lyx-acp-agent-settings';
 
@@ -74,6 +80,7 @@ function setBusy(state) {
   busy = state;
   sendBtn.disabled = state;
   undoBtn.disabled = state;
+  attachBtn.disabled = state || !sessionId;
   stopBtn.style.display = state ? '' : 'none';
   document.body.classList.toggle('busy', state);
   if (state) showTyping();
@@ -154,6 +161,7 @@ async function connect() {
     body: JSON.stringify({ agent: { command: cmd, args } }),
   });
   sessionId = info.sessionId;
+  attachBtn.disabled = false;
   docEl.textContent = info.documentPath ?? '(unsaved document)';
   updateDocSelector(info.documentPath, info.documents ?? []);
   for (const turn of info.conversation ?? []) {
@@ -184,6 +192,8 @@ async function reconnect() {
       sessionId = null;
     }
     chat.innerHTML = '';
+    pendingAttachments.length = 0;
+    renderChips();
     await connect();
   } catch (e) {
     statusEl.textContent = `failed to connect: ${e.message}`;
@@ -287,6 +297,9 @@ async function send() {
   setBusy(true);
   try {
     await streamMessage(message);
+    // Attachments were consumed by this message.
+    pendingAttachments.length = 0;
+    renderChips();
   } catch (e) {
     if (e.name === 'AbortError') {
       addMessage('assistant', '(stopped)');
@@ -299,6 +312,71 @@ async function send() {
     await refreshDocuments();
   }
 }
+
+function renderChips() {
+  chipsEl.innerHTML = '';
+  for (const att of pendingAttachments) {
+    const chip = document.createElement('span');
+    chip.className = 'chip';
+    const label = document.createElement('span');
+    label.textContent = att.name + (att.converted ? '' : ' (no text extracted)');
+    const x = document.createElement('button');
+    x.textContent = '\u2715';
+    x.title = 'Remove attachment';
+    x.addEventListener('click', () => removeAttachment(att.id));
+    chip.appendChild(label);
+    chip.appendChild(x);
+    chipsEl.appendChild(chip);
+  }
+}
+
+async function removeAttachment(id) {
+  const i = pendingAttachments.findIndex((a) => a.id === id);
+  if (i >= 0) pendingAttachments.splice(i, 1);
+  renderChips();
+  try {
+    await api(`/api/session/${sessionId}/attachments/${id}`, { method: 'DELETE' });
+  } catch {
+    /* already gone */
+  }
+}
+
+function uploadFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const base64 = String(reader.result).split(',')[1] ?? '';
+      api(`/api/session/${sessionId}/attachments`, {
+        method: 'POST',
+        body: JSON.stringify({ name: file.name, mime: file.type, data: base64 }),
+      })
+        .then((r) => resolve({ id: r.id, name: r.name, converted: r.converted }))
+        .catch(reject);
+    };
+    reader.onerror = () => reject(new Error(`could not read ${file.name}`));
+    reader.readAsDataURL(file);
+  });
+}
+
+attachBtn.addEventListener('click', () => {
+  if (!sessionId || busy) return;
+  fileInput.value = '';
+  fileInput.click();
+});
+
+fileInput.addEventListener('change', async () => {
+  if (!sessionId || busy) return;
+  for (const file of fileInput.files ?? []) {
+    try {
+      const att = await uploadFile(file);
+      pendingAttachments.push(att);
+    } catch (e) {
+      addMessage('assistant', `attachment "${file.name}" failed: ${e.message}`);
+    }
+  }
+  renderChips();
+  input.focus();
+});
 
 sendBtn.addEventListener('click', send);
 input.addEventListener('keydown', (e) => {

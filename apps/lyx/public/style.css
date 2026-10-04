@@ -156,6 +156,37 @@ main {
   font-family: inherit;
 }
 
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.chips:empty {
+  display: none;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  border: 1px solid rgba(128, 128, 128, 0.4);
+  border-radius: 10px;
+  padding: 2px 8px;
+  max-width: 100%;
+}
+.chip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chip button {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0 2px;
+}
+
 footer {
   border-top: 1px solid rgba(128, 128, 128, 0.3);
   padding: 10px 12px;

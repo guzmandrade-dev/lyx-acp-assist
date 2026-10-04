@@ -12,6 +12,8 @@
 import { randomUUID, createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import os from 'node:os';
+import { spawn } from 'node:child_process';
 import express from 'express';
 import type { ContentBlock } from '@agentclientprotocol/sdk';
 import { LyxServerClient, LyxPipeError } from './lyxserver/client.js';
@@ -55,6 +57,8 @@ export interface Session {
   documentPath: string | null;
   /** Set when the client asks to stop the current generation. */
   cancelRequested: boolean;
+  /** Files waiting to be included with the next message. */
+  attachments: Attachment[];
 }
 
 export interface ServerOptions {
@@ -62,6 +66,18 @@ export interface ServerOptions {
   clipboard: RawClipboard;
   /** Directory for persisted chat history (per document). Optional. */
   historyDir?: string;
+  /** Directory where uploaded attachments are stored. Optional. */
+  attachmentsDir?: string;
+}
+
+/** A file the user attached to the next message. */
+export interface Attachment {
+  id: string;
+  name: string;
+  /** Absolute path of the stored file (agents with file tools can read it). */
+  path: string;
+  /** Extracted markdown/plain text, when conversion succeeded. */
+  text: string | null;
 }
 
 export function createServer(options: ServerOptions) {
@@ -136,6 +152,7 @@ export function createServer(options: ServerOptions) {
         knownDocuments: new Set(),
         documentPath: null,
         cancelRequested: false,
+        attachments: [],
       };
       sessions.set(id, session);
       await agent.createSession(id);
@@ -173,6 +190,47 @@ export function createServer(options: ServerOptions) {
       const session = getSession(req.params['id']);
       session.cancelRequested = true;
       session.agent.cancel(session.id);
+      res.json({ ok: true });
+    }),
+  );
+
+  // --- attachments -------------------------------------------------------
+
+  /** Store an uploaded file for the next message (base64 JSON body). */
+  app.post(
+    '/api/session/:id/attachments',
+    wrap(async (req, res) => {
+      const session = getSession(req.params['id']);
+      if (!options.attachmentsDir) throw new Error('Attachments are not configured.');
+      const name = (req.body?.name as string | undefined)?.trim();
+      const data = req.body?.data as string | undefined;
+      if (!name || !data) {
+        res.status(400).json({ error: 'name and data are required' });
+        return;
+      }
+      await fs.mkdir(options.attachmentsDir, { recursive: true });
+      const safe = name.replace(/[^\w.\- ]+/g, '_');
+      const id = randomUUID();
+      const filePath = path.join(options.attachmentsDir, `${id}-${safe}`);
+      await fs.writeFile(filePath, Buffer.from(data, 'base64'));
+      const text = await extractAttachmentText(filePath, name);
+      const att: Attachment = { id, name, path: filePath, text };
+      session.attachments.push(att);
+      res.json({ id, name, converted: text !== null });
+    }),
+  );
+
+  /** Drop a pending attachment before it is sent. */
+  app.delete(
+    '/api/session/:id/attachments/:attId',
+    wrap(async (req, res) => {
+      const session = getSession(req.params['id']);
+      const attId = String(req.params['attId'] ?? '');
+      const idx = session.attachments.findIndex((a) => a.id === attId);
+      if (idx >= 0) {
+        const removed = session.attachments.splice(idx, 1);
+        removed[0] && fs.unlink(removed[0].path).catch(() => undefined);
+      }
       res.json({ ok: true });
     }),
   );
@@ -259,7 +317,11 @@ export function createServer(options: ServerOptions) {
       const send = startSse(res);
       session.cancelRequested = false;
 
-      const prompt = buildAutoPrompt(contextText, selection, message);
+      // Attachments are consumed by this message (chat-app semantics).
+      const attachments = session.attachments;
+      session.attachments = [];
+
+      const prompt = buildAutoPrompt(contextText, selection, message, attachments);
       let reply = await session.agent.prompt(session.id, [{ type: 'text', text: prompt }], {
         onChunk: (chunk) => send({ text: chunk }),
         timeoutMs: 240_000,
@@ -579,7 +641,7 @@ export function parseAction(reply: string): ActionOutcome {
 }
 
 /** Build the unified "agent decides" prompt for a user message. */
-function buildAutoPrompt(
+export function buildAutoPrompt(
   contextText: string,
   selection: {
     hasSelection: boolean;
@@ -588,6 +650,7 @@ function buildAutoPrompt(
     layout: string | null;
   },
   message: string,
+  attachments: Attachment[] = [],
 ): string {
   const parts: string[] = [
     'You are assisting an author writing a document in LyX. Your reply is shown ' +
@@ -639,7 +702,102 @@ function buildAutoPrompt(
     );
   }
   parts.push('', 'User message:', message);
+  if (attachments.length > 0) {
+    parts.push(
+      '',
+      'Attached files (reference material the user attached for this ' +
+        'message; the ACTIVE document you may edit is only the one ' +
+        'described above — never write into the attachments):',
+    );
+    for (const att of attachments) {
+      parts.push('', `--- ${att.name} (stored at: ${att.path}) ---`);
+      if (att.text) {
+        parts.push(att.text);
+      } else {
+        parts.push(
+          '[No text could be extracted on the app side. The file is at the ' +
+            'path above; read it yourself if you have file-reading tools.]',
+        );
+      }
+    }
+  }
   return parts.join('\n');
+}
+
+/** How many characters of an attachment's extracted text go into the prompt. */
+const ATTACHMENT_TEXT_LIMIT = 40_000;
+
+/** Extensions the app can read as text directly (no converter needed). */
+const TEXTUAL_FILE = /\.(txt|md|markdown|tex|lyx|csv|tsv|json|xml|bib|sty|cls|log|html?|yaml|yml|py|js|ts)$/i;
+
+/**
+ * Best-effort text/markdown extraction for an uploaded attachment:
+ * text formats are read directly; binary formats (PDF, DOCX, XLSX, ...)
+ * go through the markitdown CLI when it is installed.
+ */
+export async function extractAttachmentText(
+  filePath: string,
+  name: string,
+): Promise<string | null> {
+  if (TEXTUAL_FILE.test(name)) {
+    try {
+      const raw = await fs.readFile(filePath, 'utf8');
+      return raw.slice(0, ATTACHMENT_TEXT_LIMIT);
+    } catch {
+      return null;
+    }
+  }
+  for (const command of markitdownCandidates()) {
+    try {
+      const quoted = command.includes(' ')
+        ? `"${command.replace(/"/g, '')}"`
+        : command;
+      const out = await runCommand(`${quoted} "${filePath}"`, 60_000);
+      if (out.trim()) return out.slice(0, ATTACHMENT_TEXT_LIMIT);
+    } catch {
+      /* try the next converter */
+    }
+  }
+  return null;
+}
+
+/**
+ * Converter candidates, most preferred first: LYX_MARKITDOWN env override,
+ * then `markitdown` on PATH, then `uvx markitdown`, then the markitdown-mcp
+ * venv (the same install the markitdown MCP server uses on this machine).
+ */
+function markitdownCandidates(): string[] {
+  const candidates: string[] = [];
+  if (process.env.LYX_MARKITDOWN) candidates.push(process.env.LYX_MARKITDOWN);
+  candidates.push('markitdown', 'uvx markitdown');
+  if (process.platform === 'win32') {
+    candidates.push(
+      path.join(
+        os.homedir(), '.local', 'venvs', 'markitdown-mcp', 'Scripts', 'markitdown.exe',
+      ),
+    );
+  }
+  return candidates;
+}
+
+function runCommand(command: string, timeoutMs: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, { shell: true, windowsHide: true });
+    let out = '';
+    let err = '';
+    const timer = setTimeout(() => child.kill(), timeoutMs);
+    child.stdout?.on('data', (d: Buffer) => (out += d.toString('utf8')));
+    child.stderr?.on('data', (d: Buffer) => (err += d.toString('utf8')));
+    child.on('error', (e) => {
+      clearTimeout(timer);
+      reject(e);
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve(out);
+      else reject(new Error(`exit ${code}: ${err.slice(0, 200)}`));
+    });
+  });
 }
 
 /** Corrective retry prompt when the ```lyx block has markup problems. */

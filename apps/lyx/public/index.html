@@ -30,13 +30,16 @@
   <main id="chat" aria-live="polite"></main>
 
   <footer>
+    <div id="chips" class="chips"></div>
     <textarea id="input" rows="3"
       placeholder="Message the agent. It decides itself: reply in chat, insert at the cursor, or rewrite your selection."></textarea>
     <div class="row">
+      <button id="attach" title="Attach a file (PDF, Word, Excel, text...)" disabled>+</button>
       <button id="undo" title="Undo the last agent edit inside LyX">Undo edit</button>
       <button id="stop" title="Stop the running generation" style="display:none">Stop</button>
       <button id="send">Send</button>
     </div>
+    <input id="file-input" type="file" multiple style="display:none" />
   </footer>
 
   <script src="app.js"></script>
