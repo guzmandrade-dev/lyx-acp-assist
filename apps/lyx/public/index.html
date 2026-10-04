@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>LyX ACP Assist</title>
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'unsafe-inline'; connect-src 'self'" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>LyX ACP Assist</h1>
+    <div id="status" class="status">checking LyX&hellip;</div>
+    <div id="doc" class="doc"></div>
+  </header>
+
+  <main id="chat" aria-live="polite"></main>
+
+  <footer>
+    <div class="mode">
+      <label><input type="radio" name="mode" value="chat" checked /> Chat</label>
+      <label><input type="radio" name="mode" value="rewrite" /> Rewrite selection</label>
+      <label><input type="radio" name="mode" value="insert" /> Insert at cursor</label>
+    </div>
+    <textarea id="input" rows="3"
+      placeholder="Message the agent. In Rewrite/Insert modes the reply is applied to the LyX document."></textarea>
+    <div class="row">
+      <button id="send">Send</button>
+      <button id="undo" title="Undo the last agent edit inside LyX">Undo edit</button>
+    </div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

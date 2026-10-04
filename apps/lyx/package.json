@@ -8,6 +8,7 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "typecheck": "tsc --noEmit",
+    "start": "npm run build && electron ./dist/electron/main.js",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -16,8 +17,14 @@
   },
   "license": "MIT",
   "devDependencies": {
+    "@types/express": "^5.0.6",
     "@types/node": "^26.1.1",
+    "electron": "^44.5.1",
     "typescript": "^5.9.3",
     "vitest": "^4.1.10"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "^1.7.0",
+    "express": "^5.2.1"
   }
 }

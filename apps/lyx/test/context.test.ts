@@ -1,0 +1,101 @@
+import { describe, expect, it } from 'vitest';
+import {
+  assemblePasteDocument,
+  extractBodyLayouts,
+  findMarkupProblems,
+  buildDocumentContext,
+  renderOutline,
+} from '../src/lyx/context.js';
+import { parse } from '../src/lyx/parser.js';
+
+const HEADER = [
+  '#LyX 2.5 created this file. For more info see https://www.lyx.org/',
+  '\\lyxformat 643',
+  '\\begin_document',
+  '\\begin_header',
+  '\\textclass article',
+  '\\end_header',
+].join('\n');
+
+describe('assemblePasteDocument', () => {
+  it('produces a strict-parseable document (regression: \\b escape bug)', () => {
+    const doc = assemblePasteDocument(HEADER, '\\begin_layout Standard\nHello\n\\end_layout');
+    expect(doc).toContain('\\begin_body');
+    expect(doc).toContain('\\end_body');
+    expect(doc).toContain('\\end_document');
+    expect(() => parse(doc)).not.toThrow();
+  });
+});
+
+describe('extractBodyLayouts', () => {
+  it('extracts from a ```lyx fenced block', () => {
+    const reply =
+      'Sure!\n```lyx\n\\begin_layout Standard\nHi\n\\end_layout\n```\nDone.';
+    expect(extractBodyLayouts(reply)).toBe('\\begin_layout Standard\nHi\n\\end_layout');
+  });
+
+  it('extracts the body from a full document', () => {
+    const doc = `${HEADER}\n\n\\begin_body\n\n\\begin_layout Standard\nHi\n\\end_layout\n\n\\end_body\n\\end_document\n`;
+    expect(extractBodyLayouts(doc)).toBe('\\begin_layout Standard\nHi\n\\end_layout');
+  });
+
+  it('returns null when there is no lyx content', () => {
+    expect(extractBodyLayouts('just prose, no markup')).toBeNull();
+  });
+});
+
+describe('findMarkupProblems', () => {
+  it('accepts valid LyX token format', () => {
+    const body = '\\begin_layout Standard\n\\emph on\nHi\n\\emph default\n there\n\\end_layout';
+    expect(findMarkupProblems(body)).toEqual([]);
+  });
+
+  it('rejects LaTeX-style inline commands', () => {
+    const body = '\\begin_layout Standard\n\\emph{Hi} there\n\\end_layout';
+    const problems = findMarkupProblems(body);
+    expect(problems.length).toBeGreaterThan(0);
+    expect(problems[0]).toMatch(/LaTeX-style/);
+  });
+
+  it('rejects content without layouts', () => {
+    expect(findMarkupProblems('plain text')).toContainEqual(
+      'No \\begin_layout block found.',
+    );
+  });
+});
+
+describe('buildDocumentContext', () => {
+  const doc = [
+    HEADER,
+    '',
+    '\\begin_body',
+    '',
+    '\\begin_layout Section',
+    'Intro',
+    '\\end_layout',
+    '',
+    '\\begin_layout Standard',
+    'Body text here.',
+    '\\end_layout',
+    '',
+    '\\end_body',
+    '\\end_document',
+    '',
+  ].join('\n');
+
+  it('builds an addressed outline', () => {
+    const ctx = buildDocumentContext(doc);
+    expect(ctx.outline).toEqual([
+      expect.objectContaining({ id: 'p1', layout: 'Section', depth: 0 }),
+      expect.objectContaining({ id: 'p2', layout: 'Standard', depth: 0, preview: 'Body text here.' }),
+    ]);
+    expect(ctx.textclass).toBe('article');
+    expect(ctx.formatVersion).toBe('643');
+  });
+
+  it('renders the outline with ids', () => {
+    const ctx = buildDocumentContext(doc);
+    expect(renderOutline(ctx.outline)).toContain('[p1] (Section)');
+    expect(renderOutline(ctx.outline)).toContain('[p2] (Standard)');
+  });
+});

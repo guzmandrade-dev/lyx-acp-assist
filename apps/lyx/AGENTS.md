@@ -149,12 +149,54 @@ selection is empty. Useful as a cheap selection probe before `copy`.
 - Record important decisions and findings here and in `notes.md`
   (`notes.md` holds the original brainstorm + the same architecture summary).
 
+## Electron 43 clipboard findings (critical)
+
+- Electron 43 replaced the synchronous clipboard API with an async
+  W3C-style one (`clipboard.read()`, `clipboard.write([ClipboardItem])`).
+- **Chromium writes custom MIME types with the Web Custom Format wrapper**
+  (magic header + name), which LyX cannot parse: writes are silently
+  ignored by LyX, and `paste` then uses LyX's *internal* clipboard
+  (stale content).
+- **Escape hatch (verified):** write/read the RAW OS format using the
+  special MIME `electron application/osclipboard;format="application/x-lyx"`
+  as the ClipboardItem key / read type. Raw bytes, LyX parses them fine.
+  See `src/electron/main.ts` and `spikes/clipboard-electron-test2.mjs`.
+- `clipboard.has('application/x-lyx')` returns false for custom formats;
+  attempt a read instead.
+
+## Pitfalls found while wiring the app (2026-10-03)
+
+- **JS escape bug:** in template literals `\begin_body` is a backspace
+  escape — assembled payloads were silently malformed. Regression test:
+  `assemblePasteDocument` output must strict-parse (`test/context.test.ts`).
+- LyX buffers flag "modified externally" if the file changes on disk under
+  them; pastes then fail with that error. Clear with
+  `buffer-external-modification-clear`, or avoid rewriting open files
+  (close the buffer first).
+- Agents sometimes emit LaTeX-style inline commands (`\emph{...}`) instead
+  of LyX token format (`\emph on/\emph default`); the app validates and
+  retries once with a corrective prompt (`findMarkupProblems`).
+- On Windows, `opencode` is a PowerShell shim: bare agent commands must
+  spawn with `shell: true` (`src/acp/agent-process.ts`).
+
+## Validated end-to-end (2026-10-03, opencode ACP agent)
+
+Full flagship loop with the Electron app running against live LyX:
+select in LyX -> `copy` -> structured read via osclipboard -> agent
+rewrites -> markup validation -> raw clipboard write -> `paste` replaces
+the selection -> `buffer-write`. Insert-at-cursor and undo also wired.
+
 ## Current state
 
-- Project scaffolded: Node 22 + TS 5.9 + vitest (`npm test`, `npm run
-  typecheck`, `npm run build`). No Electron shell yet.
+- Project scaffolded: Node 22 + TS 5.9 + vitest + Express + Electron 43
+  (`npm start` launches the companion app; `npm test`, `npm run typecheck`).
 - `src/lyx/parser.ts` — read-only `.lyx` parser (lq grammar port).
-- `spikes/spike1-pipe.mjs` — working Node LyXServer client + LFUN CLI.
-- All three spikes DONE. Next milestone: the Electron companion app
-  (ACP client, pipe/clipboard integration, chat sidebar), modeled on
-  Visual Research Pal.
+- `src/lyx/context.ts` — outline/addressing, paste assembly, markup validation.
+- `src/lyxserver/client.ts` — LyXServer pipe client (LFUN dispatch).
+- `src/clipboard/lyx-clipboard.ts` — x-lyx clipboard abstraction.
+- `src/acp/` — ACP client (VRP pattern).
+- `src/server.ts` — Express API: session, chat, selection, rewrite-selection,
+  insert, undo. `src/electron/main.ts` + `public/` — UI.
+- 46 vitest tests green.
+- Next: agent settings UI (command/args configurable), streaming replies,
+  multi-document sessions, packaging.

@@ -151,3 +151,4 @@ if (cliArgs.length > 0) {
 shuttingDown = true;
 if (inFd !== null) fs.closeSync(inFd);
 console.log('done');
+process.exit(0); // readLoop reconnects forever otherwise
