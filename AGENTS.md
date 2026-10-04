@@ -200,6 +200,27 @@ LLMs know LaTeX but not `.lyx` markup. Specialization is done with:
 - ACP has no `systemPrompt` field in this SDK version, so prompt-level
   injection is the portable mechanism across agents.
 
+## Attachments (2026-10-04)
+
+`POST /api/session/:id/attachments` (JSON base64 `{name, mime, data}`) stores
+a file under `<userData>/attachments`, converts it to text, and queues it for
+the next message (consumed then cleared, chat-app semantics). The prompt gets
+each attachment's name, stored path, and extracted text (40k char cap) — if
+extraction fails, the agent is told the path and asked to read the file with
+its own tools.
+
+- Conversion chain (`extractAttachmentText`, exported): textual extensions
+  read directly; binary formats via the markitdown CLI, trying in order:
+  `LYX_MARKITDOWN` env override, `markitdown` on PATH, `uvx markitdown`,
+  then the markitdown-mcp venv (`~\.local\venvs\markitdown-mcp\Scripts\
+  markitdown.exe` — the same install the markitdown MCP uses). All spawns
+  use `shell: true` (Windows shim quirk).
+- Live conversion is regression-tested against a real PDF shipped with LyX
+  (skips if LyX/markitdown are absent). Hand-crafted "minimal PDFs" are NOT
+  valid fixtures — pdfplumber rejects them ("No /Root object").
+- UI: `+` button + chips row in the composer; `DELETE .../attachments/:id`
+  removes a pending file.
+
 ## Auto mode / intent inference (2026-10-04)
 
 The manual Chat/Rewrite/Insert radio modes are GONE. One input box,

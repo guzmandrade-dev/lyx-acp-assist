@@ -120,7 +120,8 @@ async function startApp(): Promise<void> {
     throw new Error(`public dir not found at ${publicDir} (run from built output with public/)`);
   }
   const historyDir = path.join(app.getPath('userData'), 'history');
-  const server = createServer({ publicDir, clipboard: electronClipboard, historyDir });
+  const attachmentsDir = path.join(app.getPath('userData'), 'attachments');
+  const server = createServer({ publicDir, clipboard: electronClipboard, historyDir, attachmentsDir });
 
   const port = process.env.PORT ? Number.parseInt(process.env.PORT, 10) : 0;
   await new Promise<void>((resolve) => {

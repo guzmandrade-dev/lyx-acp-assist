@@ -1,7 +1,7 @@
 import { describe, it, expect, afterAll } from 'vitest';
 import type { Server } from 'node:http';
 import type { Express } from 'express';
-import { createServer, parseAction, normalizeForCompare } from '../src/server.js';
+import { createServer, parseAction, normalizeForCompare, buildAutoPrompt, extractAttachmentText } from '../src/server.js';
 import type { RawClipboard } from '../src/clipboard/lyx-clipboard.js';
 
 /** Stub raw clipboard: enough for routes that never touch LyX. */
@@ -64,6 +64,51 @@ describe('API surface', () => {
     expect(cancel.status).toBe(500);
     const del = await fetch(`${baseUrl}/api/session/nope`, { method: 'DELETE' });
     expect(del.status).toBe(500);
+  });
+});
+
+describe('attachments', () => {
+  it('includes attachment text and paths in the auto prompt', () => {
+    const prompt = buildAutoPrompt(
+      'context',
+      { hasSelection: false, lyxBody: null, text: null, layout: null },
+      'summarize this',
+      [
+        { id: 'a1', name: 'report.pdf', path: 'C:\\att\\report.pdf', text: 'Extracted PDF text.' },
+        { id: 'a2', name: 'img.png', path: 'C:\\att\\img.png', text: null },
+      ],
+    );
+    expect(prompt).toContain('report.pdf');
+    expect(prompt).toContain('C:\\att\\report.pdf');
+    expect(prompt).toContain('Extracted PDF text.');
+    expect(prompt).toContain('[No text could be extracted');
+    expect(prompt).toContain('reference material');
+    expect(prompt).toContain('never write into the attachments');
+  });
+
+  it('extracts text from textual files directly', async () => {
+    const dir = await import('node:fs/promises');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const file = path.join(os.tmpdir(), 'att-notes.md');
+    await dir.writeFile(file, '# Notes\n\nplain text content', 'utf8');
+    const text = await extractAttachmentText(file, 'notes.md');
+    expect(text).toContain('plain text content');
+    await dir.unlink(file);
+  });
+
+  it('converts a PDF through markitdown when installed', async () => {
+    const { existsSync } = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const venv = path.join(
+      os.homedir(), '.local', 'venvs', 'markitdown-mcp', 'Scripts', 'markitdown.exe',
+    );
+    // A real PDF shipped with LyX; skips where LyX or markitdown is absent.
+    const fixture = 'C:\\Program Files\\LyX 2.5\\Resources\\doc\\clipart\\Abstract.pdf';
+    if (!existsSync(venv) || !existsSync(fixture)) return;
+    const text = await extractAttachmentText(fixture, 'Abstract.pdf');
+    expect(text).toBeTruthy();
   });
 });
 
