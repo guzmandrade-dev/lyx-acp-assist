@@ -1,7 +1,7 @@
 import { describe, it, expect, afterAll } from 'vitest';
 import type { Server } from 'node:http';
 import type { Express } from 'express';
-import { createServer, parseAction, normalizeForCompare, isLikelyMatch, buildAutoPrompt, extractAttachmentText } from '../src/server.js';
+import { createServer, parseAction, normalizeForCompare, isLikelyMatch, buildAutoPrompt, extractAttachmentText, findClassLayouts } from '../src/server.js';
 import type { RawClipboard } from '../src/clipboard/lyx-clipboard.js';
 
 /** Stub raw clipboard: enough for routes that never touch LyX. */
@@ -68,6 +68,20 @@ describe('API surface', () => {
 });
 
 describe('attachments', () => {
+  it('resolves class layout vocabularies including Input chains', async () => {
+    // Uses the real LyX 2.5 install (skips where absent); custom user
+    // classes in %APPDATA%\LyX2.5\layouts take priority.
+    const { existsSync } = await import('node:fs');
+    if (!existsSync('C:\\Program Files\\LyX 2.5\\Resources\\layouts\\article.layout')) return;
+    const article = await findClassLayouts('article');
+    expect(article).toBeTruthy();
+    expect(article).toContain('Standard');
+    expect(article).toContain('Section'); // via article -> stdclass.inc -> stdsections.inc
+    expect(article!.length).toBeGreaterThan(10);
+    // Unknown classes resolve to null (no throw).
+    expect(await findClassLayouts('no-such-class-xyz')).toBeNull();
+  });
+
   it('includes attachment text and paths in the auto prompt', () => {
     const prompt = buildAutoPrompt(
       'context',

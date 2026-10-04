@@ -544,14 +544,22 @@ export function createServer(options: ServerOptions) {
         `LyX format: ${ctx.formatVersion ?? 'unknown'}\n` +
         `Cursor paragraph layout: ${layout}\n\n` +
         `Document outline ([pN] ids address paragraphs):\n${renderOutline(ctx.outline)}\n\n`;
+      let contextText = head;
+      const classLayouts = ctx.textclass ? await findClassLayouts(ctx.textclass) : null;
+      if (classLayouts) {
+        contextText +=
+          `Layouts defined by the document class "${ctx.textclass}" ` +
+          `(use these names, or ones already in the outline, for new content):\n` +
+          classLayouts.join(', ') + '\n\n';
+      }
       if (ctx.body.length <= OUTLINE_ONLY_BODY_LIMIT) {
         // Small document: attach the full body for maximum fidelity.
-        return head + `Full body (.lyx markup):\n${ctx.body}\n`;
+        return contextText + `Full body (.lyx markup):\n${ctx.body}\n`;
       }
       // Large document: outline only. The agent reads/searches the saved
       // file itself with its own tools (like a coding agent in a repo).
       return (
-        head +
+        contextText +
         `The document is LARGE (${ctx.body.length} chars), so only the outline above is\n` +
         `attached. To see the exact text of any paragraph, read or search the saved\n` +
         `file "${session.documentPath}" with your file tools — it is the exact live\n` +
@@ -742,6 +750,9 @@ export function buildAutoPrompt(
       'paragraphs (no document header).',
     '- Follow the .lyx cheat-sheet below (token-format emphasis, Formula ' +
       'insets, ...).',
+    '- Match the document\'s own conventions: prefer layouts that appear in ' +
+      'the outline or in the class layout list of the document context, ' +
+      'never invent layout names.',
     '- For a document title or similar front matter use the Title layout ' +
       'and [ACTION: insert-top], NOT insert (insert would land wherever ' +
       'the cursor happens to be).',
@@ -922,6 +933,68 @@ export function isLikelyMatch(expected: string, actual: string): boolean {
   }
   if (total === 0) return a.startsWith(e);
   return hits / total >= 0.6;
+}
+
+/**
+ * Layout names defined by a LyX textclass, parsed from its .layout file.
+ * Search order: the user's LyX layouts dir (custom/journal classes), then
+ * the installation's Resources (article, beamer, ...), then common Linux
+ * paths. Returns null when the class file cannot be found.
+ */
+export async function findClassLayouts(textclass: string): Promise<string[] | null> {
+  const safeClass = textclass.replace(/[^\w.-]+/g, '');
+  if (!safeClass) return null;
+  const home = os.homedir();
+  const candidates = [
+    process.env.LYX_LAYOUTS_DIR,
+    process.platform === 'win32'
+      ? path.join(process.env.APPDATA ?? home, 'LyX2.5', 'layouts')
+      : path.join(home, '.lyx', 'layouts'),
+    'C:\\Program Files\\LyX 2.5\\Resources\\layouts',
+    '/usr/share/lyx/layouts',
+    '/usr/local/share/lyx/layouts',
+  ].filter((d): d is string => Boolean(d));
+  for (const dir of candidates) {
+    const names = await collectStyles(path.join(dir, `${safeClass}.layout`), dir, 0);
+    if (names) return names;
+  }
+  return null;
+}
+
+/**
+ * Parse Style names out of a .layout/.inc file, following `Input <file>`
+ * includes (e.g. article.layout Inputs stdsections.inc for Section etc.).
+ * Returns null if the file itself cannot be read.
+ */
+async function collectStyles(file: string, dir: string, depth: number): Promise<string[] | null> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(file, 'utf8');
+  } catch {
+    return null;
+  }
+  const names = new Set<string>();
+  const includes: string[] = [];
+  for (const m of raw.matchAll(/^(Input|Include)\s+(\S+)[^\r\n]*$/gm)) {
+    if (m[2]) includes.push(m[2]);
+  }
+  for (const m of raw.matchAll(/^Style\s+(\S[^\r\n]*?)\s*$/gm)) {
+    if (m[1]) names.add(m[1].trim());
+  }
+  if (depth < 4) {
+    for (const inc of includes) {
+      // Input targets usually already carry the extension (stdclass.inc);
+      // some don't. Try as-is, then with the common extensions.
+      for (const candidate of [inc, `${inc}.inc`, `${inc}.layout`]) {
+        const sub = await collectStyles(path.join(dir, candidate), dir, depth + 1);
+        if (sub) {
+          for (const n of sub) names.add(n);
+          break;
+        }
+      }
+    }
+  }
+  return [...names];
 }
 
 // --- history persistence ---------------------------------------------------
