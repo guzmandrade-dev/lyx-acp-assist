@@ -2,12 +2,18 @@
 
 let sessionId = null;
 let busy = false;
+let lyxBusy = false;
+let lyxPipeAvailable = false;
 let currentAbort = null;
 let docPollTimer = null;
+let typingIndicator = null;
+let typingTimeout = null;
 
 const chat = document.getElementById('chat');
 const statusEl = document.getElementById('status');
+const statusText = document.getElementById('status-text');
 const docEl = document.getElementById('doc');
+const selectionEl = document.getElementById('selection');
 const docSelect = document.getElementById('doc-select');
 const input = document.getElementById('input');
 const sendBtn = document.getElementById('send');
@@ -20,6 +26,7 @@ const argsEl = document.getElementById('agent-args');
 const attachBtn = document.getElementById('attach');
 const fileInput = document.getElementById('file-input');
 const chipsEl = document.getElementById('chips');
+let emptyEl = document.getElementById('empty');
 
 /** Attachment ids waiting to be sent with the next message. */
 const pendingAttachments = [];
@@ -43,48 +50,177 @@ function saveSettings() {
   );
 }
 
-function addMessage(role, content, note) {
+function escapeHtml(text) {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function renderInlineFormatting(html) {
+  // bold, italic, inline code — keep it simple and safe
+  return html
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+    .replace(/`([^`]+)`/g, '<code>$1</code>');
+}
+
+/** Render assistant text: escape first, then restore minimal inline markup. */
+function renderAssistantText(full, applied) {
+  let text = full.replace(/\[ACTION:\s*[^\]]*\]/gi, '').trim();
+  if (applied && applied !== 'none') {
+    text = text.replace(/```lyx\s*\n[\s\S]*?```\s*/g, '').trim();
+  }
+  if (!text) return '';
+
+  const parts = [];
+  const regex = /```lyx\s*\n([\s\S]*?)```/g;
+  let lastIndex = 0;
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      parts.push({ type: 'text', content: text.slice(lastIndex, match.index) });
+    }
+    parts.push({ type: 'code', content: match[1] });
+    lastIndex = match.index + match[0].length;
+  }
+  if (lastIndex < text.length) {
+    parts.push({ type: 'text', content: text.slice(lastIndex) });
+  }
+
+  let html = '';
+  for (const part of parts) {
+    if (part.type === 'code') {
+      html += `<pre class="code"><code>${escapeHtml(part.content)}</code></pre>`;
+    } else {
+      const paragraphs = part.content.split(/\n\s*\n/);
+      for (const para of paragraphs) {
+        if (!para.trim()) continue;
+        const lines = para.split('\n').map((l) => renderInlineFormatting(escapeHtml(l)));
+        html += `<p>${lines.join('<br>')}</p>`;
+      }
+    }
+  }
+  return html;
+}
+
+function showEmpty() {
+  if (!emptyEl) {
+    emptyEl = document.createElement('div');
+    emptyEl.id = 'empty';
+    emptyEl.className = 'empty';
+    emptyEl.textContent =
+      'Select text in LyX or type a request. The agent will reply here or write directly into the document.';
+    chat.appendChild(emptyEl);
+  }
+  emptyEl.hidden = false;
+}
+
+function hideEmpty() {
+  if (emptyEl) emptyEl.hidden = true;
+}
+
+function scrollToBottomIfNear() {
+  const nearBottom = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 60;
+  if (nearBottom) chat.scrollTop = chat.scrollHeight;
+}
+
+function addMessage(role, content, opts = {}) {
+  hideEmpty();
   const div = document.createElement('div');
   div.className = `msg ${role}`;
-  const bubble = document.createElement('span');
-  bubble.className = 'bubble';
-  bubble.textContent = content;
-  div.appendChild(bubble);
-  if (note) {
-    const n = document.createElement('span');
-    n.className = note.ok ? 'applied' : 'failed';
-    n.textContent = note.text;
-    div.appendChild(n);
+  if (opts.assertive) div.setAttribute('aria-live', 'assertive');
+  const textDiv = document.createElement('div');
+  textDiv.className = 'text';
+  if (role === 'assistant') {
+    textDiv.innerHTML = renderAssistantText(content, opts.applied);
+  } else {
+    textDiv.textContent = content;
   }
+  div.appendChild(textDiv);
   chat.appendChild(div);
-  chat.scrollTop = chat.scrollHeight;
-  return { div, bubble };
+  scrollToBottomIfNear();
+  return { div, textDiv };
+}
+
+function addSystemMessage(text, assertive = false) {
+  return addMessage('system', text, { assertive });
+}
+
+function ensureTypingIndicator() {
+  if (!typingIndicator) {
+    typingIndicator = document.createElement('div');
+    typingIndicator.className = 'typing';
+    typingIndicator.innerHTML = '<span class="sr-only">Agent is writing</span>Agent is writing…';
+  }
+  return typingIndicator;
 }
 
 function showTyping() {
-  hideTyping();
-  const t = document.createElement('div');
-  t.id = 'typing';
-  t.className = 'msg assistant';
-  t.innerHTML = '<span class="bubble"><span class="dot"></span>' +
-    '<span class="dot"></span><span class="dot"></span></span>';
-  chat.appendChild(t);
-  chat.scrollTop = chat.scrollHeight;
+  const t = ensureTypingIndicator();
+  if (!t.parentElement) chat.appendChild(t);
+  t.hidden = false;
+  scrollToBottomIfNear();
 }
 
 function hideTyping() {
-  document.getElementById('typing')?.remove();
+  if (typingIndicator) typingIndicator.hidden = true;
+  if (typingTimeout) {
+    clearTimeout(typingTimeout);
+    typingTimeout = null;
+  }
+}
+
+function scheduleTypingResume() {
+  if (typingTimeout) clearTimeout(typingTimeout);
+  typingTimeout = setTimeout(() => {
+    if (busy) showTyping();
+  }, 1000);
+}
+
+function setStatusText(text) {
+  if (statusText) statusText.textContent = text;
+  else if (statusEl) statusEl.textContent = text;
+}
+
+function updateStatusClass() {
+  if (!statusEl) return;
+  let cls = 'status';
+  if (lyxBusy) cls += ' busy';
+  else if (lyxPipeAvailable) cls += ' ok';
+  else cls += ' bad';
+  statusEl.className = cls;
+}
+
+function setLyxBusyState(state) {
+  lyxBusy = state;
+  updateStatusClass();
+  updateComposerState();
+}
+
+function maybeSetBusyFromError(e) {
+  if (e && typeof e.message === 'string' && /timeout/i.test(e.message)) {
+    setLyxBusyState(true);
+    setStatusText('LyX is busy — dismiss any dialog in LyX');
+  }
+}
+
+function updateComposerState() {
+  const canSend = sessionId && !busy && !lyxBusy;
+  sendBtn.disabled = !canSend;
+  undoBtn.disabled = !sessionId || busy;
+  attachBtn.disabled = !sessionId || busy;
+  stopBtn.hidden = !busy;
+  // textarea stays enabled for typing per spec
+  if (input) input.disabled = false;
 }
 
 function setBusy(state) {
   busy = state;
-  sendBtn.disabled = state;
-  undoBtn.disabled = state;
-  attachBtn.disabled = state || !sessionId;
-  stopBtn.style.display = state ? '' : 'none';
-  document.body.classList.toggle('busy', state);
-  if (state) showTyping();
-  else {
+  updateComposerState();
+  if (state) {
+    showTyping();
+  } else {
     hideTyping();
     currentAbort = null;
   }
@@ -103,13 +239,35 @@ async function api(path, init) {
 async function refreshStatus() {
   try {
     const st = await api('/api/status');
-    statusEl.textContent = st.lyxPipeAvailable
-      ? 'LyX connected (LyXServer pipe)'
-      : 'LyX pipe not found \u2014 open LyX with a document';
-    statusEl.className = `status ${st.lyxPipeAvailable ? 'ok' : 'bad'}`;
+    lyxPipeAvailable = st.lyxPipeAvailable;
+    if (lyxPipeAvailable) {
+      setLyxBusyState(false);
+      setStatusText('LyX connected');
+    } else {
+      setStatusText('LyX pipe not found — open LyX with a document');
+    }
+    updateStatusClass();
+  } catch {
+    // Our own Express API is unreachable — that is not a LyX dialog block.
+    lyxPipeAvailable = false;
+    lyxBusy = false;
+    updateStatusClass();
+    setStatusText('server unreachable — restart the app');
+  }
+}
+
+async function refreshSelection() {
+  if (!sessionId || !selectionEl) return;
+  try {
+    const r = await api(`/api/session/${sessionId}/selection`);
+    if (r.hasSelection && r.stats && r.stats[0] > 0) {
+      selectionEl.textContent = `${r.stats[0]} words selected`;
+      selectionEl.hidden = false;
+    } else {
+      selectionEl.hidden = true;
+    }
   } catch (e) {
-    statusEl.textContent = `server error: ${e.message}`;
-    statusEl.className = 'status bad';
+    selectionEl.hidden = true;
   }
 }
 
@@ -123,7 +281,7 @@ function updateDocSelector(active, documents) {
     if (p === active) opt.selected = true;
     docSelect.appendChild(opt);
   }
-  docSelect.style.display = documents.length > 0 ? '' : 'none';
+  docSelect.hidden = documents.length === 0;
 }
 
 docSelect.addEventListener('change', async () => {
@@ -134,8 +292,13 @@ docSelect.addEventListener('change', async () => {
       body: JSON.stringify({ path: docSelect.value }),
     });
     docEl.textContent = r.active ?? '(unsaved document)';
+    docEl.title = r.active ?? '';
+    await refreshStatus();
+    await refreshDocuments();
+    await refreshSelection();
   } catch (e) {
-    addMessage('assistant', `error: ${e.message}`);
+    maybeSetBusyFromError(e);
+    addSystemMessage(`error: ${e.message}`, true);
   }
 });
 
@@ -144,7 +307,10 @@ async function refreshDocuments() {
   try {
     const r = await api(`/api/session/${sessionId}/documents`);
     updateDocSelector(r.active, r.documents);
-    if (r.active) docEl.textContent = r.active;
+    if (r.active) {
+      docEl.textContent = r.active;
+      docEl.title = r.active;
+    }
   } catch (e) {
     /* ignore */
   }
@@ -161,24 +327,40 @@ async function connect() {
     body: JSON.stringify({ agent: { command: cmd, args } }),
   });
   sessionId = info.sessionId;
-  attachBtn.disabled = false;
   docEl.textContent = info.documentPath ?? '(unsaved document)';
+  docEl.title = info.documentPath ?? '';
   updateDocSelector(info.documentPath, info.documents ?? []);
-  for (const turn of info.conversation ?? []) {
+  const turns = info.conversation ?? [];
+  for (const turn of turns) {
     addMessage(turn.role, turn.content);
   }
-  addMessage(
-    'assistant',
-    info.outline
-      ? `Connected. Cursor layout: ${info.layout}. The agent decides itself whether to reply or write into the document.`
-      : 'Connected to LyX (document unsaved \u2014 outline unavailable).',
-  );
+  if (turns.length === 0) {
+    // Fresh conversation: show the quiet empty state, not a chat message.
+    showEmpty();
+  } else {
+    addMessage(
+      'assistant',
+      info.outline
+        ? `Connected. Cursor layout: ${info.layout}. The agent decides itself whether to reply or write into the document.`
+        : 'Connected to LyX (document unsaved — outline unavailable).',
+    );
+    hideEmpty();
+  }
+  updateComposerState();
+
   // Keep the selector in sync when the user switches tabs in LyX — but
   // ONLY while our window is focused. While blurred (e.g. the user is
   // typing in LyX), polling would dispatch a pipe LFUN into LyX every 2s,
   // which visibly disturbs the caret there.
   if (docPollTimer) clearInterval(docPollTimer);
-  docPollTimer = setInterval(refreshDocuments, 2000);
+  // NOTE: the poll intentionally skips refreshSelection() — reading the
+  // selection dispatches a `copy` LFUN into LyX and overwrites the system
+  // clipboard whenever a selection exists; doing that every 2s would clobber
+  // whatever the user copied. Selection is refreshed on connect, focus,
+  // document switch, and after each message instead.
+  docPollTimer = setInterval(async () => {
+    await refreshDocuments();
+  }, 2000);
 }
 
 window.addEventListener('blur', () => {
@@ -189,8 +371,11 @@ window.addEventListener('blur', () => {
 });
 window.addEventListener('focus', () => {
   if (sessionId && !docPollTimer) {
-    docPollTimer = setInterval(refreshDocuments, 2000);
+    docPollTimer = setInterval(async () => {
+      await refreshDocuments();
+    }, 2000);
     refreshDocuments();
+    refreshSelection();
   }
 });
 
@@ -210,42 +395,122 @@ async function reconnect() {
     chat.innerHTML = '';
     pendingAttachments.length = 0;
     renderChips();
+    showEmpty();
     await connect();
   } catch (e) {
-    statusEl.textContent = `failed to connect: ${e.message}`;
-    statusEl.className = 'status bad';
+    maybeSetBusyFromError(e);
+    if (!lyxBusy) {
+      setStatusText(`failed to connect: ${e.message}`);
+      statusEl.className = 'status bad';
+    }
+    const details = document.querySelector('.agent-settings');
+    if (details && typeof details.open === 'boolean') details.open = true;
   } finally {
     reconnectBtn.disabled = false;
   }
 }
 
-/** Strip the [ACTION: ...] tag; when applied, also strip the applied lyx block. */
-function displayText(full, applied) {
-  let text = full.replace(/\[ACTION:\s*[^\]]*\]/gi, '').trim();
-  if (applied) {
-    text = text.replace(/```lyx\s*\n[\s\S]*?```\s*/g, '').trim();
+function renderFeedback(msgDiv, { applied, target, target2, cancelled, error }) {
+  const feedback = document.createElement('div');
+  let prefix = '';
+  let undoLabel = 'Undo edit';
+  let showUndo = false;
+
+  if (error) {
+    feedback.className = 'feedback error';
+    prefix = `Not applied: ${error}`;
+  } else if (cancelled) {
+    feedback.className = 'feedback stopped';
+    prefix = 'Stopped before applying';
+  } else if (applied === 'none') {
+    feedback.className = 'feedback none';
+    prefix = 'Replied in chat — document unchanged';
+  } else if (applied) {
+    feedback.className = 'feedback applied';
+    showUndo = true;
+    switch (applied) {
+      case 'insert':
+        prefix = 'Inserted at the cursor in LyX';
+        break;
+      case 'insert-top':
+        prefix = 'Inserted at the top of the document';
+        undoLabel = 'Undo edit (×2)';
+        break;
+      case 'insert-after':
+        prefix = `Inserted after [p${target ?? '?'}] in LyX`;
+        break;
+      case 'insert-before':
+        prefix = `Inserted before [p${target ?? '?'}] in LyX`;
+        break;
+      case 'rewrite':
+        prefix = 'Replaced the selection in LyX';
+        break;
+      case 'rewrite-at':
+        prefix = `Replaced [p${target ?? '?'}] in LyX`;
+        break;
+      case 'delete-at':
+        prefix = `Deleted [p${target ?? '?'}] from LyX`;
+        break;
+      case 'move':
+        prefix = `Moved [p${target ?? '?'}] to after [p${target2 ?? '?'}] in LyX`;
+        break;
+      default:
+        prefix = `Applied ${applied}`;
+    }
+  } else {
+    feedback.className = 'feedback none';
+    prefix = 'Replied in chat — document unchanged';
   }
-  return text;
+
+  feedback.appendChild(document.createTextNode(prefix));
+  if (showUndo) {
+    feedback.appendChild(document.createTextNode(' · '));
+    const btn = document.createElement('button');
+    btn.className = 'link';
+    btn.textContent = undoLabel;
+    btn.addEventListener('click', async () => {
+      if (!sessionId || busy) return;
+      try {
+        await api(`/api/session/${sessionId}/undo`, { method: 'POST' });
+        addSystemMessage('Undo sent to LyX');
+      } catch (e) {
+        addSystemMessage(`Undo failed: ${e.message}`, true);
+      }
+    });
+    feedback.appendChild(btn);
+  }
+  msgDiv.appendChild(feedback);
 }
 
-/**
- * One unified streaming request. The agent decides whether to reply in prose
- * or write into the document ([ACTION: none|insert|rewrite]).
- */
 async function streamMessage(message) {
-  const { bubble } = addMessage('assistant', '');
+  const { div, textDiv } = addMessage('assistant', '');
   const ctrl = new AbortController();
   currentAbort = ctrl;
-  const res = await fetch(`/api/session/${sessionId}/message/stream`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ message }),
-    signal: ctrl.signal,
-  });
+  setBusy(true);
+  showTyping();
+
+  let res;
+  try {
+    res = await fetch(`/api/session/${sessionId}/message/stream`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message }),
+      signal: ctrl.signal,
+    });
+  } catch (e) {
+    maybeSetBusyFromError(e);
+    setBusy(false);
+    throw e;
+  }
+
   if (!res.ok || !res.body) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(body.error ?? `${res.status} ${res.statusText}`);
+    const err = new Error(body.error ?? `${res.status} ${res.statusText}`);
+    maybeSetBusyFromError(err);
+    setBusy(false);
+    throw err;
   }
+
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
@@ -256,103 +521,103 @@ async function streamMessage(message) {
   let cancelled = false;
   let error = null;
   let started = false;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    let idx;
-    while ((idx = buffer.indexOf('\n\n')) >= 0) {
-      const frame = buffer.slice(0, idx);
-      buffer = buffer.slice(idx + 2);
-      if (!frame.startsWith('data: ')) continue;
-      const payload = JSON.parse(frame.slice(6));
-      if (payload.error) {
-        error = payload.error;
-      } else if (payload.text) {
-        full += payload.text;
-        started = true;
-        hideTyping();
-        bubble.textContent = full;
-        chat.scrollTop = chat.scrollHeight;
-      } else if (payload.applied) {
-        applied = payload.applied;
-        target = payload.target;
-        target2 = payload.target2 ?? null;
-      } else if (payload.cancelled) {
-        cancelled = true;
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buffer.indexOf('\n\n')) >= 0) {
+        const frame = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+        if (!frame.startsWith('data: ')) continue;
+        let payload;
+        try {
+          payload = JSON.parse(frame.slice(6));
+        } catch {
+          continue;
+        }
+        if (payload.error) {
+          error = payload.error;
+          maybeSetBusyFromError({ message: error });
+        } else if (payload.text) {
+          full += payload.text;
+          started = true;
+          hideTyping();
+          textDiv.innerHTML = renderAssistantText(full, applied);
+          scrollToBottomIfNear();
+          scheduleTypingResume();
+        } else if (payload.applied) {
+          applied = payload.applied;
+          target = payload.target ?? null;
+          target2 = payload.target2 ?? null;
+        } else if (payload.action === 'none') {
+          applied = 'none';
+        } else if (payload.cancelled) {
+          cancelled = true;
+        }
       }
-      // {done: true} ends the stream naturally
     }
+  } catch (e) {
+    maybeSetBusyFromError(e);
+    setBusy(false);
+    throw e;
   }
-  if (error) throw new Error(error);
-  bubble.textContent = displayText(full, applied) || (started ? '' : '(no response)');
-  const note = document.createElement('span');
-  if (applied) {
-    note.className = 'applied';
-    note.textContent =
-      applied === 'rewrite'
-        ? '\u2713 selection replaced in the LyX document'
-        : applied === 'rewrite-at'
-          ? `\u2713 paragraph [${target ? 'p' + target : '?'}] replaced in the LyX document`
-          : applied === 'insert-after'
-            ? `\u2713 inserted after paragraph [${target ? 'p' + target : '?'}] in LyX`
-            : applied === 'insert-before'
-              ? `\u2713 inserted before paragraph [${target ? 'p' + target : '?'}] in LyX`
-              : applied === 'delete-at'
-              ? `\u2713 paragraph [${target ? 'p' + target : '?'}] deleted from LyX`
-              : applied === 'move'
-                ? `\u2713 paragraph [${target ? 'p' + target : '?'}] moved` +
-                  (target2 !== null ? ` to after [p${target2}]` : '')
-                : applied === 'insert-top'
-                ? '\u2713 inserted at the top of the document'
-                : '\u2713 inserted at the cursor in LyX';
-  } else if (cancelled) {
-    note.className = 'stopped';
-    note.textContent = '(stopped)';
-  }
-  if (note.textContent) bubble.parentElement.appendChild(note);
-  chat.scrollTop = chat.scrollHeight;
-  return { full, applied, cancelled };
+
+  hideTyping();
+  textDiv.innerHTML = renderAssistantText(full, applied) || (started ? '' : '<p>(no response)</p>');
+  renderFeedback(div, { applied, target, target2, cancelled, error });
+  scrollToBottomIfNear();
+  setBusy(false);
+  return { full, applied, cancelled, error };
 }
 
 async function send() {
-  if (busy || !sessionId) return;
+  if (busy || !sessionId || lyxBusy) return;
   const message = input.value.trim();
   if (!message) return;
   input.value = '';
   addMessage('user', message);
-  setBusy(true);
   try {
     await streamMessage(message);
     // Attachments were consumed by this message.
     pendingAttachments.length = 0;
     renderChips();
   } catch (e) {
-    if (e.name === 'AbortError') {
-      addMessage('assistant', '(stopped)');
-    } else {
-      addMessage('assistant', `error: ${e.message}`);
+    if (e.name !== 'AbortError') {
+      addSystemMessage(`error: ${e.message}`, true);
     }
   } finally {
-    setBusy(false);
     await refreshStatus();
     await refreshDocuments();
+    await refreshSelection();
   }
 }
 
 function renderChips() {
   chipsEl.innerHTML = '';
   for (const att of pendingAttachments) {
-    const chip = document.createElement('span');
+    const chip = document.createElement('div');
     chip.className = 'chip';
-    const label = document.createElement('span');
-    label.textContent = att.name + (att.converted ? '' : ' (no text extracted)');
-    const x = document.createElement('button');
-    x.textContent = '\u2715';
-    x.title = 'Remove attachment';
-    x.addEventListener('click', () => removeAttachment(att.id));
-    chip.appendChild(label);
-    chip.appendChild(x);
+    if (att.converting) chip.classList.add('converting');
+    else if (att.converted === false) chip.classList.add('warn');
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'chip-name';
+    if (att.converting) {
+      nameSpan.textContent = `Reading ${att.name}…`;
+    } else if (att.converted === false) {
+      nameSpan.textContent = `${att.name} (could not read text)`;
+    } else {
+      nameSpan.textContent = att.name;
+    }
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'chip-remove';
+    removeBtn.setAttribute('aria-label', 'Remove attachment');
+    removeBtn.textContent = '×';
+    removeBtn.addEventListener('click', () => removeAttachment(att.id));
+    chip.appendChild(nameSpan);
+    chip.appendChild(removeBtn);
     chipsEl.appendChild(chip);
   }
 }
@@ -394,20 +659,30 @@ attachBtn.addEventListener('click', () => {
 fileInput.addEventListener('change', async () => {
   if (!sessionId || busy) return;
   for (const file of fileInput.files ?? []) {
+    const tempId = `pending-${Math.random().toString(36).slice(2)}`;
+    pendingAttachments.push({ id: tempId, name: file.name, converting: true });
+    renderChips();
     try {
       const att = await uploadFile(file);
-      pendingAttachments.push(att);
+      const idx = pendingAttachments.findIndex((a) => a.id === tempId);
+      if (idx >= 0) pendingAttachments[idx] = { ...att, converting: false };
+      renderChips();
+      if (att.converted === false) {
+        addSystemMessage(`Could not read text from ${file.name}. It was still attached; the agent can try to read it itself.`, true);
+      }
     } catch (e) {
-      addMessage('assistant', `attachment "${file.name}" failed: ${e.message}`);
+      const idx = pendingAttachments.findIndex((a) => a.id === tempId);
+      if (idx >= 0) pendingAttachments.splice(idx, 1);
+      renderChips();
+      addSystemMessage(`attachment "${file.name}" failed: ${e.message}`, true);
     }
   }
-  renderChips();
   input.focus();
 });
 
 sendBtn.addEventListener('click', send);
 input.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+  if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
     send();
   }
@@ -427,9 +702,9 @@ undoBtn.addEventListener('click', async () => {
   if (busy || !sessionId) return;
   try {
     await api(`/api/session/${sessionId}/undo`, { method: 'POST' });
-    addMessage('assistant', '(undo sent to LyX)');
+    addSystemMessage('Undo sent to LyX');
   } catch (e) {
-    addMessage('assistant', `error: ${e.message}`);
+    addSystemMessage(`Undo failed: ${e.message}`, true);
   }
 });
 
@@ -438,7 +713,7 @@ reconnectBtn.addEventListener('click', reconnect);
 let lyxFollowMode = true;
 pinBtn.addEventListener('click', () => {
   lyxFollowMode = !lyxFollowMode;
-  pinBtn.classList.toggle('off', !lyxFollowMode);
+  pinBtn.setAttribute('aria-pressed', String(lyxFollowMode));
   pinBtn.title = lyxFollowMode
     ? 'Float on top while LyX is focused'
     : 'Floating disabled';
@@ -446,7 +721,24 @@ pinBtn.addEventListener('click', () => {
 });
 
 loadSettings();
+input.placeholder = 'Ask the agent. It reads the document and your selection, then decides: reply here, insert at the cursor, or rewrite what you selected.';
+if (selectionEl) selectionEl.hidden = true;
+showEmpty();
+stopBtn.style.display = '';
+fileInput.style.display = '';
+sendBtn.title = 'Send message (Enter)';
+reconnectBtn.title = 'Restart the agent session';
+pinBtn.setAttribute('aria-pressed', 'true');
+pinBtn.title = 'Float on top while LyX is focused';
+cmdEl.addEventListener('blur', saveSettings);
+argsEl.addEventListener('blur', saveSettings);
+updateComposerState();
 connect().catch((e) => {
-  statusEl.textContent = `failed to connect: ${e.message}`;
-  statusEl.className = 'status bad';
+  maybeSetBusyFromError(e);
+  if (!lyxBusy) {
+    setStatusText(`failed to connect: ${e.message}`);
+    statusEl.className = 'status bad';
+  }
+  const details = document.querySelector('.agent-settings');
+  if (details && typeof details.open === 'boolean') details.open = true;
 });
