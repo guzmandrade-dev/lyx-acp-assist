@@ -413,6 +413,22 @@ export function createServer(options: ServerOptions) {
           const gotoResult = await gotoParagraph(session, outcome.target, 'insert-after');
           target = gotoResult.target;
           positionError = gotoResult.error;
+        } else if (outcome.action === 'insert-before') {
+          // Insert-before pN = insert-after p(N-1), reusing the fully
+          // verified insert-after choreography (walk, verify, collapse,
+          // break a fresh paragraph). For p1 it degenerates to the
+          // insert-top choreography; the reported target stays pN.
+          if (outcome.target === 1) {
+            const moved = await session.lyx.beginOfDocument();
+            if (!moved) {
+              positionError = 'Could not move the cursor to the start of the document (buffer-begin failed).';
+            } else {
+              await session.lyx.breakParagraph();
+            }
+          } else {
+            const gotoResult = await gotoParagraph(session, (outcome.target ?? 0) - 1, 'insert-after');
+            positionError = gotoResult.error;
+          }
         }
         if (positionError) {
           send({ error: positionError });
@@ -809,6 +825,7 @@ type AgentAction =
   | 'insert'
   | 'insert-top'
   | 'insert-after'
+  | 'insert-before'
   | 'rewrite'
   | 'rewrite-at'
   | 'delete-at'
@@ -826,7 +843,7 @@ interface ActionOutcome {
 /** Extract the trailing [ACTION: ...] tag and the ```lyx block from a reply. */
 export function parseAction(reply: string): ActionOutcome {
   const m = reply.match(
-    /\[ACTION:\s*(move|delete-at|rewrite-at|insert-after|insert-top|rewrite|insert|none)(?:\s+p(\d+))?(?:\s+(?:to\s+)?p(\d+))?\s*\]/i,
+    /\[ACTION:\s*(move|delete-at|rewrite-at|insert-before|insert-after|insert-top|rewrite|insert|none)(?:\s+p(\d+))?(?:\s+(?:to\s+)?p(\d+))?\s*\]/i,
   );
   const action = ((m?.[1] ?? 'none').toLowerCase() as AgentAction);
   const target = m?.[2] ? Number.parseInt(m[2], 10) : null;
@@ -869,6 +886,11 @@ export function buildAutoPrompt(
       'paragraph(s) right AFTER paragraph [pN] from the outline (use this ' +
       'when the user asks to add a section/paragraph to the document and ' +
       'the position follows from the outline): include a ```lyx fenced block.',
+    '- [ACTION: insert-before pN] to insert NEW content as its own ' +
+      'paragraph(s) right BEFORE paragraph [pN] from the outline (e.g. an ' +
+      'intro paragraph in front of [pN], or a heading above [pN]; use ' +
+      'insert-top for the very beginning of the document): include a ```lyx ' +
+      'fenced block.',
     '- [ACTION: rewrite] to REPLACE the currently selected text (given ' +
       'below): include a ```lyx fenced block with the complete replacement.',
     '- [ACTION: delete-at pN] to DELETE the entire paragraph [pN] from the ' +

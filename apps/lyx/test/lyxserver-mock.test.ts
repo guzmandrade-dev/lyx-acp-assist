@@ -67,6 +67,34 @@ describe('LyxServerClient against mock LyX', () => {
     ]);
   });
 
+  it('executes the insert-before pN choreography (fresh paragraph above pN)', async () => {
+    const { mock, client } = await startMock([
+      { layout: 'Standard', text: 'First body' },
+      { layout: 'Section', text: 'Second body' },
+      { layout: 'Standard', text: 'Third body' },
+    ]);
+
+    // insert-before p3 reuses insert-after on p2: walk to p2 (buffer-begin
+    // sits on p1, one paragraph-down -> p2), select + copy it for
+    // verification, collapse to its end, break a fresh paragraph below
+    // p2 — i.e. above p3 — and paste there.
+    await client.beginOfDocument();
+    expect(await client.paragraphDown()).toBe(true);
+    expect(await client.paragraphSelect()).toBe(true);
+    expect(await client.copySelection()).toBe(true);
+    expect(mock.clipboardText).toBe('Second body');
+    expect(await client.collapseSelectionForward()).toBe(true);
+    expect(await client.breakParagraph()).toBe(true);
+    mock.clipboardText = 'NEW INTRO';
+    await client.paste();
+    expect(mock.paragraphs.map((p) => p.text)).toEqual([
+      'First body',
+      'Second body',
+      'NEW INTRO',
+      'Third body',
+    ]);
+  });
+
   it('executes the rewrite choreography: paste replaces the selection', async () => {
     const { mock, client } = await startMock([
       { layout: 'Standard', text: 'old text' },

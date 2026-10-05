@@ -332,6 +332,11 @@ intent; the agent must end its reply with a trailing action tag:
   (`char-forward`), `paragraph-break` below it, paste into the fresh empty
   paragraph (no merge into [pN]); for "add a section/paragraph" requests
   where the position follows from the outline
+- `[ACTION: insert-before pN]` — insert as its own paragraph(s) right
+  before [pN]: implemented by REUSING the verified choreographies —
+  p(N-1) insert-after walk for N > 1 (so verification and the fresh-empty-
+  paragraph trick come for free), the insert-top choreography for p1
+  (buffer-begin + paragraph-break). The reported target stays pN.
 - `[ACTION: delete-at pN]` — delete paragraph [pN]: walk + verify + select,
   `char-delete-forward` (removes the text), then `mergeAwayParagraph()`
   (backspace merges the leftover empty paragraph into the previous one,

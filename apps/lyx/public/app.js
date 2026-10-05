@@ -296,7 +296,9 @@ async function streamMessage(message) {
           ? `\u2713 paragraph [${target ? 'p' + target : '?'}] replaced in the LyX document`
           : applied === 'insert-after'
             ? `\u2713 inserted after paragraph [${target ? 'p' + target : '?'}] in LyX`
-            : applied === 'delete-at'
+            : applied === 'insert-before'
+              ? `\u2713 inserted before paragraph [${target ? 'p' + target : '?'}] in LyX`
+              : applied === 'delete-at'
               ? `\u2713 paragraph [${target ? 'p' + target : '?'}] deleted from LyX`
               : applied === 'move'
                 ? `\u2713 paragraph [${target ? 'p' + target : '?'}] moved` +
