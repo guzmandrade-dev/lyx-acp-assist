@@ -166,6 +166,13 @@ describe('agent action parsing', () => {
     expect(after.target).toBe(12);
     expect(after.body).toBeTruthy();
 
+    const before = parseAction(
+      '```lyx\n\\begin_layout Standard\nIntro\n\\end_layout\n```\n[ACTION: insert-before p2]',
+    );
+    expect(before.action).toBe('insert-before');
+    expect(before.target).toBe(2);
+    expect(before.body).toBeTruthy();
+
     const del = parseAction('Removing that paragraph as requested.\n[ACTION: delete-at p3]');
     expect(del.action).toBe('delete-at');
     expect(del.target).toBe(3);
