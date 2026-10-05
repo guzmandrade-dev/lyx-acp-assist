@@ -372,6 +372,15 @@ export function createServer(options: ServerOptions) {
             send({ error: `LyX could not delete paragraph [p${outcome.target}].` });
           }
         }
+      } else if (outcome.action === 'merge') {
+        // Merge needs no ```lyx block: walk + verify + collapse to the end
+        // of [pN], then delete-forward merges [p(N+1)] into it.
+        const result = await mergeParagraph(session, outcome.target, outcome.target2);
+        if (result.error) {
+          send({ error: result.error });
+        } else {
+          send({ applied: 'merge', target: outcome.target, target2: outcome.target2 });
+        }
       } else if (outcome.action === 'move') {
         // Move needs no ```lyx block: capture the paragraph via the
         // clipboard, delete it, then re-paste at the adjusted destination.
@@ -724,6 +733,56 @@ export function createServer(options: ServerOptions) {
   }
 
   /**
+   * Merge paragraph [pN] with [p(N+1)] into one paragraph (the user-quoted
+   * M must equal N+1 — only adjacent paragraphs can merge). Choreography:
+   * gotoParagraph(pN) selects and verifies it, the selection is collapsed
+   * to the paragraph's end, then `char-delete-forward` deletes the
+   * paragraph break so [p(N+1)]'s text is appended into [pN]. The merged
+   * paragraph keeps [pN]'s layout; one undo reverts the merge.
+   */
+  async function mergeParagraph(
+    session: Session,
+    n: number | null,
+    m: number | null,
+  ): Promise<{ target2: number | null; error: string | null }> {
+    const fail = (error: string): { target2: number | null; error: string } => ({
+      target2: m,
+      error,
+    });
+    if (!n || n < 1) {
+      return fail('Agent chose [ACTION: merge] without a valid first paragraph number.');
+    }
+    if (m === null || m !== n + 1) {
+      return fail(
+        '[ACTION: merge pN pM] requires two ADJACENT paragraphs (M = N+1). ' +
+          'Merge the pair one at a time.',
+      );
+    }
+    let ctx;
+    try {
+      ctx = await readDocumentContext(session);
+    } catch (e) {
+      return fail(`Cannot address paragraphs: ${(e as Error).message}`);
+    }
+    if (n >= ctx.outline.length) {
+      return fail(
+        `Paragraph [p${n + 1}] does not exist (document has ${ctx.outline.length}).`,
+      );
+    }
+    const gotoResult = await gotoParagraph(session, n, 'rewrite');
+    if (gotoResult.error) return fail(gotoResult.error);
+    const collapsed = await session.lyx.collapseSelectionForward();
+    if (!collapsed) {
+      return fail(`Could not move the cursor to the end of paragraph [p${n}].`);
+    }
+    const merged = await session.lyx.mergeWithNextParagraph();
+    if (!merged) {
+      return fail(`LyX could not merge paragraph [p${n}] with [p${m}].`);
+    }
+    return { target2: m, error: null };
+  }
+
+  /**
    * Move paragraph [pN] to the position right after paragraph [pM]
    * (pM = 0 -> the very top). Verified choreography:
    * 1. gotoParagraph(pN) selects and verifies it; the verification copy
@@ -832,6 +891,7 @@ type AgentAction =
   | 'rewrite'
   | 'rewrite-at'
   | 'delete-at'
+  | 'merge'
   | 'move';
 
 interface ActionOutcome {
@@ -846,7 +906,7 @@ interface ActionOutcome {
 /** Extract the trailing [ACTION: ...] tag and the ```lyx block from a reply. */
 export function parseAction(reply: string): ActionOutcome {
   const m = reply.match(
-    /\[ACTION:\s*(move|delete-at|rewrite-at|insert-before|insert-after|insert-top|rewrite|insert|none)(?:\s+p(\d+))?(?:\s+(?:to\s+)?p(\d+))?\s*\]/i,
+    /\[ACTION:\s*(merge|move|delete-at|rewrite-at|insert-before|insert-after|insert-top|rewrite|insert|none)(?:\s+p(\d+))?(?:\s+(?:to\s+)?p(\d+))?\s*\]/i,
   );
   const action = ((m?.[1] ?? 'none').toLowerCase() as AgentAction);
   const target = m?.[2] ? Number.parseInt(m[2], 10) : null;
@@ -899,6 +959,12 @@ export function buildAutoPrompt(
     '- [ACTION: delete-at pN] to DELETE the entire paragraph [pN] from the ' +
       'outline (use when the user asks to remove a specific paragraph): ' +
       'NO fenced block, just the tag.',
+    '- [ACTION: merge pN pM] to merge two ADJACENT paragraphs [pN] and ' +
+      '[pM] into ONE paragraph (M must be N+1; the merged paragraph keeps ' +
+      '[pN]\'s layout): NO fenced block, just the tag. To SPLIT one ' +
+      'paragraph instead, use [ACTION: rewrite-at pN] with two (or more) ' +
+      '```lyx paragraphs in the fenced block — the paragraph is replaced ' +
+      'by them, splitting it at the point you choose.',
     '- [ACTION: move pN pM] to MOVE the entire paragraph [pN] so it ends ' +
       'up right AFTER paragraph [pM] (p0 = the very top of the document; ' +
       'use when the user asks to reorder or move a paragraph): NO fenced ' +

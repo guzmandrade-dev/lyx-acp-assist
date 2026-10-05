@@ -508,5 +508,11 @@ the selection -> `buffer-write`. Insert-at-cursor and undo also wired.
   `{"tool": {title, status}}` SSE frames; the UI shows one quiet muted line
   under the assistant bubble ("Using grep…" → "Used grep, read_file") instead
   of the typing indicator while tools run.
-- Next: custom textclass
-  support, more action verbs (merge/split paragraphs), packaging.
+- Merge/split paragraph verbs DONE (2026-10-04): `[ACTION: merge pN pM]`
+  (M must be N+1) = gotoParagraph(pN,'rewrite') + collapseSelectionForward
+  + `mergeWithNextParagraph()` (char-delete-forward at the paragraph END
+  deletes the break; the cursor MUST be at the end — at the start it just
+  deletes a character). One undo reverts. Split needs NO new verb: rewrite-at
+  pN with 2+ \\begin_layout paragraphs in the block splits it (verified
+  mechanism all along). Tests: parseAction merge tag + mock merge choreography.
+- Next: packaging.

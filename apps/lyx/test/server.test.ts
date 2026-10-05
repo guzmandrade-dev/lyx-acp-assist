@@ -192,6 +192,17 @@ describe('agent action parsing', () => {
     const moveNoDest = parseAction('[ACTION: move p2]');
     expect(moveNoDest.action).toBe('move');
     expect(moveNoDest.target2).toBeNull();
+
+    const merge = parseAction('Joining those two paragraphs.\n[ACTION: merge p2 p3]');
+    expect(merge.action).toBe('merge');
+    expect(merge.target).toBe(2);
+    expect(merge.target2).toBe(3);
+    expect(merge.body).toBeNull();
+
+    const mergeAdjacentCase = parseAction('[ACTION: MERGE p5 P6]');
+    expect(mergeAdjacentCase.action).toBe('merge');
+    expect(mergeAdjacentCase.target).toBe(5);
+    expect(mergeAdjacentCase.target2).toBe(6);
   });
 
   it('normalizes typography so file text and clipboard text compare equal', () => {

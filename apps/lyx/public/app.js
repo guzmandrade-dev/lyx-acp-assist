@@ -451,6 +451,9 @@ function renderFeedback(msgDiv, { applied, target, target2, cancelled, error }) 
       case 'delete-at':
         prefix = `Deleted [p${target ?? '?'}] from LyX`;
         break;
+      case 'merge':
+        prefix = `Merged [p${target ?? '?'}] with [p${target2 ?? '?'}] in LyX`;
+        break;
       case 'move':
         prefix = `Moved [p${target ?? '?'}] to after [p${target2 ?? '?'}] in LyX`;
         break;
