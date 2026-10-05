@@ -369,6 +369,15 @@ export function createServer(options: ServerOptions) {
             send({ error: `LyX could not delete paragraph [p${outcome.target}].` });
           }
         }
+      } else if (outcome.action === 'move') {
+        // Move needs no ```lyx block: capture the paragraph via the
+        // clipboard, delete it, then re-paste at the adjusted destination.
+        const result = await moveParagraph(session, outcome.target, outcome.target2);
+        if (result.error) {
+          send({ error: result.error });
+        } else {
+          send({ applied: 'move', target: outcome.target, target2: outcome.target2 });
+        }
       } else {
         // A write action: position the cursor, then paste.
         if (!outcome.body) {
@@ -694,6 +703,102 @@ export function createServer(options: ServerOptions) {
     }
     return { target, error: null };
   }
+
+  /**
+   * Move paragraph [pN] to the position right after paragraph [pM]
+   * (pM = 0 -> the very top). Verified choreography:
+   * 1. gotoParagraph(pN) selects and verifies it; the verification copy
+   *    leaves its x-lyx payload on the clipboard, which we capture.
+   * 2. Delete [pN] with the delete-at choreography.
+   * 3. Re-save the buffer so the .lyx file on disk matches the shrunken
+   *    document — gotoParagraph verifies destinations against the FILE,
+   *    and a stale file would mis-target the paste.
+   * 4. Walk to the adjusted destination (M >= N -> M-1 after removal)
+   *    and paste the captured paragraph there (insert-after / insert-top
+   *    choreographies keep its layout).
+   */
+  async function moveParagraph(
+    session: Session,
+    from: number | null,
+    to: number | null,
+  ): Promise<{ target2: number | null; error: string | null }> {
+    const fail = (error: string): { target2: number | null; error: string } => ({
+      target2: to,
+      error,
+    });
+    if (!from || from < 1) {
+      return fail('Agent chose [ACTION: move] without a valid source paragraph number.');
+    }
+    if (to === null || to < 0) {
+      return fail('Agent chose [ACTION: move] without a valid destination paragraph number (p0 = top).');
+    }
+    let ctx;
+    try {
+      ctx = await readDocumentContext(session);
+    } catch (e) {
+      return fail(`Cannot address paragraphs: ${(e as Error).message}`);
+    }
+    const count = ctx.outline.length;
+    if (from > count) {
+      return fail(`Paragraph [p${from}] does not exist (document has ${count}).`);
+    }
+    if (to > count) {
+      return fail(`Destination [p${to}] does not exist (document has ${count}).`);
+    }
+    // Already in place: moving pN after itself or after its predecessor
+    // is a no-op — report success without touching the document.
+    if (to === from || to === from - 1) return { target2: to, error: null };
+
+    // 1. Select + verify [pN]; the copy leaves its x-lyx on the clipboard.
+    const gotoResult = await gotoParagraph(session, from, 'rewrite');
+    if (gotoResult.error) return fail(gotoResult.error);
+    const copied = await session.clipboard.readLyxDocument();
+    const body = copied ? extractBodyLayouts(copied) : null;
+    if (!body) {
+      await session.lyx.clearSelection();
+      return fail(`Could not read paragraph [p${from}] from the clipboard; nothing was moved.`);
+    }
+
+    // 2. Delete [pN].
+    const deleted = await session.lyx.deleteSelection();
+    if (!deleted) {
+      await session.lyx.clearSelection();
+      return fail(`LyX could not delete paragraph [p${from}]; nothing was moved.`);
+    }
+    await session.lyx.mergeAwayParagraph();
+
+    // 3. Keep the file on disk in sync (see the doc comment).
+    await session.lyx.save();
+
+    // 4. Position at the adjusted destination, then paste.
+    const dest = to === 0 ? 0 : to < from ? to : to - 1;
+    if (dest === 0) {
+      const moved = await session.lyx.beginOfDocument();
+      if (!moved) return fail('Could not move the cursor to the start of the document (buffer-begin failed).');
+      // buffer-begin lands INSIDE the first paragraph; break first so the
+      // paste lands in a fresh empty paragraph and keeps its layout.
+      const broke = await session.lyx.breakParagraph();
+      if (!broke) return fail('Could not create a paragraph at the top of the document.');
+    } else {
+      const gotoDest = await gotoParagraph(session, dest, 'insert-after');
+      if (gotoDest.error) return fail(gotoDest.error);
+    }
+    if (session.cancelRequested) {
+      return fail('Cancelled before the paste; the paragraph was deleted — undo in LyX to restore it.');
+    }
+    const header = (await currentHeader(session)) ?? FALLBACK_HEADER;
+    const doc = assemblePasteDocument(header, body);
+    const written = await session.clipboard.writeLyxDocumentVerified(doc, body);
+    if (!written) {
+      return fail(
+        'The .lyx payload could not be written to the clipboard; the paragraph ' +
+          'was deleted but not re-inserted. Undo in LyX to restore it.',
+      );
+    }
+    await sleep(100); // let the OS clipboard settle before paste
+    await session.lyx.paste();
+    return { target2: to, error: null };
+  }
   return app;
 }
 
@@ -706,24 +811,28 @@ type AgentAction =
   | 'insert-after'
   | 'rewrite'
   | 'rewrite-at'
-  | 'delete-at';
+  | 'delete-at'
+  | 'move';
 
 interface ActionOutcome {
   action: AgentAction;
   body: string | null;
   /** Paragraph address [pN] for rewrite-at / insert-after. */
   target: number | null;
+  /** Destination address [pM] for move (0 = top of the document). */
+  target2: number | null;
 }
 
 /** Extract the trailing [ACTION: ...] tag and the ```lyx block from a reply. */
 export function parseAction(reply: string): ActionOutcome {
   const m = reply.match(
-    /\[ACTION:\s*(delete-at|rewrite-at|insert-after|insert-top|rewrite|insert|none)(?:\s+p(\d+))?\s*\]/i,
+    /\[ACTION:\s*(move|delete-at|rewrite-at|insert-after|insert-top|rewrite|insert|none)(?:\s+p(\d+))?(?:\s+(?:to\s+)?p(\d+))?\s*\]/i,
   );
   const action = ((m?.[1] ?? 'none').toLowerCase() as AgentAction);
   const target = m?.[2] ? Number.parseInt(m[2], 10) : null;
+  const target2 = m?.[3] ? Number.parseInt(m[3], 10) : null;
   const body = action === 'none' ? null : extractBodyLayouts(reply);
-  return { action, body, target };
+  return { action, body, target, target2 };
 }
 
 /** Build the unified "agent decides" prompt for a user message. */
@@ -765,6 +874,12 @@ export function buildAutoPrompt(
     '- [ACTION: delete-at pN] to DELETE the entire paragraph [pN] from the ' +
       'outline (use when the user asks to remove a specific paragraph): ' +
       'NO fenced block, just the tag.',
+    '- [ACTION: move pN pM] to MOVE the entire paragraph [pN] so it ends ' +
+      'up right AFTER paragraph [pM] (p0 = the very top of the document; ' +
+      'use when the user asks to reorder or move a paragraph): NO fenced ' +
+      'block, just the tag. N and M are original outline numbers; the app ' +
+      'adjusts for the removal. Moving pN after p(N-1) changes nothing, ' +
+      'so never emit that.',
     '- [ACTION: rewrite-at pN] to REPLACE the entire paragraph [pN] from ' +
       'the outline (use this when the user asks to modify, fix or remove ' +
       'content in a specific paragraph and nothing is selected): include a ' +

@@ -134,4 +134,58 @@ describe('LyxServerClient against mock LyX', () => {
     await c2.mergeAwayParagraph();
     expect(m2.paragraphs.map((p) => p.text)).toEqual(['kept']);
   });
+
+  it('executes the move pN pM choreography (p3 -> after p1)', async () => {
+    const { mock, client } = await startMock([
+      { layout: 'Standard', text: 'alpha' },
+      { layout: 'Standard', text: 'beta' },
+      { layout: 'Section', text: 'gamma' }, // moves to after p1
+    ]);
+    // 1. Walk to p3, select, copy (verification/capture).
+    await client.beginOfDocument();
+    expect(await client.paragraphDown()).toBe(true);
+    expect(await client.paragraphDown()).toBe(true);
+    expect(await client.paragraphSelect()).toBe(true);
+    expect(await client.copySelection()).toBe(true);
+    expect(mock.clipboardText).toBe('gamma');
+    // 2. Delete p3 (delete-at choreography).
+    expect(await client.deleteSelection()).toBe(true);
+    await client.mergeAwayParagraph();
+    expect(mock.paragraphs.map((p) => p.text)).toEqual(['alpha', 'beta']);
+    // 3. Destination adjusted for the removal: after old p1 = new p1
+    //    (buffer-begin already sits on it). Select, verify, collapse,
+    //    break a fresh paragraph below it.
+    await client.beginOfDocument();
+    expect(await client.paragraphSelect()).toBe(true);
+    expect(await client.copySelection()).toBe(true); // verification copy
+    expect(await client.collapseSelectionForward()).toBe(true);
+    expect(await client.breakParagraph()).toBe(true);
+    // 4. Paste the captured paragraph there.
+    mock.clipboardText = 'gamma';
+    await client.paste();
+    expect(mock.paragraphs.map((p) => p.text)).toEqual(['alpha', 'gamma', 'beta']);
+    // (Layout preservation is exercised only against live LyX: the mock's
+    // clipboard is text-only, while the real paste carries application/x-lyx.)
+  });
+
+  it('executes the move-to-top choreography (p2 -> p0)', async () => {
+    const { mock, client } = await startMock([
+      { layout: 'Standard', text: 'alpha' },
+      { layout: 'Title', text: 'beta' },
+    ]);
+    // Select + copy p2, delete it, then re-insert at the top.
+    await client.beginOfDocument();
+    expect(await client.paragraphDown()).toBe(true);
+    expect(await client.paragraphSelect()).toBe(true);
+    expect(await client.copySelection()).toBe(true);
+    expect(await client.deleteSelection()).toBe(true);
+    await client.mergeAwayParagraph();
+    expect(mock.paragraphs.map((p) => p.text)).toEqual(['alpha']);
+    // insert-top choreography: buffer-break leaves an empty paragraph above.
+    await client.beginOfDocument();
+    expect(await client.breakParagraph()).toBe(true);
+    mock.clipboardText = 'beta';
+    await client.paste();
+    expect(mock.paragraphs.map((p) => p.text)).toEqual(['beta', 'alpha']);
+  });
 });
