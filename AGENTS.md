@@ -411,7 +411,8 @@ paste.
 the tag + block; markup problems trigger one corrective retry
 (`buildMarkupRetryPrompt`). The app keeps the mechanical/unsafe part
 (clipboard write + `paste`), the agent owns intent. SSE frames:
-`{"text"}`, `{"applied": "insert"|"insert-top"|"rewrite"}`, `{"action":"none"}`,
+`{"text"}`, `{"tool": {title, status}}` (agent tool activity), `{"applied":
+"insert"|"insert-top"|"rewrite"}`, `{"action":"none"}`,
 `{"cancelled":true}`, `{"error"}`, `{"done":true}`.
 
 **Insert-top pitfall (live-verified failure):** `buffer-begin` puts the
@@ -502,5 +503,10 @@ the selection -> `buffer-write`. Insert-at-cursor and undo also wired.
   documents, selection, undo, cancel. `src/electron/main.ts` + `public/` — UI.
 - `test/mock-lyx-server.ts` — fake LyXServer harness (see its section).
 - 66 vitest tests green.
-- Next: UX work (tool-call progress in the stream), custom textclass
+- Tool-call progress in the stream is DONE (2026-10-04): `AcpClient.prompt`
+  forwards `tool_call` session updates via `onToolCall`; the server emits
+  `{"tool": {title, status}}` SSE frames; the UI shows one quiet muted line
+  under the assistant bubble ("Using grep…" → "Used grep, read_file") instead
+  of the typing indicator while tools run.
+- Next: custom textclass
   support, more action verbs (merge/split paragraphs), packaging.

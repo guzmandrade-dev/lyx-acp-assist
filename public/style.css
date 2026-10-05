@@ -431,6 +431,14 @@ main::-webkit-scrollbar-thumb {
   opacity: 0.75;
 }
 
+/* Tool activity line (quiet, single, muted) */
+.tools {
+  margin-top: var(--space-3);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-normal);
+  color: var(--text-tertiary);
+}
+
 /* Typing indicator */
 .typing {
   font-size: var(--text-sm);
