@@ -146,8 +146,9 @@ selection is empty. Useful as a cheap selection probe before `copy`.
 
 - Do not commit or open PRs without explicit approval; leave changes ready.
 - Do not create worktrees; work on the current branch/folder.
-- Record important decisions and findings here and in `notes.md`
-  (`notes.md` holds the original brainstorm + the same architecture summary).
+- Record important decisions and findings here (AGENTS.md is the
+  single source of truth for architecture, protocol notes, and pitfalls;
+  the old brainstorm in notes.md was folded into README.md and removed).
 
 ## Clipboard findings (critical; live-verified 2026-10-04)
 
