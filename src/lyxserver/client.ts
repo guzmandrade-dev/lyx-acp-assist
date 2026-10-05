@@ -341,6 +341,15 @@ export class LyxServerClient extends EventEmitter {
   }
 
   /**
+   * Merge the paragraph AFTER the cursor into it: with the cursor at the
+   * END of a paragraph, `char-delete-forward` deletes the paragraph break
+   * (LyX's delete key), appending the next paragraph's text into this one.
+   */
+  async mergeWithNextParagraph(): Promise<boolean> {
+    return (await this.tryRequest('char-delete-forward')) !== null;
+  }
+
+  /**
    * Collapse any active selection (moving the cursor collapses it).
    * Selections persist across pipe commands, so failures must clean up.
    */

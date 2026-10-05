@@ -37,7 +37,11 @@ action tag the app executes mechanically:
 | `[ACTION: rewrite]` | Replace the active selection |
 | `[ACTION: rewrite-at pN]` | Replace paragraph `[pN]` (verified before pasting) |
 | `[ACTION: delete-at pN]` | Delete paragraph `[pN]` |
+| `[ACTION: merge pN pM]` | Merge two adjacent paragraphs (M = N+1) |
 | `[ACTION: move pN pM]` | Move paragraph `[pN]` to after `[pM]` |
+
+Splitting a paragraph is done with `[ACTION: rewrite-at pN]` and a fenced
+block containing the two (or more) new paragraphs.
 
 Applied edits are confirmed quietly under the reply ("Inserted after [p5] · Undo
 edit") and every paste is verified against the document before it happens — a

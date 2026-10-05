@@ -137,6 +137,29 @@ describe('LyxServerClient against mock LyX', () => {
     expect(words).toBe(3);
   });
 
+  it('executes the merge pN pM choreography (select, collapse, delete-forward)', async () => {
+    const { mock, client } = await startMock([
+      { layout: 'Standard', text: 'alpha' },
+      { layout: 'Standard', text: 'beta' },
+      { layout: 'Standard', text: 'third' },
+    ]);
+    // Walk to p2, select, collapse to the end of p2, delete-forward
+    // merges p3's text into p2.
+    await client.beginOfDocument();
+    expect(await client.paragraphDown()).toBe(true);
+    expect(await client.paragraphSelect()).toBe(true);
+    expect(await client.collapseSelectionForward()).toBe(true);
+    expect(await client.mergeWithNextParagraph()).toBe(true);
+    expect(mock.paragraphs.map((p) => p.text)).toEqual(['alpha', 'betathird']);
+    // Merging at the very end of the document is disabled (the cursor must
+    // sit at the END of the paragraph: select + collapse puts it there).
+    const { client: c2 } = await startMock([{ layout: 'Standard', text: 'only' }]);
+    await c2.beginOfDocument();
+    expect(await c2.paragraphSelect()).toBe(true);
+    expect(await c2.collapseSelectionForward()).toBe(true);
+    expect(await c2.mergeWithNextParagraph()).toBe(false);
+  });
+
   it('executes the delete-at pN choreography', async () => {
     const { mock, client } = await startMock([
       { layout: 'Standard', text: 'first' },
