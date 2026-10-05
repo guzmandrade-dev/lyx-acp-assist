@@ -170,6 +170,21 @@ describe('agent action parsing', () => {
     expect(del.action).toBe('delete-at');
     expect(del.target).toBe(3);
     expect(del.body).toBeNull();
+
+    const move = parseAction('Moving that section up as requested.\n[ACTION: move p3 p1]');
+    expect(move.action).toBe('move');
+    expect(move.target).toBe(3);
+    expect(move.target2).toBe(1);
+    expect(move.body).toBeNull();
+
+    const moveTop = parseAction('[ACTION: MOVE p2 to p0]');
+    expect(moveTop.action).toBe('move');
+    expect(moveTop.target).toBe(2);
+    expect(moveTop.target2).toBe(0);
+
+    const moveNoDest = parseAction('[ACTION: move p2]');
+    expect(moveNoDest.action).toBe('move');
+    expect(moveNoDest.target2).toBeNull();
   });
 
   it('normalizes typography so file text and clipboard text compare equal', () => {

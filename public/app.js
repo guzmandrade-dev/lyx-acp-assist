@@ -221,7 +221,7 @@ async function reconnect() {
 
 /** Strip the [ACTION: ...] tag; when applied, also strip the applied lyx block. */
 function displayText(full, applied) {
-  let text = full.replace(/\[ACTION:\s*\w+\s*\]/gi, '').trim();
+  let text = full.replace(/\[ACTION:\s*[^\]]*\]/gi, '').trim();
   if (applied) {
     text = text.replace(/```lyx\s*\n[\s\S]*?```\s*/g, '').trim();
   }
@@ -252,6 +252,7 @@ async function streamMessage(message) {
   let full = '';
   let applied = null;
   let target = null;
+  let target2 = null;
   let cancelled = false;
   let error = null;
   let started = false;
@@ -276,6 +277,7 @@ async function streamMessage(message) {
       } else if (payload.applied) {
         applied = payload.applied;
         target = payload.target;
+        target2 = payload.target2 ?? null;
       } else if (payload.cancelled) {
         cancelled = true;
       }
@@ -296,7 +298,10 @@ async function streamMessage(message) {
             ? `\u2713 inserted after paragraph [${target ? 'p' + target : '?'}] in LyX`
             : applied === 'delete-at'
               ? `\u2713 paragraph [${target ? 'p' + target : '?'}] deleted from LyX`
-              : applied === 'insert-top'
+              : applied === 'move'
+                ? `\u2713 paragraph [${target ? 'p' + target : '?'}] moved` +
+                  (target2 !== null ? ` to after [p${target2}]` : '')
+                : applied === 'insert-top'
                 ? '\u2713 inserted at the top of the document'
                 : '\u2713 inserted at the cursor in LyX';
   } else if (cancelled) {

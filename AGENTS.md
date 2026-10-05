@@ -338,6 +338,20 @@ intent; the agent must end its reply with a trailing action tag:
   delete-forward merges with the next when it was the first paragraph).
   tryRequest resolves successful empty-data replies to '' (falsy!) —
   always compare `!== null`.
+- `[ACTION: move pN pM]` — move paragraph [pN] to right AFTER [pM]
+  (pM = 0 -> very top; `moveParagraph` in server.ts). Choreography:
+  gotoParagraph(pN) selects+verifies it and its verification `copy`
+  leaves the x-lyx payload on the clipboard, which is captured via
+  `readLyxDocument()`; then the delete-at choreography removes it;
+  then `save()` — CRITICAL: the destination gotoParagraph verifies
+  against the FILE on disk, which is stale after the deletion, so the
+  buffer MUST be re-saved before walking to the destination (adjusted
+  index: M > N -> M-1 after removal; M < N -> M; p0 -> insert-top
+  choreography). Then writeLyxDocumentVerified + paste (the fresh
+  empty paragraph keeps the pasted layout). Moving pN after p(N-1) or
+  itself is a reported no-op. Cancel/clipboard-write failure after the
+  deletion tells the user to undo in LyX (the paragraph is gone from
+  the document but captured nowhere else).
 - `[ACTION: rewrite]` — replace the active selection with the block
 - `[ACTION: rewrite-at pN]` — replace entire paragraph [pN] (outline
   address): `buffer-begin` + N-1 × `paragraph-down` + `paragraph-select`,
@@ -483,4 +497,4 @@ the selection -> `buffer-write`. Insert-at-cursor and undo also wired.
 - `test/mock-lyx-server.ts` — fake LyXServer harness (see its section).
 - 66 vitest tests green.
 - Next: UX work (tool-call progress in the stream), custom textclass
-  support, more action verbs (delete-at, move), packaging.
+  support, more action verbs (merge/split paragraphs), packaging.
