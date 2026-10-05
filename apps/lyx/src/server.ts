@@ -297,9 +297,10 @@ export function createServer(options: ServerOptions) {
    *   [ACTION: insert]  - paste the ```lyx block at the cursor
    *   [ACTION: rewrite] - replace the current selection with the block
    *
-   * SSE frames: {"text": ...} chunks, then {"applied": "insert"|"rewrite"}
-   * or {"action": "none"}, then {"done": true}. Errors/cancellation are
-   * sent as {"error": ...} / {"cancelled": true} frames.
+   * SSE frames: {"text": ...} chunks, {"tool": {title, status}} for
+   * agent tool activity, then {"applied": "insert"|"rewrite"}
+   * or {"action": "none"}, then {"done": true}. Errors/cancellation
+   * are sent as {"error": ...} / {"cancelled": true} frames.
    */
   app.post('/api/session/:id/message/stream', async (req, res) => {
     const session = sessions.get(param(req.params['id']));
@@ -331,6 +332,7 @@ export function createServer(options: ServerOptions) {
       const prompt = buildAutoPrompt(contextText, selection, message, attachments);
       let reply = await session.agent.prompt(session.id, [{ type: 'text', text: prompt }], {
         onChunk: (chunk) => send({ text: chunk }),
+        onToolCall: (tool) => send({ tool }),
         timeoutMs: 240_000,
       });
       let outcome = parseAction(reply);
@@ -343,6 +345,7 @@ export function createServer(options: ServerOptions) {
           const retry = buildMarkupRetryPrompt(outcome.action, problems);
           reply = await session.agent.prompt(session.id, [{ type: 'text', text: retry }], {
             onChunk: (chunk) => send({ text: `\n${chunk}` }),
+            onToolCall: (tool) => send({ tool }),
           });
           outcome = parseAction(reply);
         }

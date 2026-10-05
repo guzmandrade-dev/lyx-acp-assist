@@ -18,6 +18,8 @@ export interface AcpClientOptions {
 export interface PromptOptions {
   /** Called with each text chunk as it streams in. */
   onChunk?: (chunk: string) => void;
+  /** Called with each tool-call lifecycle update the agent emits. */
+  onToolCall?: (tool: { title: string; status: string; kind: string }) => void;
   /** Abort with an error if the agent takes longer than this. */
   timeoutMs?: number;
 }
@@ -152,6 +154,18 @@ export class AcpClient {
       if (update.sessionUpdate === 'agent_message_chunk' && update.content.type === 'text') {
         text += update.content.text;
         options.onChunk?.(update.content.text);
+      } else if (update.sessionUpdate === 'tool_call') {
+        const tool = update as unknown as {
+          toolCallId: string;
+          title?: string;
+          kind?: string;
+          status?: string;
+        };
+        options.onToolCall?.({
+          title: tool.title ?? tool.toolCallId,
+          status: tool.status ?? 'in_progress',
+          kind: tool.kind ?? 'execute',
+        });
       }
     }
   }

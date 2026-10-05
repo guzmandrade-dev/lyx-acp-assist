@@ -521,6 +521,17 @@ async function streamMessage(message) {
   let cancelled = false;
   let error = null;
   let started = false;
+  const usedTools = [];
+  let toolLine = null;
+
+  const setToolLine = (text) => {
+    if (!toolLine) {
+      toolLine = document.createElement('div');
+      toolLine.className = 'tools';
+      div.appendChild(toolLine);
+    }
+    toolLine.textContent = text;
+  };
 
   try {
     for (;;) {
@@ -548,6 +559,17 @@ async function streamMessage(message) {
           textDiv.innerHTML = renderAssistantText(full, applied);
           scrollToBottomIfNear();
           scheduleTypingResume();
+        } else if (payload.tool) {
+          const t = payload.tool;
+          if (t.status === 'completed') {
+            if (!usedTools.includes(t.title)) usedTools.push(t.title);
+            setToolLine(`Used ${usedTools.join(', ')}`);
+          } else {
+            setToolLine(`Using ${t.title}…`);
+          }
+          hideTyping();
+          scheduleTypingResume();
+          scrollToBottomIfNear();
         } else if (payload.applied) {
           applied = payload.applied;
           target = payload.target ?? null;
@@ -566,6 +588,10 @@ async function streamMessage(message) {
   }
 
   hideTyping();
+  if (toolLine) {
+    if (usedTools.length > 0) setToolLine(`Used ${usedTools.join(', ')}`);
+    else toolLine.remove();
+  }
   textDiv.innerHTML = renderAssistantText(full, applied) || (started ? '' : '<p>(no response)</p>');
   renderFeedback(div, { applied, target, target2, cancelled, error });
   scrollToBottomIfNear();
