@@ -2,13 +2,15 @@
   "name": "lyx-acp-assist",
   "version": "0.1.0",
   "description": "Copilot-for-Word-style LLM assistant for LyX: ACP agent, LyXServer pipe write path, read-only .lyx parser.",
+  "author": "guzma",
   "type": "module",
-  "main": "./dist/index.js",
+  "main": "./dist/electron/main.js",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && tsc -p tsconfig.preload.json",
     "dev": "tsc --watch",
     "typecheck": "tsc --noEmit",
     "start": "npm run build && electron ./dist/electron/main.js",
+    "package": "npm run build && electron-builder",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -20,11 +22,36 @@
     "@types/express": "^5.0.6",
     "@types/node": "^26.1.1",
     "electron": "^44.5.1",
+    "electron-builder": "^26.15.3",
     "typescript": "^5.9.3",
     "vitest": "^4.1.10"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^1.7.0",
-    "express": "^5.2.1"
+    "express": "^5.2.1",
+    "zod": "^4.6.5"
+  },
+  "build": {
+    "appId": "com.guzma.lyx-acp-assist",
+    "productName": "LyX ACP Assist",
+    "directories": {
+      "output": "../lyx-acp-assist-release"
+    },
+    "files": [
+      "dist/**/*",
+      "public/**/*",
+      "!test/**",
+      "!spikes/**"
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false
+    }
   }
 }
