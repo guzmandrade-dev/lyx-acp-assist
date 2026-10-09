@@ -381,12 +381,20 @@ Fixed by the native clipboard adapter. `writeLyxDocumentVerified` still
 reads the payload back and retries once, and the server refuses to paste
 (clean error) if it cannot verify. Never paste after an unverified write.
 
-**Caret disturbance while typing (live-reported):** the 2s document poll
-dispatches `server-get-filename` into LyX continuously, which visibly
-disturbs the caret in LyX while the user types. The poll now only runs
-while our app window is FOCUSED (pause on blur, resume on focus). The
-focus watcher also change-detects its `setAlwaysOnTop` calls — no
-redundant Win32 z-order churn while nothing changed.
+**LyX view disturbance (live-reported, root-caused 2026-10-09):** any LFUN
+dispatched into LyX makes LyX snap its view back to the cursor — this
+visibly disturbed the caret while typing in LyX AND broke
+wheel-scrolling an unfocused LyX window (Windows scrolls inactive
+windows; the 2s `server-get-filename` document poll kept yanking the
+view back). Fix: NO polling at all. The document tab + selection
+indicator refresh only on composer interaction (typing, debounced 400ms,
+and clicking into the input) plus connect/send/document-switch. The
+authoritative document + selection context is re-read server-side at
+message-send time (`refreshActiveDocument` + `save` + `buildContextBlock`
++ `readSelection`), so dropping the poll cannot send stale context. The
+focus watcher only polls Win32 `GetForegroundWindow` — it never touches
+LyX's pipe — and change-detects its `setAlwaysOnTop` calls (no
+redundant z-order churn).
 
 **Verification pitfall (live-verified):** comparing the outline preview
 with the clipboard text verbatim FAILS on the same paragraph — the .lyx
