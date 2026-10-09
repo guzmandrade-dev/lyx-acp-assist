@@ -5,7 +5,6 @@ let busy = false;
 let lyxBusy = false;
 let lyxPipeAvailable = false;
 let currentAbort = null;
-let docPollTimer = null;
 let typingIndicator = null;
 let typingTimeout = null;
 
@@ -347,37 +346,7 @@ async function connect() {
     hideEmpty();
   }
   updateComposerState();
-
-  // Keep the selector in sync when the user switches tabs in LyX — but
-  // ONLY while our window is focused. While blurred (e.g. the user is
-  // typing in LyX), polling would dispatch a pipe LFUN into LyX every 2s,
-  // which visibly disturbs the caret there.
-  if (docPollTimer) clearInterval(docPollTimer);
-  // NOTE: the poll intentionally skips refreshSelection() — reading the
-  // selection dispatches a `copy` LFUN into LyX and overwrites the system
-  // clipboard whenever a selection exists; doing that every 2s would clobber
-  // whatever the user copied. Selection is refreshed on connect, focus,
-  // document switch, and after each message instead.
-  docPollTimer = setInterval(async () => {
-    await refreshDocuments();
-  }, 2000);
 }
-
-window.addEventListener('blur', () => {
-  if (docPollTimer) {
-    clearInterval(docPollTimer);
-    docPollTimer = null;
-  }
-});
-window.addEventListener('focus', () => {
-  if (sessionId && !docPollTimer) {
-    docPollTimer = setInterval(async () => {
-      await refreshDocuments();
-    }, 2000);
-    refreshDocuments();
-    refreshSelection();
-  }
-});
 
 /** Tear down the current session (agent process included) and start a new one. */
 async function reconnect() {
@@ -708,6 +677,24 @@ fileInput.addEventListener('change', async () => {
   }
   input.focus();
 });
+
+// Refresh the LyX context (active document tab + selection indicator) only
+// when the user interacts with the composer — never on a timer. Every pipe
+// LFUN dispatched into LyX makes LyX snap its view back to the cursor, so
+// even a 2s `server-get-filename` poll breaks wheel-scrolling an unfocused
+// LyX window (Windows scrolls inactive windows under the cursor). The
+// authoritative context is re-read server-side when a message is sent.
+function refreshLyxContext() {
+  if (!sessionId || busy) return;
+  refreshDocuments();
+  refreshSelection();
+}
+let lyxContextRefreshTimer = null;
+input.addEventListener('input', () => {
+  if (lyxContextRefreshTimer) clearTimeout(lyxContextRefreshTimer);
+  lyxContextRefreshTimer = setTimeout(refreshLyxContext, 400);
+});
+input.addEventListener('focus', refreshLyxContext);
 
 sendBtn.addEventListener('click', send);
 input.addEventListener('keydown', (e) => {
