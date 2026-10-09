@@ -93,7 +93,12 @@ shows the active document, selection word count, and connection status.
 npm test         # vitest (parser, context, server, mocked LyXServer pipe)
 npm run typecheck
 npm run build
+npm run package  # Windows installer + portable exe (electron-builder)
 ```
+
+The packaged app writes its data (chat history, attachments) to
+`%APPDATA%\LyX ACP Assist`. Build output goes to `../lyx-acp-assist-release`,
+outside the repo, so editor file watchers cannot lock the artifacts.
 
 ```
 src/lyx/         read-only .lyx parser, outline/context building, markup validation
@@ -109,9 +114,9 @@ test/            vitest suites incl. a fake LyXServer speaking the real pipe pro
 ## Status
 
 Spike-tested against live LyX 2.5.3 on Windows (pipe round-trip, clipboard
-fidelity, end-to-end edit loop) and validated end-to-end with `opencode acp` and
-`copilot --acp` as agents. Next up: packaging, tool-call progress in the stream,
-more paragraph operations.
+fidelity, end-to-end edit loop) and validated end-to-end with `opencode acp`
+and `copilot --acp` as agents. Packageable as a Windows installer and
+portable exe.
 
 ## Acknowledgements
 
