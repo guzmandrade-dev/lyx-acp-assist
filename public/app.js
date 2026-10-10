@@ -28,6 +28,8 @@ const attachBtn = document.getElementById('attach');
 const fileInput = document.getElementById('file-input');
 const chipsEl = document.getElementById('chips');
 let emptyEl = document.getElementById('empty');
+/** Document path whose conversation is currently rendered in the chat. */
+let chatDocKey = null;
 
 /** Attachment ids waiting to be sent with the next message. */
 const pendingAttachments = [];
@@ -105,6 +107,24 @@ function renderAssistantText(full, applied) {
   return html;
 }
 
+/**
+ * Replace the chat panel with the given (persisted) conversation, or the
+ * empty state when there are no turns. Used on connect and when switching
+ * documents — each document has its own history.
+ */
+function renderConversation(turns) {
+  chat.innerHTML = '';
+  typingIndicator = null;
+  if (!turns || turns.length === 0) {
+    showEmpty();
+    return;
+  }
+  hideEmpty();
+  for (const turn of turns) {
+    addMessage(turn.role, turn.content);
+  }
+}
+
 function showEmpty() {
   if (!emptyEl) {
     emptyEl = document.createElement('div');
@@ -114,6 +134,7 @@ function showEmpty() {
       'Select text in LyX or type a request. The agent will reply here or write directly into the document.';
     chat.appendChild(emptyEl);
   }
+  if (!emptyEl.parentElement) chat.appendChild(emptyEl);
   emptyEl.hidden = false;
 }
 
@@ -322,6 +343,9 @@ docSelect.addEventListener('change', async () => {
     );
     docEl.textContent = r.active ?? '(unsaved document)';
     docEl.title = r.active ?? '';
+    // Each document has its own conversation history — after switching,
+    // re-render the chat from the newly active document's history.
+    await refreshChatForDocument(r.active);
     await refreshStatus();
     await refreshDocuments();
     await refreshSelection();
@@ -330,6 +354,22 @@ docSelect.addEventListener('change', async () => {
     addSystemMessage(`error: ${e.message}`, true);
   }
 });
+
+/**
+ * Each document has its own conversation history. Track which document's
+ * conversation is rendered; when LyX's active document changes (dropdown
+ * switch, tab change in LyX, file open), reload that document's history.
+ * A no-op when the active document hasn't changed.
+ */
+async function refreshChatForDocument(active) {
+  const key = active ?? '(unsaved)';
+  if (key === chatDocKey) return;
+  const info = await withLyxBusy(api(`/api/session/${sessionId}`));
+  // The fetch re-reads the active document — trust its answer over the
+  // caller's (possibly stale) snapshot.
+  chatDocKey = info.documentPath ?? '(unsaved)';
+  renderConversation(info.conversation ?? []);
+}
 
 async function refreshDocuments() {
   if (!sessionId) return;
@@ -340,6 +380,7 @@ async function refreshDocuments() {
       docEl.textContent = r.active;
       docEl.title = r.active;
     }
+    await refreshChatForDocument(r.active);
   } catch (e) {
     /* ignore */
   }
@@ -356,13 +397,12 @@ async function connect() {
     body: JSON.stringify({ agent: { command: cmd, args } }),
   });
   sessionId = info.sessionId;
+  chatDocKey = info.documentPath ?? '(unsaved)';
   docEl.textContent = info.documentPath ?? '(unsaved document)';
   docEl.title = info.documentPath ?? '';
   updateDocSelector(info.documentPath, info.documents ?? []);
   const turns = info.conversation ?? [];
-  for (const turn of turns) {
-    addMessage(turn.role, turn.content);
-  }
+  renderConversation(turns);
   if (turns.length === 0) {
     // Fresh conversation: show the quiet empty state, not a chat message.
     showEmpty();
