@@ -92,11 +92,13 @@ async function startApp(): Promise<void> {
   }
   const historyDir = path.join(app.getPath('userData'), 'history');
   const attachmentsDir = path.join(app.getPath('userData'), 'attachments');
+  const logDir = path.join(app.getPath('userData'), 'logs');
   const server = createServer({
     publicDir,
     clipboard: createNativeClipboard(),
     historyDir,
     attachmentsDir,
+    logDir,
   });
 
   const port = process.env.PORT ? Number.parseInt(process.env.PORT, 10) : 0;

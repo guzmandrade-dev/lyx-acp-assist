@@ -489,6 +489,35 @@ dynamically:
   ending `{"done": true}`); agent updates have a 240s timeout so a stuck
   agent surfaces an error instead of hanging silently.
 
+## Action outcome persistence + error log (2026-10-10)
+
+- Each assistant turn can carry `meta: { action, target, target2, result:
+  "applied"|"error"|"cancelled", error? }` — recorded AFTER the action is
+  applied (or fails), not when the agent replies. Persisted into the same
+  per-document history JSON; the UI renders the outcome badge on reload, so
+  a failed move/delete/rewrite survives an app restart. Old histories
+  without `meta` load fine (field is absent).
+- All API errors (wrapped routes AND the SSE stream catch) append a
+  timestamped line to `<userData>/logs/errors.log` (best-effort; logging
+  never breaks the request path). `logDir` is a new optional
+  `ServerOptions` field, wired in `electron/main.ts`.
+
+**Preview pollution fix (root cause of the 2026-10-10 move failure):**
+`collectTexts` in `src/lyx/context.ts` was picking up inset FILE SYNTAX as
+visible text — `status open` (a Note inset property) and `LatexCommand
+citep` / `key "..."` / `literal "..."` (inline-inset arguments) are stored
+by the parser as plain `text` children of the inset block. The outline
+preview for every paragraph containing a Note was prefixed with
+"status open …", shifting the fuzzy verification windows so
+`isLikelyMatch` could pass on the WRONG paragraph (or fail on the right
+one) — the walk landed one paragraph off and the move's destination
+verification failed with "couldn't find the target".
+Fix: `collectTexts` now takes an `insideInset` flag and drops
+property-like lines (`status open|collapsed`, `key `, `literal `, `name `,
+`target `, `LatexCommand `, `label `) ONLY when directly inside an inset
+block — paragraph text that merely starts with those words survives.
+Regression tests in `test/context.test.ts`.
+
 **Pipe client rule (important):** never consume stale/unmatched replies
 from the buffer — Windows broadcast duplicates of earlier requests would
 be mistaken for fresh replies. Waiters are registered before sending, so

@@ -131,4 +131,62 @@ describe('buildDocumentContext', () => {
     expect(renderOutline(ctx.outline)).toContain('[p1] (Section)');
     expect(renderOutline(ctx.outline)).toContain('[p2] (Standard)');
   });
+
+  it('omits inset property syntax from previews (status / LatexCommand args)', () => {
+    // Regression: the parser stores inset lines like `status open` and
+    // `LatexCommand citep` / `key "..."` as plain text children of the
+    // inset block; the preview must not show them (they shift the fuzzy
+    // verification windows and broke paragraph targeting on real docs).
+    const withNote =
+      HEADER +
+      [
+        '',
+        '\\begin_body',
+        '',
+        '\\begin_layout Standard',
+        '\\begin_inset Note Note',
+        'status open',
+        '',
+        '\\begin_layout Plain Layout',
+        'This is the visible note text.',
+        '',
+        '\\end_layout',
+        '',
+        '\\end_inset',
+        '\\end_layout',
+        '',
+        '\\begin_layout Standard',
+        'Regular text with a citation',
+        '\\begin_inset LatexCommand citep',
+        'key "Fitting20051"',
+        'literal "false"',
+        '\\end_inset',
+        ' trailing words.',
+        '\\end_layout',
+        '',
+        '\\end_body',
+        '\\end_document',
+        '',
+      ].join('\n');
+    const ctx = buildDocumentContext(withNote);
+    expect(ctx.outline[0].preview).toBe('This is the visible note text.');
+    expect(ctx.outline[1].preview).toBe('Regular text with a citation trailing words.');
+    // Sanity: neither preview leaks file syntax.
+    for (const p of ctx.outline) {
+      expect(p.preview).not.toMatch(/status open/);
+      expect(p.preview).not.toMatch(/LatexCommand/);
+      expect(p.preview).not.toMatch(/literal "false"/);
+    }
+  });
+
+  it('keeps paragraph text that merely starts with inset-property-like words', () => {
+    // Regression guard: the inset-syntax filter only applies INSIDE inset
+    // blocks; a paragraph's own text starting with e.g. "Name of the
+    // project" must survive.
+    const doc2 =
+      HEADER +
+      '\n\n\\begin_body\n\n\\begin_layout Standard\nName of the project is important.\n\\end_layout\n\n\\end_body\n\\end_document\n';
+    const ctx = buildDocumentContext(doc2);
+    expect(ctx.outline[0].preview).toContain('Name of the project is important.');
+  });
 });

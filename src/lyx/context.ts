@@ -225,14 +225,29 @@ function findInBlocks(nodes: LyxNode[], blockTag: string, key: string): string |
   return block && block.type === 'block' ? findProperty(block.children, key) : undefined;
 }
 
-function collectTexts(nodes: LyxNode[]): string[] {
+/**
+ * Inset property lines that the parser stores as plain `text` children of
+ * the inset block (they are file syntax, not visible content). Inside an
+ * inset, lines like `status open`, `key "..."`, `LatexCommand ...` are
+ * arguments LyX never displays in the document — they leak into previews
+ * and break the verification comparison (shifting the fuzzy windows).
+ */
+const INSET_PROP_LINE =
+  /^(status\s+(open|collapsed)|key\s|literal\s|name\s|target\s|LatexCommand\s|label\s)/;
+
+function collectTexts(nodes: LyxNode[], insideInset = false): string[] {
   const out: string[] = [];
   for (const node of nodes) {
     if (node.type === 'text') {
-      out.push(node.text.replace(/\\(begin|end)_[A-Za-z0-9_]+/g, '').trim());
+      const cleaned = node.text.replace(/\\(begin|end)_[A-Za-z0-9_]+/g, '').trim();
+      // Only treat property-like lines as syntax when they sit directly
+      // inside an inset block — paragraph text may legitimately start
+      // with the same words.
+      if (insideInset && INSET_PROP_LINE.test(cleaned)) continue;
+      out.push(cleaned);
     } else if (node.type === 'block') {
       // Skip opaque blocks' raw markup in the preview, but note formulas.
-      const inner = collectTexts(node.children);
+      const inner = collectTexts(node.children, insideInset || node.tag === 'inset');
       out.push(...inner);
     }
   }
