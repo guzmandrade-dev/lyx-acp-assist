@@ -121,7 +121,24 @@ function renderConversation(turns) {
   }
   hideEmpty();
   for (const turn of turns) {
-    addMessage(turn.role, turn.content);
+    const { div } = addMessage(turn.role, turn.content);
+    // Restore a persisted action outcome (applied/error/cancelled) from a
+    // previous app run, so failures are visible after a restart.
+    if (turn.role === 'assistant' && turn.meta) {
+      renderFeedback(div, {
+        applied: turn.meta.result === 'applied' && turn.meta.action !== 'none'
+          ? turn.meta.action
+          : turn.meta.result === 'cancelled'
+            ? null
+            : turn.meta.action === 'none'
+              ? 'none'
+              : null,
+        target: turn.meta.target ?? null,
+        target2: turn.meta.target2 ?? null,
+        cancelled: turn.meta.result === 'cancelled',
+        error: turn.meta.result === 'error' ? turn.meta.error : null,
+      });
+    }
   }
 }
 

@@ -39,6 +39,26 @@ export interface Turn {
   role: 'user' | 'assistant';
   content: string;
   timestamp: string;
+  /**
+   * Outcome of the action the assistant proposed in this turn, recorded
+   * after the action was applied (or failed). Absent on older histories
+   * and on turns before this feature existed.
+   */
+  meta?: TurnMeta;
+}
+
+/** How the action a turn proposed was resolved against the document. */
+export interface TurnMeta {
+  /** The action tag the agent emitted, e.g. "insert", "move", "none". */
+  action: string;
+  /** Paragraph address for addressed actions ([pN]). */
+  target?: number | null;
+  /** Destination address for move/merge ([pM]). */
+  target2?: number | null;
+  /** "applied" when the action landed in LyX, "error" when it failed. */
+  result: 'applied' | 'error' | 'cancelled';
+  /** The error message when result is "error". */
+  error?: string;
 }
 
 /** Key for the unsaved-document pseudo conversation. */
@@ -75,6 +95,8 @@ export interface ServerOptions {
   historyDir?: string;
   /** Directory where uploaded attachments are stored. Optional. */
   attachmentsDir?: string;
+  /** Directory for the persistent error log (errors.log). Optional. */
+  logDir?: string;
 }
 
 /** A file the user attached to the next message. */
@@ -94,6 +116,18 @@ export function createServer(options: ServerOptions) {
 
   const sessions = new Map<string, Session>();
 
+  /** Append a timestamped line to the persistent error log (best-effort). */
+  function logError(scope: string, err: unknown): void {
+    const message = err instanceof Error ? err.message : String(err);
+    const line = `[${new Date().toISOString()}] ${scope}: ${message}\n`;
+    console.error(line.trim());
+    if (options.logDir) {
+      fs.appendFile(path.join(options.logDir, 'errors.log'), line, 'utf8').catch(() => {
+        /* logging must never break the request path */
+      });
+    }
+  }
+
   const wrap = (handler: (req: express.Request, res: express.Response) => Promise<unknown>) =>
     async (req: express.Request, res: express.Response) => {
       try {
@@ -101,7 +135,7 @@ export function createServer(options: ServerOptions) {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         const status = err instanceof LyxPipeError ? 503 : 500;
-        console.error(`[api] ${req.path}: ${message}`);
+        logError(`[api] ${req.path}`, err);
         res.status(status).json({ error: message });
       }
     };
@@ -125,6 +159,25 @@ export function createServer(options: ServerOptions) {
     res.write('data: {"done":true}\n\n');
     res.end();
   };
+
+  /**
+   * Record the outcome of the action the assistant proposed in the LAST
+   * turn of the conversation (the one just recorded by recordTurn), so a
+   * failed or successful document action survives an app restart and is
+   * visible when the history is reloaded.
+   */
+  async function recordTurnMeta(session: Session, meta: TurnMeta): Promise<void> {
+    const key = conversationKey(session);
+    const turns = await ensureConversation(session, key);
+    const last = turns[turns.length - 1];
+    if (!last || last.role !== 'assistant') return;
+    last.meta = meta;
+    if (options.historyDir) {
+      saveHistory(options.historyDir, key, turns).catch((e) =>
+        logError('[history] save failed', e),
+      );
+    }
+  }
 
   // --- status ----------------------------------------------------------
 
@@ -324,6 +377,13 @@ export function createServer(options: ServerOptions) {
       return;
     }
 
+    // Tracked across the handler so the catch block can persist the error
+    // as turn metadata when the failure happens after the turn was recorded.
+    let turnRecorded = false;
+    let lastAction: AgentAction = 'none';
+    let lastTarget: number | null = null;
+    let lastTarget2: number | null = null;
+
     try {
       await refreshActiveDocument(session);
       // Read path per architecture: save the buffer first so the outline
@@ -362,24 +422,47 @@ export function createServer(options: ServerOptions) {
       }
 
       recordTurn(session, message, reply);
+      turnRecorded = true;
+      lastAction = outcome.action;
+      lastTarget = outcome.target;
+      lastTarget2 = outcome.target2;
 
       if (session.cancelRequested) {
         send({ cancelled: true });
+        await recordTurnMeta(session, {
+          action: outcome.action, target: outcome.target, target2: outcome.target2,
+          result: 'cancelled',
+        });
       } else if (outcome.action === 'none') {
         send({ action: 'none' });
+        await recordTurnMeta(session, {
+          action: 'none', target: null, target2: null, result: 'applied',
+        });
       } else if (outcome.action === 'delete-at') {
         // Delete needs no ```lyx block: walk, verify, select, delete the
         // text, then merge the leftover empty paragraph away.
         const gotoResult = await gotoParagraph(session, outcome.target, 'rewrite');
         if (gotoResult.error) {
           send({ error: gotoResult.error });
+          await recordTurnMeta(session, {
+            action: 'delete-at', target: outcome.target, target2: null,
+            result: 'error', error: gotoResult.error,
+          });
         } else {
           const deleted = await session.lyx.deleteSelection();
           if (deleted) {
             await session.lyx.mergeAwayParagraph();
             send({ applied: 'delete-at', target: outcome.target });
+            await recordTurnMeta(session, {
+              action: 'delete-at', target: outcome.target, target2: null, result: 'applied',
+            });
           } else {
-            send({ error: `LyX could not delete paragraph [p${outcome.target}].` });
+            const err = `LyX could not delete paragraph [p${outcome.target}].`;
+            send({ error: err });
+            await recordTurnMeta(session, {
+              action: 'delete-at', target: outcome.target, target2: null,
+              result: 'error', error: err,
+            });
           }
         }
       } else if (outcome.action === 'merge') {
@@ -388,8 +471,15 @@ export function createServer(options: ServerOptions) {
         const result = await mergeParagraph(session, outcome.target, outcome.target2);
         if (result.error) {
           send({ error: result.error });
+          await recordTurnMeta(session, {
+            action: 'merge', target: outcome.target, target2: outcome.target2,
+            result: 'error', error: result.error,
+          });
         } else {
           send({ applied: 'merge', target: outcome.target, target2: outcome.target2 });
+          await recordTurnMeta(session, {
+            action: 'merge', target: outcome.target, target2: outcome.target2, result: 'applied',
+          });
         }
       } else if (outcome.action === 'move') {
         // Move needs no ```lyx block: capture the paragraph via the
@@ -397,13 +487,25 @@ export function createServer(options: ServerOptions) {
         const result = await moveParagraph(session, outcome.target, outcome.target2);
         if (result.error) {
           send({ error: result.error });
+          await recordTurnMeta(session, {
+            action: 'move', target: outcome.target, target2: outcome.target2,
+            result: 'error', error: result.error,
+          });
         } else {
           send({ applied: 'move', target: outcome.target, target2: outcome.target2 });
+          await recordTurnMeta(session, {
+            action: 'move', target: outcome.target, target2: outcome.target2, result: 'applied',
+          });
         }
       } else {
         // A write action: position the cursor, then paste.
         if (!outcome.body) {
-          send({ error: `Agent chose [ACTION: ${outcome.action}] but returned no \`\`\`lyx block.` });
+          const err = `Agent chose [ACTION: ${outcome.action}] but returned no \`\`\`lyx block.`;
+          send({ error: err });
+          await recordTurnMeta(session, {
+            action: outcome.action, target: outcome.target, target2: outcome.target2,
+            result: 'error', error: err,
+          });
           send({ done: true });
           res.end();
           return;
@@ -454,20 +556,30 @@ export function createServer(options: ServerOptions) {
         }
         if (positionError) {
           send({ error: positionError });
+          await recordTurnMeta(session, {
+            action: outcome.action, target: outcome.target, target2: outcome.target2,
+            result: 'error', error: positionError,
+          });
         } else {
           const header = (await currentHeader(session)) ?? FALLBACK_HEADER;
           const doc = assemblePasteDocument(header, outcome.body);
           const written = await session.clipboard.writeLyxDocumentVerified(doc, outcome.body);
           if (!written) {
-            send({
-              error:
-                'The .lyx payload could not be written to the clipboard; ' +
-                'nothing was pasted. Please try again.',
+            const err =
+              'The .lyx payload could not be written to the clipboard; ' +
+              'nothing was pasted. Please try again.';
+            send({ error: err });
+            await recordTurnMeta(session, {
+              action: outcome.action, target: outcome.target, target2: outcome.target2,
+              result: 'error', error: err,
             });
           } else {
             await sleep(100); // let the OS clipboard settle before paste
             await session.lyx.paste(); // replaces the active selection if any
             send({ applied: outcome.action, target });
+            await recordTurnMeta(session, {
+              action: outcome.action, target, target2: outcome.target2, result: 'applied',
+            });
           }
         }
       }
@@ -475,11 +587,19 @@ export function createServer(options: ServerOptions) {
       res.end();
     } catch (err) {
       const message2 = err instanceof Error ? err.message : String(err);
-      console.error(`[api] message/stream: ${message2}`);
+      logError('[api] message/stream', err);
       if (!res.headersSent) {
         res.status(err instanceof LyxPipeError ? 503 : 500).json({ error: message2 });
       } else {
         sseFail(res, err);
+      }
+      // Persist the failure on the recorded turn so it survives a restart.
+      if (turnRecorded) {
+        await recordTurnMeta(session, {
+          action: lastAction, target: lastTarget, target2: lastTarget2,
+          result: lastAction === 'none' ? 'applied' : 'error',
+          error: message2,
+        }).catch(() => { /* logging must never break the request path */ });
       }
     }
   });
@@ -556,7 +676,7 @@ export function createServer(options: ServerOptions) {
     );
     if (options.historyDir) {
       saveHistory(options.historyDir, key, turns).catch((e) =>
-        console.error(`[history] save failed: ${e}`),
+        logError('[history] save failed', e),
       );
     }
   }
