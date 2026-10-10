@@ -514,9 +514,9 @@ export function createServer(options: ServerOptions) {
     session.documentPath = path;
     if (path) {
       session.knownDocuments.add(path);
-      ensureConversation(session, path);
+      await ensureConversation(session, path);
     } else {
-      ensureConversation(session, UNSAVED_KEY);
+      await ensureConversation(session, UNSAVED_KEY);
     }
     return path;
   }
@@ -525,17 +525,23 @@ export function createServer(options: ServerOptions) {
     return session.documentPath ?? UNSAVED_KEY;
   }
 
-  function ensureConversation(session: Session, key: string): Turn[] {
+  /**
+   * Get (creating if needed) the conversation for a key. Awaits the persisted
+   * history load so callers (sessionInfo) never observe a half-loaded turn
+   * list — the fire-and-forget version raced and returned empty history.
+   */
+  async function ensureConversation(session: Session, key: string): Promise<Turn[]> {
     let turns = session.conversations.get(key);
     if (!turns) {
       turns = [];
       session.conversations.set(key, turns);
       // Load persisted history if available.
       if (options.historyDir) {
-        loadHistory(options.historyDir, key).then(
-          (saved) => turns!.push(...saved),
-          () => undefined,
-        );
+        try {
+          turns.push(...(await loadHistory(options.historyDir, key)));
+        } catch {
+          /* unreadable history — start empty */
+        }
       }
     }
     return turns;
@@ -543,7 +549,7 @@ export function createServer(options: ServerOptions) {
 
   async function recordTurn(session: Session, user: string, assistant: string) {
     const key = conversationKey(session);
-    const turns = ensureConversation(session, key);
+    const turns = await ensureConversation(session, key);
     turns.push(
       { role: 'user', content: user, timestamp: new Date().toISOString() },
       { role: 'assistant', content: assistant, timestamp: new Date().toISOString() },
