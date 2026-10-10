@@ -67,6 +67,82 @@ describe('API surface', () => {
   });
 });
 
+describe('agent settings persistence', () => {
+  it('round-trips agent settings through GET/PUT with a settingsDir', async () => {
+    const fsp = await import('node:fs/promises');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'lyx-settings-'));
+    const app = createServer({
+      publicDir: new URL('../public', import.meta.url).pathname.replace(/^\/(\w:)/, '$1'),
+      clipboard: stubClipboard,
+      settingsDir: dir,
+    });
+    const srv = await new Promise<Server>((resolve) => {
+      const s = app.listen(0, '127.0.0.1', () => resolve(s));
+    });
+    const { port } = srv.address() as { port: number };
+    const base = `http://127.0.0.1:${port}`;
+    try {
+      // No settings yet -> empty object.
+      const initial = await (await fetch(`${base}/api/settings/agent`)).json();
+      expect(initial).toEqual({});
+
+      // PUT stores command + args (string form split on whitespace).
+      const put = await fetch(`${base}/api/settings/agent`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ command: 'copilot', args: '--acp' }),
+      });
+      expect(put.status).toBe(200);
+      expect(await put.json()).toEqual({ command: 'copilot', args: ['--acp'] });
+
+      // GET returns what was stored — this is what survives an app restart
+      // (the server port, and therefore the localStorage origin, changes).
+      const got = await (await fetch(`${base}/api/settings/agent`)).json();
+      expect(got).toEqual({ command: 'copilot', args: ['--acp'] });
+
+      // A partial PUT merges instead of clobbering.
+      await fetch(`${base}/api/settings/agent`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ command: 'goose' }),
+      });
+      const merged = await (await fetch(`${base}/api/settings/agent`)).json();
+      expect(merged).toEqual({ command: 'goose', args: ['--acp'] });
+
+      // Garbage bodies are ignored, not 500.
+      const bad = await fetch(`${base}/api/settings/agent`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ command: 42, args: 'x y' }),
+      });
+      expect(bad.status).toBe(200);
+      const afterBad = await (await fetch(`${base}/api/settings/agent`)).json();
+      expect(afterBad).toEqual({ command: 'goose', args: ['x', 'y'] });
+    } finally {
+      await new Promise<void>((resolve) => srv.close(() => resolve()));
+      await fsp.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns defaults when no settingsDir is configured', async () => {
+    await setup(); // shared server has no settingsDir
+    const res = await fetch(`${baseUrl}/api/settings/agent`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({});
+    const put = await fetch(`${baseUrl}/api/settings/agent`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ command: 'copilot', args: '--acp' }),
+    });
+    expect(put.status).toBe(200);
+    // Nothing stored: a fresh GET still returns defaults.
+    const got = await (await fetch(`${baseUrl}/api/settings/agent`)).json();
+    expect(got).toEqual({});
+  });
+});
+
 describe('attachments', () => {
   it('resolves class layout vocabularies including Input chains', async () => {
     // Uses the real LyX 2.5 install (skips where absent); custom user
