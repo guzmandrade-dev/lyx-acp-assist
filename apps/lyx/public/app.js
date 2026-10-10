@@ -34,23 +34,22 @@ let chatDocKey = null;
 /** Attachment ids waiting to be sent with the next message. */
 const pendingAttachments = [];
 
-const SETTINGS_KEY = 'lyx-acp-agent-settings';
-
-function loadSettings() {
+// Agent settings persist SERVER-side: the server listens on a random port each
+// launch, so the page origin changes and localStorage would be wiped on restart.
+async function loadSettings() {
   try {
-    const s = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
+    const s = await api('/api/settings/agent');
     if (typeof s.command === 'string' && s.command) cmdEl.value = s.command;
-    if (typeof s.args === 'string' && s.args) argsEl.value = s.args;
+    if (Array.isArray(s.args) && s.args.length > 0) argsEl.value = s.args.join(' ');
   } catch {
-    /* ignore corrupted settings */
+    /* keep the HTML defaults */
   }
 }
 
 function saveSettings() {
-  localStorage.setItem(
-    SETTINGS_KEY,
-    JSON.stringify({ command: cmdEl.value.trim(), args: argsEl.value.trim() }),
-  );
+  const body = JSON.stringify({ command: cmdEl.value.trim(), args: argsEl.value.trim() });
+  // Fire-and-forget; a failed save must not break the UI.
+  api('/api/settings/agent', { method: 'PUT', body }).catch(() => {});
 }
 
 function escapeHtml(text) {
@@ -832,7 +831,7 @@ undoBtn.addEventListener('click', async () => {
 
 reconnectBtn.addEventListener('click', reconnect);
 
-let lyxFollowMode = true;
+let lyxFollowMode = false;
 pinBtn.addEventListener('click', () => {
   lyxFollowMode = !lyxFollowMode;
   pinBtn.setAttribute('aria-pressed', String(lyxFollowMode));
@@ -842,32 +841,37 @@ pinBtn.addEventListener('click', () => {
   window.electron?.toggleAlwaysOnTop?.();
 });
 
-loadSettings();
-input.placeholder = 'Ask the agent. It reads the document and your selection, then decides: reply here, insert at the cursor, or rewrite what you selected.';
-if (selectionEl) selectionEl.hidden = true;
-showEmpty();
-stopBtn.style.display = '';
-fileInput.style.display = '';
-sendBtn.title = 'Send message (Enter)';
-reconnectBtn.title = 'Reconnect: restart the agent session and re-read LyX';
-pinBtn.setAttribute('aria-pressed', 'true');
-pinBtn.title = 'Float on top while LyX is focused';
-cmdEl.addEventListener('blur', saveSettings);
-argsEl.addEventListener('blur', saveSettings);
-const settingsDetails = document.querySelector('.agent-settings');
-document.addEventListener('pointerdown', (e) => {
-  if (settingsDetails instanceof HTMLDetailsElement && settingsDetails.open
-      && !settingsDetails.contains(e.target)) {
-    settingsDetails.open = false;
-  }
-});
-updateComposerState();
-connect().catch((e) => {
-  maybeSetBusyFromError(e);
-  if (!lyxBusy) {
-    setStatusText(`failed to connect: ${e.message}`);
-    statusEl.className = 'status bad';
-  }
-  const details = document.querySelector('.agent-settings');
-  if (details && typeof details.open === 'boolean') details.open = true;
-});
+function start() {
+  input.placeholder = 'Ask the agent. It reads the document and your selection, then decides: reply here, insert at the cursor, or rewrite what you selected.';
+  if (selectionEl) selectionEl.hidden = true;
+  showEmpty();
+  stopBtn.style.display = '';
+  fileInput.style.display = '';
+  sendBtn.title = 'Send message (Enter)';
+  reconnectBtn.title = 'Reconnect: restart the agent session and re-read LyX';
+  pinBtn.setAttribute('aria-pressed', 'false');
+  pinBtn.title = 'Floating disabled';
+  cmdEl.addEventListener('blur', saveSettings);
+  argsEl.addEventListener('blur', saveSettings);
+  const settingsDetails = document.querySelector('.agent-settings');
+  document.addEventListener('pointerdown', (e) => {
+    if (settingsDetails instanceof HTMLDetailsElement && settingsDetails.open
+        && !settingsDetails.contains(e.target)) {
+      settingsDetails.open = false;
+    }
+  });
+  updateComposerState();
+  connect().catch((e) => {
+    maybeSetBusyFromError(e);
+    if (!lyxBusy) {
+      setStatusText(`failed to connect: ${e.message}`);
+      statusEl.className = 'status bad';
+    }
+    const details = document.querySelector('.agent-settings');
+    if (details && typeof details.open === 'boolean') details.open = true;
+  });
+}
+
+// Settings load is async (server round-trip); connect must wait for it so the
+// first session uses the persisted agent command instead of the HTML defaults.
+loadSettings().finally(start);

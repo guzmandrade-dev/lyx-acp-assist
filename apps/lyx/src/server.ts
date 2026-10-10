@@ -97,6 +97,11 @@ export interface ServerOptions {
   attachmentsDir?: string;
   /** Directory for the persistent error log (errors.log). Optional. */
   logDir?: string;
+  /**
+   * Directory for UI settings persisted across runs (agent-settings.json).
+   * Optional; when absent the settings routes return defaults.
+   */
+  settingsDir?: string;
 }
 
 /** A file the user attached to the next message. */
@@ -186,19 +191,81 @@ export function createServer(options: ServerOptions) {
     res.json({ lyxPipeAvailable: probe.isAvailable() });
   });
 
+  // --- settings (persisted server-side; the server port is random per
+  // launch, so localStorage — origin-scoped — would not survive a restart) ---
+
+  const settingsFile = options.settingsDir
+    ? path.join(options.settingsDir, 'agent-settings.json')
+    : null;
+
+  async function readAgentSettingsFile(): Promise<Partial<AgentSettings>> {
+    if (!settingsFile) return {};
+    try {
+      const raw = JSON.parse(await fs.readFile(settingsFile, 'utf8'));
+      return raw && typeof raw === 'object' ? raw : {};
+    } catch {
+      return {};
+    }
+  }
+
+  app.get('/api/settings/agent', (_req, res) => {
+    readAgentSettingsFile()
+      .then((s) => res.json(s))
+      .catch(() => res.json({}));
+  });
+
+  app.put(
+    '/api/settings/agent',
+    wrap(async (req, res) => {
+      const s = readAgentSettingsBody(req.body);
+      if (!settingsFile) {
+        // No persistence configured (tests): echo back, nothing is stored.
+        res.json(s);
+        return;
+      }
+      await fs.mkdir(options.settingsDir!, { recursive: true });
+      const previous = await readAgentSettingsFile();
+      const merged = { ...previous, ...s };
+      await fs.writeFile(settingsFile, JSON.stringify(merged, null, 2), 'utf8');
+      res.json(merged);
+    }),
+  );
+
+  /** Validate and normalize the JSON body of PUT /api/settings/agent. */
+  function readAgentSettingsBody(body: unknown): Partial<AgentSettings> {
+    const b = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
+    const out: Partial<AgentSettings> = {};
+    if (typeof b.command === 'string') out.command = b.command.trim();
+    if (typeof b.args === 'string') out.args = b.args.trim().split(/\s+/).filter(Boolean);
+    else if (Array.isArray(b.args)) {
+      const args = b.args.filter((a): a is string => typeof a === 'string' && a.trim().length > 0);
+      if (args.length > 0) out.args = args;
+    }
+    if (b.env && typeof b.env === 'object') {
+      out.env = Object.fromEntries(
+        Object.entries(b.env as Record<string, unknown>).filter(
+          (e): e is [string, string] => typeof e[1] === 'string',
+        ),
+      );
+    }
+    return out;
+  }
+
   // --- session ---------------------------------------------------------
 
   app.post(
     '/api/session',
     wrap(async (req, res) => {
-      const agentSettings = req.body?.agent as AgentSettings | undefined;
+      // Defaults < persisted settings < explicit request body.
+      const persisted = await readAgentSettingsFile();
+      const requested = req.body?.agent as Partial<AgentSettings> | undefined;
       const lyx = new LyxServerClient();
       await lyx.start();
 
       const agent = new AcpClient({
-        command: agentSettings?.command ?? 'opencode',
-        args: agentSettings?.args ?? ['acp'],
-        env: agentSettings?.env ?? {},
+        command: requested?.command ?? persisted.command ?? 'opencode',
+        args: requested?.args ?? persisted.args ?? ['acp'],
+        env: requested?.env ?? persisted.env ?? {},
       });
       await agent.start();
 

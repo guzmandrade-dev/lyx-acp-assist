@@ -10,8 +10,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 let mainWindow: BrowserWindow | null = null;
 let httpServer: import('node:http').Server | null = null;
-/** When true (default), the window floats on top only while LyX is focused. */
-let lyxFollowMode = true;
+/** When false (default), the window never floats on top; the pin toggle enables it. */
+let lyxFollowMode = false;
 let focusWatcher: ChildProcess | null = null;
 /** Last foreground process name seen by the watcher. */
 let watcherLastState: string | null = null;
@@ -99,6 +99,7 @@ async function startApp(): Promise<void> {
     historyDir,
     attachmentsDir,
     logDir,
+    settingsDir: app.getPath('userData'),
   });
 
   const port = process.env.PORT ? Number.parseInt(process.env.PORT, 10) : 0;
