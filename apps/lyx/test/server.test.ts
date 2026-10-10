@@ -1,7 +1,7 @@
 import { describe, it, expect, afterAll } from 'vitest';
 import type { Server } from 'node:http';
 import type { Express } from 'express';
-import { createServer, parseAction, normalizeForCompare, isLikelyMatch, buildAutoPrompt, extractAttachmentText, findClassLayouts } from '../src/server.js';
+import { createServer, parseAction, normalizeForCompare, isLikelyMatch, buildAutoPrompt, extractAttachmentText, findClassLayouts, listKnownDocuments } from '../src/server.js';
 import type { RawClipboard } from '../src/clipboard/lyx-clipboard.js';
 
 /** Stub raw clipboard: enough for routes that never touch LyX. */
@@ -123,6 +123,42 @@ describe('attachments', () => {
     if (!existsSync(venv) || !existsSync(fixture)) return;
     const text = await extractAttachmentText(fixture, 'Abstract.pdf');
     expect(text).toBeTruthy();
+  });
+});
+
+describe('document selector seeding', () => {
+  it('lists persisted history keys that still exist on disk', async () => {
+    const fsp = await import('node:fs/promises');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'lyx-history-'));
+    const docA = path.join(dir, 'doc-a.lyx');
+    const docB = path.join(dir, 'doc-b.lyx');
+    await fsp.writeFile(docA, 'x'); // must exist on disk to be listed
+    await fsp.writeFile(
+      path.join(dir, 'aaaa.json'),
+      JSON.stringify({ key: docA, turns: [{ role: 'user', content: 'hi', timestamp: '' }] }),
+    );
+    // Missing on disk (deleted since) — must be skipped.
+    await fsp.writeFile(
+      path.join(dir, 'bbbb.json'),
+      JSON.stringify({ key: docB, turns: [] }),
+    );
+    // The unsaved pseudo-key must be skipped even if present.
+    await fsp.writeFile(
+      path.join(dir, 'cccc.json'),
+      JSON.stringify({ key: '(unsaved)', turns: [] }),
+    );
+    // Garbage file — must not throw.
+    await fsp.writeFile(path.join(dir, 'dddd.json'), 'not json');
+
+    const docs = await listKnownDocuments(dir);
+    expect(docs).toEqual([docA]);
+
+    // Missing directory resolves to an empty list.
+    expect(await listKnownDocuments(path.join(dir, 'nope'))).toEqual([]);
+
+    await fsp.rm(dir, { recursive: true, force: true });
   });
 });
 

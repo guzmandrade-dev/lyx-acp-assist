@@ -233,6 +233,22 @@ body {
   50% { opacity: 1; }
 }
 
+/* "Talking to LyX" indicator: shown while a pipe request is in flight. */
+.lyx-spinner {
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid var(--text-tertiary);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+
+.lyx-busy-text {
+  color: var(--text-secondary);
+  animation: pulse 1s ease-in-out infinite;
+}
+
 .doc {
   font-size: var(--text-xs);
   font-weight: var(--weight-normal);
