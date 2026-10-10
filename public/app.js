@@ -835,6 +835,13 @@ pinBtn.setAttribute('aria-pressed', 'true');
 pinBtn.title = 'Float on top while LyX is focused';
 cmdEl.addEventListener('blur', saveSettings);
 argsEl.addEventListener('blur', saveSettings);
+const settingsDetails = document.querySelector('.agent-settings');
+document.addEventListener('pointerdown', (e) => {
+  if (settingsDetails instanceof HTMLDetailsElement && settingsDetails.open
+      && !settingsDetails.contains(e.target)) {
+    settingsDetails.open = false;
+  }
+});
 updateComposerState();
 connect().catch((e) => {
   maybeSetBusyFromError(e);

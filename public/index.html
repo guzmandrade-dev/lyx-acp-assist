@@ -10,6 +10,25 @@
 <body>
   <div class="toolbar">
     <select id="doc-select" title="Active LyX document"></select>
+    <details class="agent-settings">
+      <summary class="pin" title="Agent settings">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 8V4H8" />
+          <rect width="16" height="12" x="4" y="8" rx="2" />
+          <path d="M2 14h2" />
+          <path d="M20 14h2" />
+          <path d="M15 13v2" />
+          <path d="M9 13v2" />
+        </svg>
+      </summary>
+      <div class="agent-settings-panel">
+        <label>Command <input id="agent-cmd" type="text" value="opencode" /></label>
+        <label>Args <input id="agent-args" type="text" value="acp" /></label>
+        <div class="settings-row">
+          <small>Examples: opencode acp &middot; copilot --acp &middot; goose acp</small>
+        </div>
+      </div>
+    </details>
     <button id="pin" class="pin" aria-pressed="false" title="Float on top while LyX is focused">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M12 2v7" />
@@ -36,14 +55,6 @@
     </div>
     <div id="doc" class="doc" title=""></div>
     <div id="selection" class="selection" hidden></div>
-    <details class="agent-settings">
-      <summary>Agent settings</summary>
-      <label>Command <input id="agent-cmd" type="text" value="opencode" /></label>
-      <label>Args <input id="agent-args" type="text" value="acp" /></label>
-      <div class="settings-row">
-        <small>Examples: opencode acp &middot; copilot --acp &middot; goose acp</small>
-      </div>
-    </details>
   </div>
 
   <main id="chat" aria-live="polite"></main>

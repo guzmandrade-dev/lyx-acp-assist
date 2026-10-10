@@ -264,27 +264,38 @@ body {
   color: var(--text-tertiary);
 }
 
-/* Agent settings */
-.agent-settings summary {
-  font-size: var(--text-sm);
-  font-weight: var(--weight-medium);
-  color: var(--text-secondary);
-  padding: var(--space-3) 0;
-  cursor: pointer;
-  user-select: none;
-  transition: color var(--duration-fast) var(--ease-out);
+/* Agent settings (toolbar popover) */
+.agent-settings {
+  position: relative;
 }
 
-.agent-settings summary:hover {
-  color: var(--text-primary);
+.agent-settings summary {
+  list-style: none;
+}
+
+.agent-settings summary::-webkit-details-marker {
+  display: none;
 }
 
 .agent-settings[open] > summary {
-  color: var(--text-primary);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
-.agent-settings > :not(summary) {
-  padding-top: var(--space-4);
+.agent-settings-panel {
+  position: absolute;
+  top: calc(100% + var(--space-3));
+  right: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  width: 300px;
+  padding: var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-float);
 }
 
 .agent-settings label {
@@ -293,7 +304,6 @@ body {
   gap: var(--space-3);
   font-size: var(--text-sm);
   color: var(--text-secondary);
-  margin-bottom: var(--space-3);
 }
 
 .agent-settings input {
@@ -323,7 +333,6 @@ body {
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  margin-top: var(--space-3);
 }
 
 .settings-row small {
