@@ -489,6 +489,18 @@ dynamically:
   ending `{"done": true}`); agent updates have a 240s timeout so a stuck
   agent surfaces an error instead of hanging silently.
 
+## UI scroll fix (2026-10-10)
+
+- **Scroll-into-empty-space bug (live-reported):** the chat `<main>` is a
+  flex column with `overflow-y: auto`. The typing indicator (and empty
+  state) are toggled with `.hidden = true`, but no CSS rule made the
+  `hidden` attribute win over `display: flex` — a hidden `.typing` (or
+  `.empty`) still occupied layout space, inflating `scrollHeight` so the
+  user could scroll past the last message into blank space (worst while
+  "talking to LyX…" kept the indicator present). Fix: a global
+  `[hidden] { display: none !important; }` rule; `showEmpty()` now also
+  re-appends the element so it stays the last child.
+
 ## Action outcome persistence + error log (2026-10-10)
 
 - Each assistant turn can carry `meta: { action, target, target2, result:

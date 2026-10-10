@@ -78,6 +78,14 @@
   box-sizing: border-box;
 }
 
+/* The `hidden` attribute must always win over any display rule — otherwise
+   elements toggled with `.hidden = true` (typing indicator, empty state,
+   selection badge) still occupy layout space in the chat's flex column,
+   inflating scrollHeight and letting the user scroll into empty space. */
+[hidden] {
+  display: none !important;
+}
+
 html, body {
   margin: 0;
   padding: 0;
@@ -509,6 +517,10 @@ main::-webkit-scrollbar-thumb {
   justify-content: center;
   text-align: center;
   max-width: 280px;
+  /* Fill the chat area so the message is vertically centered; margin:auto
+     is what centers it horizontally inside the flex column. */
+  flex: 1;
+  min-height: 0;
   margin: auto;
   font-size: var(--text-base);
   color: var(--text-secondary);

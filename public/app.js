@@ -149,9 +149,11 @@ function showEmpty() {
     emptyEl.className = 'empty';
     emptyEl.textContent =
       'Select text in LyX or type a request. The agent will reply here or write directly into the document.';
-    chat.appendChild(emptyEl);
   }
-  if (!emptyEl.parentElement) chat.appendChild(emptyEl);
+  // Re-append so the empty state is the LAST child: with flex:1 + margin
+  // removed it stretches to fill the chat area and centers itself. Any
+  // stale trailing nodes (e.g. a leftover typing indicator) move above it.
+  chat.appendChild(emptyEl);
   emptyEl.hidden = false;
 }
 
