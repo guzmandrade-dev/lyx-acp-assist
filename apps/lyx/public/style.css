@@ -411,6 +411,56 @@ main::-webkit-scrollbar-thumb {
   text-align: left;
 }
 
+/* Hover actions under each message (quote into composer, copy text) */
+.msg {
+  position: relative;
+}
+
+.msg-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
+
+.msg:hover .msg-actions,
+.msg:focus-within .msg-actions {
+  opacity: 1;
+}
+
+.msg-action {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--text-tertiary);
+  font-family: inherit;
+  font-size: var(--text-xs);
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: var(--shadow-float);
+}
+
+.msg-action:hover {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+.msg-action:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.msg-action.copied {
+  color: var(--applied);
+  border-color: var(--applied);
+  opacity: 1;
+}
+
 /* Feedback footnotes */
 .feedback {
   margin-top: var(--space-3);

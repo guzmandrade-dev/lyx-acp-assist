@@ -124,6 +124,8 @@ function renderConversation(turns) {
     // Restore a persisted action outcome (applied/error/cancelled) from a
     // previous app run, so failures are visible after a restart.
     if (turn.role === 'assistant' && turn.meta) {
+      // Remember the outcome so copy/quote strips the ```lyx block like the render does.
+      div._applied = turn.meta.result === 'applied' ? turn.meta.action : null;
       renderFeedback(div, {
         applied: turn.meta.result === 'applied' && turn.meta.action !== 'none'
           ? turn.meta.action
@@ -165,11 +167,106 @@ function scrollToBottomIfNear() {
   if (nearBottom) chat.scrollTop = chat.scrollHeight;
 }
 
+const QUOTE_ICON = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+  + '<path d="M3 21c3 0 7-1 7-8V5c0-1.25-.756-2.017-2-2H4c-1.25 0-2 .75-2 1.972V11c0 1.25.75 2 2 2 1 0 1 0 1 1v1c0 1-1 2-2 2s-1 .008-1 1.031V20c0 1 0 1 1 1z"/>'
+  + '<path d="M15 21c3 0 7-1 7-8V5c0-1.25-.757-2.017-2-2h-4c-1.25 0-2 .75-2 1.972V11c0 1.25.75 2 2 2h.75c0 2.25.25 4-2.75 4v3c0 1 0 1 1 1z"/>'
+  + '</svg>';
+const COPY_ICON = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+  + '<rect x="9" y="9" width="13" height="13" rx="2"/>'
+  + '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>'
+  + '</svg>';
+
+/**
+ * Plain-text form of a message for copy/quote: the raw turn content with
+ * the action tag stripped (and, for applied write actions, the ```lyx block
+ * stripped too) — mirroring what renderAssistantText shows. Read from the
+ * div at click time so streamed assistant messages quote their final text.
+ */
+function messagePlainText(div) {
+  const raw = div._rawText ?? div.querySelector('.text')?.textContent ?? '';
+  if (!div.classList.contains('assistant')) return raw;
+  let text = raw.replace(/\[ACTION:\s*[^\]]*\]/gi, '').trim();
+  if (div._applied && div._applied !== 'none') {
+    text = text.replace(/```lyx\s*\n[\s\S]*?```\s*/g, '').trim();
+  }
+  return text;
+}
+
+/** Insert text into the composer as a GitHub-style blockquote at the caret. */
+function quoteIntoComposer(text) {
+  const quote = text.split('\n').map((l) => `> ${l}`).join('\n');
+  const start = input.selectionStart ?? input.value.length;
+  const end = input.selectionEnd ?? start;
+  const before = input.value.slice(0, start);
+  const after = input.value.slice(end);
+  const separator = before.length === 0 ? '' : before.endsWith('\n\n') ? '' : before.endsWith('\n') ? '\n' : '\n\n';
+  const insertion = separator + quote + '\n\n';
+  input.value = before + insertion + after;
+  const caret = (before + insertion).length;
+  input.focus();
+  input.setSelectionRange(caret, caret);
+}
+
+async function copyTextToClipboard(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    // Fallback for contexts where the async clipboard API is unavailable.
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    ta.remove();
+  }
+}
+
+function msgActionButton(kind, label, icon, onClick) {
+  const btn = document.createElement('button');
+  btn.className = `msg-action ${kind}`;
+  btn.title = label;
+  btn.setAttribute('aria-label', label);
+  btn.innerHTML = icon;
+  btn.addEventListener('click', () => onClick(btn));
+  return btn;
+}
+
+/** Hover actions under each message: quote into the composer, copy text. */
+function attachMessageActions(div, role) {
+  const actions = document.createElement('div');
+  actions.className = 'msg-actions';
+  if (role !== 'system') {
+    actions.appendChild(msgActionButton('quote', 'Quote in a new message', QUOTE_ICON, () => {
+      const text = messagePlainText(div);
+      if (text) quoteIntoComposer(text);
+    }));
+  }
+  actions.appendChild(msgActionButton('copy', 'Copy text', COPY_ICON, async (btn) => {
+    const text = messagePlainText(div);
+    if (!text) return;
+    await copyTextToClipboard(text);
+    const original = btn.innerHTML;
+    btn.classList.add('copied');
+    btn.innerHTML = '&#10003; Copied';
+    setTimeout(() => {
+      btn.classList.remove('copied');
+      btn.innerHTML = original;
+    }, 1200);
+  }));
+  div.appendChild(actions);
+}
+
 function addMessage(role, content, opts = {}) {
   hideEmpty();
   const div = document.createElement('div');
   div.className = `msg ${role}`;
   if (opts.assertive) div.setAttribute('aria-live', 'assertive');
+  // Raw text for the copy/quote actions; streamMessage updates it as the
+  // reply streams in.
+  div._rawText = content;
+  div._applied = opts.applied ?? null;
   const textDiv = document.createElement('div');
   textDiv.className = 'text';
   if (role === 'assistant') {
@@ -178,6 +275,7 @@ function addMessage(role, content, opts = {}) {
     textDiv.textContent = content;
   }
   div.appendChild(textDiv);
+  attachMessageActions(div, role);
   chat.appendChild(div);
   scrollToBottomIfNear();
   return { div, textDiv };
@@ -621,6 +719,7 @@ async function streamMessage(message) {
           full += payload.text;
           started = true;
           hideTyping();
+          div._rawText = full; // for the copy/quote actions
           textDiv.innerHTML = renderAssistantText(full, applied);
           scrollToBottomIfNear();
           scheduleTypingResume();
@@ -639,6 +738,7 @@ async function streamMessage(message) {
           applied = payload.applied;
           target = payload.target ?? null;
           target2 = payload.target2 ?? null;
+          div._applied = applied; // quote strips the ```lyx block like the render does
         } else if (payload.action === 'none') {
           applied = 'none';
         } else if (payload.cancelled) {
@@ -657,6 +757,8 @@ async function streamMessage(message) {
     if (usedTools.length > 0) setToolLine(`Used ${usedTools.join(', ')}`);
     else toolLine.remove();
   }
+  div._rawText = full; // final raw text for the copy/quote actions
+  div._applied = applied;
   textDiv.innerHTML = renderAssistantText(full, applied) || (started ? '' : '<p>(no response)</p>');
   renderFeedback(div, { applied, target, target2, cancelled, error });
   scrollToBottomIfNear();

@@ -65,6 +65,15 @@ export interface TurnMeta {
 const UNSAVED_KEY = '(unsaved)';
 
 /**
+ * Conversation-history replay after an app restart: the agent process is
+ * new and has no memory, so it must be briefed on the turns it missed.
+ * A turn counts as "replayed" once it has been sent in one prompt.
+ */
+const HISTORY_REPLAY_LIMIT = 20;
+/** Per-turn character cap when replaying history into a prompt. */
+const HISTORY_REPLAY_CHAR_LIMIT = 500;
+
+/**
  * Documents with a body larger than this attach only their outline to
  * prompts; the agent then reads/searches the saved file with its own
  * tools (lazy fetch, like a coding agent in a repository).
@@ -78,6 +87,12 @@ export interface Session {
   agent: AcpClient;
   /** Conversation history per document path. */
   conversations: Map<string, Turn[]>;
+  /**
+   * Per conversation key: number of leading turns loaded from persisted
+   * history (pre-restart) that the current agent process has NOT seen.
+   * The next prompt replays them (see buildHistoryPrefix).
+   */
+  historyHandoff: Map<string, number>;
   /** All document paths seen during this session (for the selector). */
   knownDocuments: Set<string>;
   /** Active document path, refreshed from LyX on every request. */
@@ -276,6 +291,7 @@ export function createServer(options: ServerOptions) {
         clipboard: new LyxClipboard(options.clipboard),
         agent,
         conversations: new Map(),
+        historyHandoff: new Map(),
         knownDocuments: new Set(),
         documentPath: null,
         cancelRequested: false,
@@ -466,7 +482,15 @@ export function createServer(options: ServerOptions) {
       const attachments = session.attachments;
       session.attachments = [];
 
-      const prompt = buildAutoPrompt(contextText, selection, message, attachments);
+      const historyPrefix = buildHistoryPrefix(session, conversationKey(session));
+      const prompt = buildAutoPrompt(contextText, selection, message, attachments, historyPrefix);
+      // The replayed (pre-restart) turns are in this prompt now, so the
+      // agent knows them; only turns recorded from here on are new to it.
+      // Without clearing, a second message after a restart would replay
+      // the same history again.
+      if (historyPrefix) {
+        session.historyHandoff.delete(conversationKey(session));
+      }
       let reply = await session.agent.prompt(session.id, [{ type: 'text', text: prompt }], {
         onChunk: (chunk) => send({ text: chunk }),
         onToolCall: (tool) => send({ tool }),
@@ -713,26 +737,56 @@ export function createServer(options: ServerOptions) {
   }
 
   /**
-   * Get (creating if needed) the conversation for a key. Awaits the persisted
-   * history load so callers (sessionInfo) never observe a half-loaded turn
-   * list — the fire-and-forget version raced and returned empty history.
+   * Get (creating if needed) the conversation for a key and remember how many
+   * of its turns came from persisted history on disk. The in-memory list is
+   * what the agent is told about (see buildHistoryPrefix): the agent keeps
+   * its own context within a session, so replaying history it already saw
+   * would only eat context — but after an app restart (or a reconnect) the
+   * agent is a fresh process with NO memory, and it must be briefed on the
+   * turns it missed. Awaits the persisted history load so callers
+   * (sessionInfo) never observe a half-loaded turn list — the
+   * fire-and-forget version raced and returned empty history.
    */
   async function ensureConversation(session: Session, key: string): Promise<Turn[]> {
-    let turns = session.conversations.get(key);
-    if (!turns) {
-      turns = [];
-      session.conversations.set(key, turns);
-      // Load persisted history if available.
-      if (options.historyDir) {
-        try {
-          turns.push(...(await loadHistory(options.historyDir, key)));
-        } catch {
-          /* unreadable history — start empty */
+      let turns = session.conversations.get(key);
+      if (!turns) {
+        turns = [];
+        session.conversations.set(key, turns);
+        // Load persisted history if available.
+        if (options.historyDir) {
+          try {
+            const loaded = await loadHistory(options.historyDir, key);
+            turns.push(...loaded);
+            // These turns predate this process: the agent cannot see them
+            // unless we replay them (it has no memory across restarts).
+            session.historyHandoff.set(key, loaded.length);
+          } catch {
+            /* unreadable history — start empty */
+          }
         }
       }
+      return turns;
     }
-    return turns;
-  }
+
+    /**
+     * Number of LEADING turns in the conversation the current agent process
+     * has NOT seen: they were loaded from the persisted history file (app
+     * restart / reconnect) and must be replayed into the next prompt.
+     * Zero once replayed or when every turn was produced live by this agent.
+     */
+    function unseenCount(session: Session, key: string): number {
+      return session.historyHandoff.get(key) ?? 0;
+    }
+
+    /**
+     * Render the turns the agent has not seen (pre-restart history) as a
+     * compact context block. Empty string when the agent already knows the
+     * whole conversation.
+     */
+    function buildHistoryPrefix(session: Session, key: string): string {
+      const turns = session.conversations.get(key) ?? [];
+      return formatHistoryReplay(turns, unseenCount(session, key));
+    }
 
   async function recordTurn(session: Session, user: string, assistant: string) {
     const key = conversationKey(session);
@@ -1119,6 +1173,49 @@ export function parseAction(reply: string): ActionOutcome {
 }
 
 /** Build the unified "agent decides" prompt for a user message. */
+/**
+ * Format the leading `unseen` turns of a conversation for replay into an
+ * agent prompt: one compact line per turn (roles swapped to User/You),
+ * action outcomes as short parenthetical notes, whitespace collapsed and
+ * each turn truncated to HISTORY_REPLAY_CHAR_LIMIT. Pure and exported for
+ * tests. `unseen` is the number of leading turns the agent has not seen
+ * (restored from persisted history after an app restart); later turns
+ * were produced live by this same agent process and are skipped.
+ */
+export function formatHistoryReplay(turns: Turn[], unseen: number): string {
+  const count = Math.min(Math.max(0, unseen), turns.length, HISTORY_REPLAY_LIMIT);
+  if (count <= 0) return '';
+  const lines: string[] = [
+    `Conversation so far (earlier turns, replayed because the app was restarted — you have no memory of these):`,
+    `The user can see this history; treat it as context, not as a request to continue anything.`,
+  ];
+  for (const turn of turns.slice(0, count)) {
+    const label = turn.role === 'user' ? 'User' : 'You';
+    let text = (turn.content ?? '')
+      // The replay is context, not a request to re-apply: drop the action
+      // tag and any ```lyx block (the meta line below reports the outcome).
+      .replace(/```lyx[\s\S]*?```/g, '')
+      .replace(/\[ACTION:\s*[^\]]*\]/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (text.length > HISTORY_REPLAY_CHAR_LIMIT) {
+      text = `${text.slice(0, HISTORY_REPLAY_CHAR_LIMIT)}…`;
+    }
+    lines.push(`- ${label}: ${text}`);
+    if (turn.role === 'assistant' && turn.meta) {
+      const m = turn.meta;
+      if (m.result === 'applied' && m.action !== 'none') {
+        lines.push(`  (applied [ACTION: ${m.action}${m.target ? ` p${m.target}` : ''}${m.target2 ? ` p${m.target2}` : ''}] in the document)`);
+      } else if (m.result === 'error') {
+        lines.push(`  (action ${m.action} FAILED: ${m.error ?? 'unknown error'})`);
+      } else if (m.result === 'cancelled') {
+        lines.push(`  (action ${m.action} was cancelled before applying)`);
+      }
+    }
+  }
+  return '\n' + lines.join('\n');
+}
+
 export function buildAutoPrompt(
   contextText: string,
   selection: {
@@ -1129,6 +1226,7 @@ export function buildAutoPrompt(
   },
   message: string,
   attachments: Attachment[] = [],
+  historyPrefix = '',
 ): string {
   const parts: string[] = [
     'You are assisting an author writing a document in LyX. Your reply is shown ' +
@@ -1210,6 +1308,7 @@ export function buildAutoPrompt(
       '```',
     );
   }
+  if (historyPrefix) parts.push(historyPrefix);
   parts.push('', 'User message:', message);
   if (attachments.length > 0) {
     parts.push(

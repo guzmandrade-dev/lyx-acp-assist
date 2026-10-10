@@ -1,7 +1,7 @@
 import { describe, it, expect, afterAll } from 'vitest';
 import type { Server } from 'node:http';
 import type { Express } from 'express';
-import { createServer, parseAction, normalizeForCompare, isLikelyMatch, buildAutoPrompt, extractAttachmentText, findClassLayouts, listKnownDocuments } from '../src/server.js';
+import { createServer, parseAction, normalizeForCompare, isLikelyMatch, buildAutoPrompt, extractAttachmentText, findClassLayouts, listKnownDocuments, formatHistoryReplay } from '../src/server.js';
 import type { RawClipboard } from '../src/clipboard/lyx-clipboard.js';
 
 /** Stub raw clipboard: enough for routes that never touch LyX. */
@@ -235,6 +235,81 @@ describe('document selector seeding', () => {
     expect(await listKnownDocuments(path.join(dir, 'nope'))).toEqual([]);
 
     await fsp.rm(dir, { recursive: true, force: true });
+  });
+});
+
+describe('history replay after restart', () => {
+  const ts = '2026-10-10T00:00:00.000Z';
+
+  it('is empty when the agent already saw every turn', () => {
+    const turns = [
+      { role: 'user' as const, content: 'hi', timestamp: ts },
+      { role: 'assistant' as const, content: 'hello', timestamp: ts },
+    ];
+    expect(formatHistoryReplay(turns, 0)).toBe('');
+  });
+
+  it('replays only the unseen leading turns with action outcomes', () => {
+    const turns = [
+      // Pre-restart turns (the agent has not seen these).
+      { role: 'user' as const, content: 'add a title', timestamp: ts },
+      {
+        role: 'assistant' as const,
+        content: 'Done.\n[ACTION: insert-top]',
+        timestamp: ts,
+        meta: { action: 'insert-top', target: null, target2: null, result: 'applied' as const },
+      },
+      { role: 'user' as const, content: 'now bold it', timestamp: ts },
+      {
+        role: 'assistant' as const,
+        content: 'Could not find it.',
+        timestamp: ts,
+        meta: { action: 'rewrite', target: null, target2: null, result: 'error' as const, error: 'no selection' },
+      },
+      // A turn produced live by the current agent process (already seen).
+      { role: 'user' as const, content: 'ok', timestamp: ts },
+      { role: 'assistant' as const, content: 'Sure.', timestamp: ts },
+    ];
+    const out = formatHistoryReplay(turns, 4);
+    expect(out).toContain('replayed because the app was restarted');
+    expect(out).toContain('- User: add a title');
+    expect(out).toContain('- You: Done.');
+    expect(out).toContain('applied [ACTION: insert-top] in the document');
+    expect(out).toContain('action rewrite FAILED: no selection');
+    // Live turns of this process must NOT be replayed.
+    expect(out).not.toContain('- User: ok');
+    expect(out).not.toContain('- You: Sure.');
+    // The action tag itself must not leak into the replay.
+    expect(out).not.toContain('[ACTION:');
+  });
+
+  it('caps the replay at the turn and character limits', () => {
+    const many = Array.from({ length: 30 }, (_, i) => ({
+      role: 'user' as const,
+      content: `turn ${i} ` + 'x'.repeat(1000),
+      timestamp: ts,
+    }));
+    const out = formatHistoryReplay(many, 30);
+    // At most HISTORY_REPLAY_LIMIT (20) turns are replayed.
+    expect(out.match(/^- User: /gm)?.length).toBe(20);
+    expect(out).not.toContain('turn 20');
+    // Each turn is truncated to HISTORY_REPLAY_CHAR_LIMIT + ellipsis.
+    expect(out).toContain('…');
+    expect(out).not.toContain('x'.repeat(501));
+  });
+
+  it('collapses whitespace and reports cancellation', () => {
+    const turns = [
+      {
+        role: 'assistant' as const,
+        content: 'Working\n\non it',
+        timestamp: ts,
+        meta: { action: 'rewrite', target: null, target2: null, result: 'cancelled' as const },
+      },
+    ];
+    const out = formatHistoryReplay(turns, 1);
+    expect(out).toContain('- You: Working on it');
+    expect(out).toContain('cancelled before applying');
   });
 });
 
