@@ -164,6 +164,16 @@ export function createServer(options: ServerOptions) {
       sessions.set(id, session);
       await agent.createSession(id);
 
+      // Seed the document selector with paths from previous sessions. The
+      // pipe has no "list open buffers" LFUN, so without this the selector
+      // only shows the active tab after an app restart (the in-memory
+      // knownDocuments set starts empty).
+      if (options.historyDir) {
+        for (const docPath of await listKnownDocuments(options.historyDir)) {
+          session.knownDocuments.add(docPath);
+        }
+      }
+
       res.json(await sessionInfo(session));
     }),
   );
@@ -1229,6 +1239,37 @@ async function collectStyles(file: string, dir: string, depth: number): Promise<
 }
 
 // --- history persistence ---------------------------------------------------
+
+/**
+ * Document paths that have persisted chat history, for seeding the document
+ * selector on a fresh session. The LyXServer pipe has no "list open
+ * buffers" LFUN, so this is the only way to show other tabs after an app
+ * restart. Skips the unsaved pseudo-key and paths that no longer exist on
+ * disk (file-open on a stale path would reopen or fail in LyX).
+ */
+export async function listKnownDocuments(historyDir: string): Promise<string[]> {
+  let entries: string[];
+  try {
+    entries = await fs.readdir(historyDir);
+  } catch {
+    return [];
+  }
+  const paths: string[] = [];
+  for (const entry of entries) {
+    if (!entry.endsWith('.json')) continue;
+    try {
+      const raw = await fs.readFile(path.join(historyDir, entry), 'utf8');
+      const data = JSON.parse(raw) as { key?: string };
+      const key = data.key;
+      if (typeof key !== 'string' || key === UNSAVED_KEY) continue;
+      await fs.access(key);
+      paths.push(key);
+    } catch {
+      /* unreadable entry or missing document — skip */
+    }
+  }
+  return paths;
+}
 
 function historyFile(dir: string, conversationKey: string): string {
   const hash = createHash('sha256').update(conversationKey).digest('hex').slice(0, 16);

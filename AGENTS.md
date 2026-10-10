@@ -466,8 +466,22 @@ The LyXServer pipe follows LyX's ACTIVE view, so documents are handled
 dynamically:
 - Every request re-reads `server-get-filename`; conversations are keyed
   per document path (unsaved buffers share the `(unsaved)` key).
-- The app polls `/documents` every 2s, showing a tab selector; switching
-  sends `file-open <path>` which activates an already-open buffer.
+- The document selector refreshes only on composer interaction and on app
+  window focus (no timer — see the "LyX view disturbance" note above),
+  showing a tab selector; switching sends `file-open <path>` which
+  activates an already-open buffer. The focus-time refresh is documents
+  only (refreshing the selection would dispatch a `copy` LFUN that
+  overwrites the system clipboard on a passive focus).
+- The pipe has NO "list open buffers" LFUN (`window-list` -> "Unknown
+  action", verified live), so the selector's tab list is seeded on session
+  creation from the persisted history keys (`listKnownDocuments`, exported
+  from server.ts): paths whose history file exists AND still exist on disk.
+  Verified: historical keys and fresh `server-get-filename` replies both use
+  LyX's forward-slash path form (`C:/Users/.../doc.lyx`).
+- Reconnect is a toolbar icon button (always visible, works while
+  connected); a "talking to LyX…" spinner + text shows in the status row
+  while any LyX pipe request is in flight (counter-based, wraps
+  documents/selection/switch/undo and the pre-stream context read).
 - Chat history persists to `<userData>/history/<hash>.json` per document
   (Electron userData is `%APPDATA%/Electron` until we set an app id /
   package the app).

@@ -14,6 +14,8 @@ const statusText = document.getElementById('status-text');
 const docEl = document.getElementById('doc');
 const selectionEl = document.getElementById('selection');
 const docSelect = document.getElementById('doc-select');
+const lyxSpinner = document.getElementById('lyx-spinner');
+const lyxBusyText = document.getElementById('lyx-busy-text');
 const input = document.getElementById('input');
 const sendBtn = document.getElementById('send');
 const stopBtn = document.getElementById('stop');
@@ -182,6 +184,32 @@ function setStatusText(text) {
   else if (statusEl) statusEl.textContent = text;
 }
 
+// "Talking to LyX" indicator: shown while any request that dispatches into
+// LyX's pipe is in flight (documents, selection, switch, undo, and the
+// pre-stream context read when sending a message). Counter-based so
+// overlapping requests keep it visible until the last one settles.
+let lyxRequestCount = 0;
+function lyxBusyStart() {
+  lyxRequestCount++;
+  if (lyxSpinner) lyxSpinner.hidden = false;
+  if (lyxBusyText) lyxBusyText.hidden = false;
+}
+function lyxBusyEnd() {
+  lyxRequestCount = Math.max(0, lyxRequestCount - 1);
+  if (lyxRequestCount === 0) {
+    if (lyxSpinner) lyxSpinner.hidden = true;
+    if (lyxBusyText) lyxBusyText.hidden = true;
+  }
+}
+async function withLyxBusy(promise) {
+  lyxBusyStart();
+  try {
+    return await promise;
+  } finally {
+    lyxBusyEnd();
+  }
+}
+
 function updateStatusClass() {
   if (!statusEl) return;
   let cls = 'status';
@@ -258,7 +286,7 @@ async function refreshStatus() {
 async function refreshSelection() {
   if (!sessionId || !selectionEl) return;
   try {
-    const r = await api(`/api/session/${sessionId}/selection`);
+    const r = await withLyxBusy(api(`/api/session/${sessionId}/selection`));
     if (r.hasSelection && r.stats && r.stats[0] > 0) {
       selectionEl.textContent = `${r.stats[0]} words selected`;
       selectionEl.hidden = false;
@@ -286,10 +314,12 @@ function updateDocSelector(active, documents) {
 docSelect.addEventListener('change', async () => {
   if (!sessionId || busy) return;
   try {
-    const r = await api(`/api/session/${sessionId}/documents/switch`, {
-      method: 'POST',
-      body: JSON.stringify({ path: docSelect.value }),
-    });
+    const r = await withLyxBusy(
+      api(`/api/session/${sessionId}/documents/switch`, {
+        method: 'POST',
+        body: JSON.stringify({ path: docSelect.value }),
+      }),
+    );
     docEl.textContent = r.active ?? '(unsaved document)';
     docEl.title = r.active ?? '';
     await refreshStatus();
@@ -304,7 +334,7 @@ docSelect.addEventListener('change', async () => {
 async function refreshDocuments() {
   if (!sessionId) return;
   try {
-    const r = await api(`/api/session/${sessionId}/documents`);
+    const r = await withLyxBusy(api(`/api/session/${sessionId}/documents`));
     updateDocSelector(r.active, r.documents);
     if (r.active) {
       docEl.textContent = r.active;
@@ -443,7 +473,7 @@ function renderFeedback(msgDiv, { applied, target, target2, cancelled, error }) 
     btn.addEventListener('click', async () => {
       if (!sessionId || busy) return;
       try {
-        await api(`/api/session/${sessionId}/undo`, { method: 'POST' });
+        await withLyxBusy(api(`/api/session/${sessionId}/undo`, { method: 'POST' }));
         addSystemMessage('Undo sent to LyX');
       } catch (e) {
         addSystemMessage(`Undo failed: ${e.message}`, true);
@@ -463,12 +493,17 @@ async function streamMessage(message) {
 
   let res;
   try {
-    res = await fetch(`/api/session/${sessionId}/message/stream`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ message }),
-      signal: ctrl.signal,
-    });
+    // The response headers arrive only after the server has finished reading
+    // the document context from LyX (save + outline + selection), so this
+    // fetch window is exactly the "talking to LyX" phase.
+    res = await withLyxBusy(
+      fetch(`/api/session/${sessionId}/message/stream`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ message }),
+        signal: ctrl.signal,
+      }),
+    );
   } catch (e) {
     maybeSetBusyFromError(e);
     setBusy(false);
@@ -696,6 +731,18 @@ input.addEventListener('input', () => {
 });
 input.addEventListener('focus', refreshLyxContext);
 
+// One document refresh per window focus: the pipe has no "list open
+// buffers" LFUN, so this is how tabs opened/switched in LyX get discovered
+// after an app restart. A single LFUN on a deliberate focus change — unlike
+// the old 2s poll, it never fires while the user scrolls an unfocused LyX
+// window (scrolling does not change focus). Documents only: refreshing the
+// selection dispatches a `copy` LFUN that overwrites the system clipboard,
+// which we don't want on a passive window focus.
+window.addEventListener('focus', () => {
+  if (!sessionId || busy) return;
+  refreshDocuments();
+});
+
 sendBtn.addEventListener('click', send);
 input.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) {
@@ -717,7 +764,7 @@ stopBtn.addEventListener('click', async () => {
 undoBtn.addEventListener('click', async () => {
   if (busy || !sessionId) return;
   try {
-    await api(`/api/session/${sessionId}/undo`, { method: 'POST' });
+    await withLyxBusy(api(`/api/session/${sessionId}/undo`, { method: 'POST' }));
     addSystemMessage('Undo sent to LyX');
   } catch (e) {
     addSystemMessage(`Undo failed: ${e.message}`, true);
@@ -743,7 +790,7 @@ showEmpty();
 stopBtn.style.display = '';
 fileInput.style.display = '';
 sendBtn.title = 'Send message (Enter)';
-reconnectBtn.title = 'Restart the agent session';
+reconnectBtn.title = 'Reconnect: restart the agent session and re-read LyX';
 pinBtn.setAttribute('aria-pressed', 'true');
 pinBtn.title = 'Float on top while LyX is focused';
 cmdEl.addEventListener('blur', saveSettings);
