@@ -89,6 +89,9 @@ jobs:
           name: app-icons
           path: build
 
+      - name: Build application
+        run: npm run build
+
       - name: Package application
         run: npx electron-builder --publish never
         env:
