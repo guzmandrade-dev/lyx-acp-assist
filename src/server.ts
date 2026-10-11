@@ -255,8 +255,7 @@ export function createServer(options: ServerOptions) {
     if (typeof b.command === 'string') out.command = b.command.trim();
     if (typeof b.args === 'string') out.args = b.args.trim().split(/\s+/).filter(Boolean);
     else if (Array.isArray(b.args)) {
-      const args = b.args.filter((a): a is string => typeof a === 'string' && a.trim().length > 0);
-      if (args.length > 0) out.args = args;
+      out.args = b.args.filter((a): a is string => typeof a === 'string' && a.trim().length > 0);
     }
     if (b.env && typeof b.env === 'object') {
       out.env = Object.fromEntries(
@@ -281,7 +280,7 @@ export function createServer(options: ServerOptions) {
 
       const agent = new AcpClient({
         command: requested?.command ?? persisted.command ?? 'opencode',
-        args: requested?.args ?? persisted.args ?? ['acp'],
+        args: requested?.args ?? persisted.args ?? [],
         env: requested?.env ?? persisted.env ?? {},
       });
       await agent.start();

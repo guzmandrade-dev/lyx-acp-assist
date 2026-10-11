@@ -120,6 +120,14 @@ describe('agent settings persistence', () => {
       expect(bad.status).toBe(200);
       const afterBad = await (await fetch(`${base}/api/settings/agent`)).json();
       expect(afterBad).toEqual({ command: 'goose', args: ['x', 'y'] });
+
+      // An empty argument list is intentional (for agents such as vibe-acp).
+      const noArgs = await fetch(`${base}/api/settings/agent`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ command: 'vibe-acp', args: '' }),
+      });
+      expect(await noArgs.json()).toEqual({ command: 'vibe-acp', args: [] });
     } finally {
       await new Promise<void>((resolve) => srv.close(() => resolve()));
       await fsp.rm(dir, { recursive: true, force: true });
