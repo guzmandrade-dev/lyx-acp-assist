@@ -6,6 +6,9 @@
 #   powershell -File scripts/generate-icon.ps1
 Add-Type -AssemblyName System.Drawing
 
+$buildDir = Join-Path $PSScriptRoot '..\build'
+New-Item -ItemType Directory -Force -Path $buildDir | Out-Null
+
 $script:blue  = [System.Drawing.Color]::FromArgb(255, 59, 110, 165)  # LyX blue (app accent)
 $script:yellow = [System.Drawing.Color]::FromArgb(255, 240, 180, 41) # LyX yellow
 $script:red   = [System.Drawing.Color]::FromArgb(255, 217, 79, 43)   # LyX red
@@ -86,14 +89,14 @@ foreach ($s in $sizes) {
   $pngs[$s] = $ms.ToArray()
   $ms.Dispose()
   if ($s -eq 256) {
-    $bmp.Save("$PSScriptRoot\..\build\icon-256.png", [System.Drawing.Imaging.ImageFormat]::Png)
+    $bmp.Save((Join-Path $buildDir 'icon-256.png'), [System.Drawing.Imaging.ImageFormat]::Png)
   }
   $bmp.Dispose()
 }
 
 # ICO = header + directory + PNG-compressed payloads (Vista+; Chromium and
 # electron-builder both read this form).
-$icoPath = "$PSScriptRoot\..\build\icon.ico"
+$icoPath = Join-Path $buildDir 'icon.ico'
 $fs = [System.IO.File]::Create($icoPath)
 $w = New-Object System.IO.BinaryWriter($fs)
 $w.Write([UInt16]0)             # reserved
