@@ -69,10 +69,20 @@ export class AcpClient {
 
     this.app.onRequest('session/request_permission', (context) => {
       const params = context.params as {
-        toolCall?: { title?: string };
+        toolCall?: {
+          name?: string | null;
+          title?: string;
+          locations?: Array<{ path: string }>;
+        };
         options: Array<{ optionId: string; kind: string }>;
       };
-      console.log(`[acp] allowing tool call: ${params.toolCall?.title ?? 'unknown'}`);
+      const tool = params.toolCall;
+      const name = tool?.name ?? tool?.title ?? 'unknown';
+      const parts = [`[acp] allowing tool call: ${name}`];
+      if (tool?.title && tool.title !== name) parts.push(`— ${tool.title}`);
+      const paths = tool?.locations?.map((l) => l.path).filter(Boolean) ?? [];
+      if (paths.length > 0) parts.push(`(${[...new Set(paths)].join(', ')})`);
+      console.log(parts.join(' '));
       const best =
         params.options.find((o) => o.kind === 'allow_once') ??
         params.options.find((o) => o.kind === 'allow_always') ??
