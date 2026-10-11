@@ -118,11 +118,17 @@ async function startApp(): Promise<void> {
     applyAlwaysOnTop(lyxFollowMode && watcherLastState === 'LyX');
   });
 
+  // Window/taskbar icon: the 256px raster next to the app bundle. Absent in
+  // unpackaged CI checkouts (build/ is gitignored), so degrade silently.
+  const windowIcon = path.join(__dirname, '..', '..', 'build', 'icon-256.png');
+  const windowIconOpt = fs.existsSync(windowIcon) ? { icon: windowIcon } : {};
+
   mainWindow = new BrowserWindow({
     width: 420,
     height: 680,
     // Framed window: frameless has cross-platform issues (Linux/macOS).
     alwaysOnTop: false, // managed by the LyX-follow watcher below
+    ...windowIconOpt,
     title: 'LyX ACP Assist',
     webPreferences: {
       contextIsolation: true,

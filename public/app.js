@@ -151,8 +151,19 @@ function showEmpty() {
     emptyEl = document.createElement('div');
     emptyEl.id = 'empty';
     emptyEl.className = 'empty';
-    emptyEl.textContent =
+    const logo = document.createElement('img');
+    logo.className = 'empty-logo';
+    logo.src = 'logo.svg';
+    logo.width = 72;
+    logo.height = 72;
+    logo.alt = '';
+    const name = document.createElement('div');
+    name.className = 'empty-name';
+    name.textContent = 'LyX ACP Assist';
+    const hint = document.createElement('div');
+    hint.textContent =
       'Select text in LyX or type a request. The agent will reply here or write directly into the document.';
+    emptyEl.append(logo, name, hint);
   }
   // Re-append so the empty state is the LAST child: with flex:1 + margin
   // removed it stretches to fill the chat area and centers itself. Any
