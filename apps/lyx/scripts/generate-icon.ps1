@@ -1,5 +1,5 @@
 # Draws the LyX ACP Assist logo and writes build/icon.ico (16/32/48/64/256
-# PNG-compressed entries) plus build/icon-256.png (UI/README raster).
+# PNG-compressed entries) plus 256px and 512px app icon PNGs.
 # The design mirrors public/logo.svg: a tilted paper card with a LyX-blue
 # title bar, a yellow highlight stroke (the agent's edit), and a red AI
 # spark - the LyX wordmark palette. Run on Windows:
@@ -94,6 +94,14 @@ foreach ($s in $sizes) {
   $bmp.Dispose()
 }
 
+$bmp = New-Object System.Drawing.Bitmap(512, 512)
+$g = [System.Drawing.Graphics]::FromImage($bmp)
+$g.ScaleTransform(2, 2)
+Draw-Logo $g
+$g.Dispose()
+$bmp.Save((Join-Path $buildDir 'icon-512.png'), [System.Drawing.Imaging.ImageFormat]::Png)
+$bmp.Dispose()
+
 # ICO = header + directory + PNG-compressed payloads (Vista+; Chromium and
 # electron-builder both read this form).
 $icoPath = Join-Path $buildDir 'icon.ico'
@@ -122,4 +130,4 @@ foreach ($s in $sizes) {
 $w.Dispose()
 $fs.Dispose()
 
-"icon written: $icoPath ($((Get-Item $icoPath).Length) bytes), plus build\icon-256.png"
+"icon written: $icoPath ($((Get-Item $icoPath).Length) bytes), plus build\icon-256.png and build\icon-512.png"

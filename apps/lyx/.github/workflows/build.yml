@@ -35,8 +35,8 @@ jobs:
 
   # Icons are generated from public/logo.svg by a Windows-only PowerShell
   # script (System.Drawing), so one Windows runner produces both
-  # build/icon.ico (Windows installer/window) and build/icon-256.png
-  # (mac/linux dock + window). Both are gitignored; the per-OS build jobs
+  # build/icon.ico (Windows installer/window) and PNGs for macOS/Linux
+  # packaging. They are gitignored; the per-OS build jobs
   # download them from here before packaging.
   icons:
     needs: test
@@ -56,6 +56,7 @@ jobs:
           path: |
             build/icon.ico
             build/icon-256.png
+            build/icon-512.png
           if-no-files-found: error
 
   build:
