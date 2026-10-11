@@ -24,6 +24,8 @@ import {
   renderOutline,
   assemblePasteDocument,
   extractBodyLayouts,
+  splitTopLevelLayouts,
+  normalizeMarkupBlock,
   findMarkupProblems,
 } from './lyx/context.js';
 import { CHAT_KNOWLEDGE } from './lyx/knowledge.js';
@@ -824,10 +826,13 @@ export function createServer(options: ServerOptions) {
   }
 
   async function readDocumentContext(session: Session) {
+    return buildDocumentContext(await readDocumentRaw(session));
+  }
+
+  async function readDocumentRaw(session: Session): Promise<string> {
     const filePath = session.documentPath;
     if (!filePath) throw new Error('Document is not saved on disk.');
-    const raw = await fs.readFile(filePath, 'utf8');
-    return buildDocumentContext(raw);
+    return fs.readFile(filePath, 'utf8');
   }
 
   async function currentHeader(session: Session): Promise<string | null> {
@@ -925,22 +930,25 @@ export function createServer(options: ServerOptions) {
     session: Session,
     target: number | null,
     mode: 'rewrite' | 'insert-after',
-  ): Promise<{ target: number | null; error: string | null }> {
+  ): Promise<{ target: number | null; error: string | null; payload: string | null }> {
     if (!target || target < 1) {
       return {
         target,
         error: `Agent chose an addressed action without a valid paragraph number.`,
+        payload: null,
       };
     }
-    const fail = async (error: string): Promise<{ target: number | null; error: string }> => {
+    const fail = async (error: string): Promise<{ target: number | null; error: string; payload: null }> => {
       // Our paragraph-select may have selected the wrong paragraph; a
       // selection persists in LyX and would pollute later commands.
       await session.lyx.clearSelection();
-      return { target, error };
+      return { target, error, payload: null };
     };
     let ctx;
+    let raw: string;
     try {
-      ctx = await readDocumentContext(session);
+      raw = await readDocumentRaw(session);
+      ctx = buildDocumentContext(raw);
     } catch (e) {
       return fail(`Cannot address paragraphs: ${(e as Error).message}`);
     }
@@ -957,20 +965,28 @@ export function createServer(options: ServerOptions) {
     }
     const selected = await session.lyx.paragraphSelect();
     if (!selected) return fail('paragraph-select failed.');
-    // Verify the target by copying and comparing with the outline preview.
+    // Verify the target against the SAVED file: copy the selection and
+    // compare its raw .lyx markup with the file's paragraph (see
+    // verifyParagraphSelection — a mis-targeted paste never happens).
     const copied = await session.lyx.copySelection();
     if (!copied) {
       return fail('Could not copy the selected paragraph for verification.');
     }
     await sleep(150);
-    const text = await session.clipboard.readText();
-    const actual = normalizeForCompare(text ?? '');
-    const expected = normalizeForCompare(entry.preview);
-    if (!isLikelyMatch(expected, actual)) {
+    const payload = await session.clipboard.readLyxDocument();
+    const clipboardText = payload === null ? await session.clipboard.readText() : null;
+    const verify = verifyParagraphSelection({
+      payload,
+      clipboardText,
+      diskRaw: raw,
+      index: target - 1,
+      expectedPreview: entry.preview,
+    });
+    if (!verify.ok) {
       return fail(
         `Paragraph targeting failed: [p${target}] should start with ` +
-          `"${expected.slice(0, 60)}\u2026" but the cursor landed on ` +
-          `"${actual.slice(0, 60)}\u2026". Nothing was pasted.`,
+          `"${normalizeForCompare(entry.preview).slice(0, 60)}\u2026" but the cursor landed on ` +
+          `"${verify.actual.slice(0, 60)}\u2026". Nothing was pasted.`,
       );
     }
     if (mode === 'insert-after') {
@@ -986,7 +1002,7 @@ export function createServer(options: ServerOptions) {
         return fail(`Could not create a new paragraph below [p${target}].`);
       }
     }
-    return { target, error: null };
+    return { target, error: null, payload };
   }
 
   /**
@@ -1084,10 +1100,11 @@ export function createServer(options: ServerOptions) {
     // is a no-op — report success without touching the document.
     if (to === from || to === from - 1) return { target2: to, error: null };
 
-    // 1. Select + verify [pN]; the copy leaves its x-lyx on the clipboard.
+    // 1. Select + verify [pN]; the verification copy leaves its x-lyx on
+    //    the clipboard (gotoParagraph captured the payload).
     const gotoResult = await gotoParagraph(session, from, 'rewrite');
     if (gotoResult.error) return fail(gotoResult.error);
-    const copied = await session.clipboard.readLyxDocument();
+    const copied = gotoResult.payload ?? (await session.clipboard.readLyxDocument());
     const body = copied ? extractBodyLayouts(copied) : null;
     if (!body) {
       await session.lyx.clearSelection();
@@ -1466,6 +1483,90 @@ export function isLikelyMatch(expected: string, actual: string): boolean {
   }
   if (total === 0) return a.startsWith(e);
   return hits / total >= 0.6;
+}
+
+/**
+ * Structure-vs-structure paragraph verification (2026-10-10 refactor).
+ *
+ * The old check compared our parsed preview against LyX's RENDERED
+ * UnicodeText clipboard export — two representations that can never fully
+ * agree (math renders differently, typographic quotes, layout-label
+ * prefixes, invisible inset properties), so formula-heavy paragraphs
+ * failed targeting on the RIGHT paragraph. Now `copy` puts the raw
+ * `application/x-lyx` payload of the selection on the clipboard, and we
+ * compare markup against markup:
+ *
+ * 1. 'markup' — exact (whitespace-insensitive) comparison of the
+ *    payload's first top-level layout block against the saved file's
+ *    block at `index`. Lossless: formulas, notes, refs compare exactly.
+ * 2. 'preview' — if LyX re-serialized the copy cosmetically, parse the
+ *    payload with OUR parser and fuzzy-match its preview against the
+ *    outline preview (both sides from the same parser — the rendered-
+ *    text quirks are gone from the comparison).
+ * 3. 'text' — legacy last resort when the clipboard holds no x-lyx
+ *    payload: the old UnicodeText fuzzy match.
+ */
+export interface ParagraphSelectionInput {
+  /** Raw .lyx clipboard payload of the copied selection, or null. */
+  payload: string | null;
+  /** UnicodeText clipboard flavor, used only when payload is null. */
+  clipboardText: string | null;
+  /** The SAVED .lyx file content (the walk addresses against the file). */
+  diskRaw: string;
+  /** 0-based index of the target paragraph. */
+  index: number;
+  /** Outline preview of the target paragraph (expected text). */
+  expectedPreview: string;
+}
+
+export interface ParagraphVerification {
+  ok: boolean;
+  /** How the match succeeded: 'markup' | 'preview' | 'text' | 'none'. */
+  via: 'markup' | 'preview' | 'text' | 'none';
+  /** Normalized text of what was actually found (for the error message). */
+  actual: string;
+}
+
+export function verifyParagraphSelection(
+  input: ParagraphSelectionInput,
+): ParagraphVerification {
+  const expected = normalizeForCompare(input.expectedPreview);
+
+  if (input.payload) {
+    const diskBlocks = splitTopLevelLayouts(extractBodyLayouts(input.diskRaw) ?? '');
+    const payloadBlocks = splitTopLevelLayouts(extractBodyLayouts(input.payload) ?? '');
+    const diskBlock = diskBlocks[input.index] ?? null;
+    const payloadBlock = payloadBlocks[0] ?? null;
+    if (diskBlock && payloadBlock) {
+      if (normalizeMarkupBlock(payloadBlock) === normalizeMarkupBlock(diskBlock)) {
+        return { ok: true, via: 'markup', actual: expected };
+      }
+    }
+    // Same-parser fuzzy fallback: tolerates cosmetic re-serialization by
+    // LyX, still rejects a genuinely different paragraph.
+    let payloadPreview = '';
+    try {
+      const payloadCtx = buildDocumentContext(input.payload);
+      payloadPreview = payloadCtx.outline[0]?.preview ?? '';
+    } catch {
+      payloadPreview = '';
+    }
+    const actual = normalizeForCompare(payloadPreview);
+    if (payloadPreview && isLikelyMatch(expected, actual)) {
+      return { ok: true, via: 'preview', actual };
+    }
+    return {
+      ok: false,
+      via: 'none',
+      actual: actual || normalizeForCompare(input.payload),
+    };
+  }
+
+  const actual = normalizeForCompare(input.clipboardText ?? '');
+  if (isLikelyMatch(expected, actual)) {
+    return { ok: true, via: 'text', actual };
+  }
+  return { ok: false, via: 'none', actual };
 }
 
 /**

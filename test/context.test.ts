@@ -5,6 +5,8 @@ import {
   findMarkupProblems,
   buildDocumentContext,
   renderOutline,
+  splitTopLevelLayouts,
+  normalizeMarkupBlock,
 } from '../src/lyx/context.js';
 import { parse } from '../src/lyx/parser.js';
 
@@ -188,5 +190,135 @@ describe('buildDocumentContext', () => {
       '\n\n\\begin_body\n\n\\begin_layout Standard\nName of the project is important.\n\\end_layout\n\n\\end_body\n\\end_document\n';
     const ctx = buildDocumentContext(doc2);
     expect(ctx.outline[0].preview).toContain('Name of the project is important.');
+  });
+
+  it('omits quoted CommandInset arguments from previews (ref properties)', () => {
+    // Regression (live failure, 2026-10-10): a paragraph "Let [Formula] be
+    // the polynomial justification for [ref eq:LotJ]…" leaked
+    // `reference "eq:LotJ"`, `plural "false"`, `caps "false"`,
+    // `noprefix "false"`, `nolink "false"` into its preview. Those
+    // invisible property lines poisoned the fuzzy verification windows
+    // and paragraph targeting failed on the RIGHT paragraph.
+    const doc3 =
+      HEADER +
+      [
+        '',
+        '\\begin_body',
+        '',
+        '\\begin_layout Standard',
+        'Let ',
+        '\\begin_inset Formula $S=\\big(a\\cdot t\\big)$',
+        '\\end_inset',
+        '',
+        ' be the polynomial justification for ',
+        '\\begin_inset CommandInset ref',
+        'LatexCommand ref',
+        'reference "eq:LotJ"',
+        'plural "false"',
+        'caps "false"',
+        'noprefix "false"',
+        'nolink "false"',
+        '',
+        '\\end_inset',
+        '',
+        ', the statement ',
+        '\\begin_inset Formula $S:\\varphi$',
+        '\\end_inset',
+        '',
+        ' is derivable, and it is possible to assign to it a probability.',
+        '\\end_layout',
+        '',
+        '\\end_body',
+        '\\end_document',
+        '',
+      ].join('\n');
+    const ctx = buildDocumentContext(doc3);
+    const preview = ctx.outline[0].preview;
+    expect(preview).toBe(
+      'Let be the polynomial justification for , the statement is derivable, and it is possible to assign to it a probability.',
+    );
+    for (const p of ctx.outline) {
+      expect(p.preview).not.toMatch(/plural|noprefix|nolink|reference "eq/);
+    }
+  });
+
+  it('keeps quoted prose inside insets that merely looks like a property', () => {
+    // Only the exact `name "value"` property form is dropped; real prose
+    // inside a note (e.g. "after the proof we …") must survive.
+    const doc4 =
+      HEADER +
+      [
+        '',
+        '\\begin_body',
+        '',
+        '\\begin_layout Standard',
+        '\\begin_inset Note Note',
+        'status open',
+        '',
+        '\\begin_layout Plain Layout',
+        'After the proof we can still say reference "eq:LotJ" in prose.',
+        '\\end_layout',
+        '',
+        '\\end_inset',
+        '\\end_layout',
+        '',
+        '\\end_body',
+        '\\end_document',
+        '',
+      ].join('\n');
+    const ctx = buildDocumentContext(doc4);
+    expect(ctx.outline[0].preview).toContain('After the proof we can still say');
+  });
+});
+describe('splitTopLevelLayouts / normalizeMarkupBlock', () => {
+  const body = [
+    '\\begin_layout Standard',
+    'First paragraph ',
+    '\\begin_inset Note Note',
+    'status open',
+    '',
+    '\\begin_layout Plain Layout',
+    'Inner note text.',
+    '\\end_layout',
+    '',
+    '\\end_inset',
+    ' trailing.',
+    '\\end_layout',
+    '',
+    '\\begin_layout Section',
+    'Second block',
+    '\\end_layout',
+  ].join('\n');
+
+  it('splits top-level blocks but not inset-inner layouts', () => {
+    const blocks = splitTopLevelLayouts(body);
+    expect(blocks.length).toBe(2);
+    expect(blocks[0]).toContain('\\begin_inset Note Note');
+    expect(blocks[0]).toContain('\\begin_layout Plain Layout'); // stays inside block 1
+    expect(blocks[0]).not.toContain('\\begin_layout Standard\\n'); // single start line
+    expect(blocks[1]).toContain('Second block');
+  });
+
+  it('handles CRLF input like the Windows clipboard', () => {
+    const blocks = splitTopLevelLayouts(body.replace(/\n/g, '\r\n'));
+    expect(blocks.length).toBe(2);
+  });
+
+  it('normalizes markup blocks whitespace-insensitively', () => {
+    const a = normalizeMarkupBlock('\\begin_layout Standard\r\nHi   \n \nthere.\n');
+    const b = normalizeMarkupBlock('\\begin_layout Standard\nHi\nthere.');
+    expect(a).toBe(b);
+  });
+
+  it('round-trips paragraphs extracted from a full document', () => {
+    const doc =
+      HEADER +
+      '\n\n\\begin_body\n\n' +
+      body +
+      '\n\n\\end_body\n\\end_document\n';
+    const blocks = splitTopLevelLayouts(extractBodyLayouts(doc) ?? '');
+    expect(blocks.length).toBe(2);
+    const firstBlock = body.split('\n').slice(0, 12).join('\n');
+    expect(normalizeMarkupBlock(blocks[0] ?? '')).toBe(normalizeMarkupBlock(firstBlock));
   });
 });
