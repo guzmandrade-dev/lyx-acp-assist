@@ -279,8 +279,9 @@ describe('history replay after restart', () => {
     // Live turns of this process must NOT be replayed.
     expect(out).not.toContain('- User: ok');
     expect(out).not.toContain('- You: Sure.');
-    // The action tag itself must not leak into the replay.
-    expect(out).not.toContain('[ACTION:');
+    // The action tag must not leak from the turn content (the meta line
+    // below reports the outcome separately).
+    expect(out).toContain('- You: Done.\n');
   });
 
   it('caps the replay at the turn and character limits', () => {
