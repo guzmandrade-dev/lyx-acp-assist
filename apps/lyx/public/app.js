@@ -42,7 +42,7 @@ async function loadSettings() {
   try {
     const s = await api('/api/settings/agent');
     if (typeof s.command === 'string' && s.command) cmdEl.value = s.command;
-    if (Array.isArray(s.args) && s.args.length > 0) argsEl.value = s.args.join(' ');
+    if (Array.isArray(s.args)) argsEl.value = s.args.join(' ');
   } catch {
     /* keep the HTML defaults */
   }
@@ -575,8 +575,8 @@ async function connect() {
   await refreshStatus();
   saveSettings();
   const cmd = cmdEl.value.trim() || 'opencode';
-  const rawArgs = argsEl.value.trim() || 'acp';
-  const args = rawArgs.split(/\s+/);
+  const rawArgs = argsEl.value.trim();
+  const args = rawArgs ? rawArgs.split(/\s+/) : [];
   const info = await api('/api/session', {
     method: 'POST',
     body: JSON.stringify({ agent: { command: cmd, args } }),
