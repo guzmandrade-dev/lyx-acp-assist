@@ -35,7 +35,7 @@
     "appId": "com.guzma.lyx-acp-assist",
     "productName": "LyX ACP Assist",
     "directories": {
-      "output": "../lyx-acp-assist-release"
+      "output": "dist-release"
     },
     "files": [
       "dist/**/*",
@@ -43,11 +43,31 @@
       "!test/**",
       "!spikes/**"
     ],
+    "icon": "build/icon.ico",
     "win": {
       "target": [
         "nsis",
-        "portable"
-      ]
+        "portable",
+        "zip"
+      ],
+      "icon": "build/icon.ico"
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "Office",
+      "icon": "build/icon-256.png"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb",
+        "tar.gz"
+      ],
+      "category": "Office",
+      "icon": "build/icon-256.png"
     },
     "nsis": {
       "oneClick": true,

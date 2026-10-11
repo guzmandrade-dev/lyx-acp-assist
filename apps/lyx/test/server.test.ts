@@ -194,12 +194,13 @@ describe('attachments', () => {
     const venv = path.join(
       os.homedir(), '.local', 'venvs', 'markitdown-mcp', 'Scripts', 'markitdown.exe',
     );
-    // A real PDF shipped with LyX; skips where LyX or markitdown is absent.
+    // Windows-only live conversion; skips where LyX or markitdown is absent.
+    if (process.platform !== 'win32') return;
     const fixture = 'C:\\Program Files\\LyX 2.5\\Resources\\doc\\clipart\\Abstract.pdf';
     if (!existsSync(venv) || !existsSync(fixture)) return;
     const text = await extractAttachmentText(fixture, 'Abstract.pdf');
     expect(text).toBeTruthy();
-  });
+  }, 30_000);
 });
 
 describe('document selector seeding', () => {

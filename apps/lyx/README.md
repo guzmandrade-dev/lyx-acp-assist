@@ -1,5 +1,7 @@
 # LyX ACP Assist
 
+<img src="public/logo.svg" width="96" alt="LyX ACP Assist logo" align="right" />
+
 A Copilot-for-Word-style LLM assistant for [LyX](https://www.lyx.org/) — a floating
 companion panel that reads your document, chats, and writes **directly into the live
 LyX document**. All reasoning is delegated to an external agent over the

@@ -2,6 +2,8 @@
  * Integration tests for LyxServerClient against the mock LyXServer: the
  * full LFUN choreography used by the app's paragraph-addressed actions,
  * exercised over real named pipes (with LyX's reply-then-disconnect quirk).
+ * The mock transport is a PowerShell script speaking Win32 named pipes, so
+ * the suite only runs on Windows (skipped on macOS/Linux CI).
  */
 import { describe, it, expect, afterEach } from 'vitest';
 import { LyxServerClient } from '../src/lyxserver/client.js';
@@ -25,7 +27,7 @@ afterEach(async () => {
   }
 });
 
-describe('LyxServerClient against mock LyX', () => {
+describe.skipIf(process.platform !== 'win32')('LyxServerClient against mock LyX', () => {
   it('handshakes and round-trips filename and layout', async () => {
     const { client } = await startMock([{ layout: 'Standard', text: 'Hello mock' }]);
     expect(await client.getFilename()).toBe('C:/mock/doc.lyx');

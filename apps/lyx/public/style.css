@@ -113,6 +113,12 @@ body {
   border: 0;
 }
 
+/* Brand mark in the toolbar */
+.brand-mark {
+  flex-shrink: 0;
+  border-radius: var(--radius-md);
+}
+
 /* Toolbar */
 .toolbar {
   display: flex;
@@ -608,6 +614,17 @@ main::-webkit-scrollbar-thumb {
   font-size: var(--text-base);
   color: var(--text-secondary);
   line-height: var(--leading-normal);
+}
+
+.empty-logo {
+  margin-bottom: var(--space-3);
+}
+
+.empty-name {
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+  margin-bottom: var(--space-2);
 }
 
 /* Composer */
