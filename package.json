@@ -2,7 +2,10 @@
   "name": "lyx-acp-assist",
   "version": "0.1.0",
   "description": "Copilot-for-Word-style LLM assistant for LyX: ACP agent, LyXServer pipe write path, read-only .lyx parser.",
-  "author": "guzma",
+  "author": {
+    "name": "guzmandrade-dev",
+    "email": "117118816+guzmandrade-dev@users.noreply.github.com"
+  },
   "type": "module",
   "main": "./dist/electron/main.js",
   "scripts": {
@@ -58,7 +61,7 @@
         "zip"
       ],
       "category": "Office",
-      "icon": "build/icon-256.png"
+      "icon": "build/icon-512.png"
     },
     "linux": {
       "target": [
