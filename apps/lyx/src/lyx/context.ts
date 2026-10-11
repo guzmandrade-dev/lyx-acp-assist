@@ -150,6 +150,49 @@ export function extractBodyLayouts(text: string): string | null {
 }
 
 /**
+ * Split a .lyx body into its TOP-LEVEL layout blocks (paragraphs).
+ * `\begin_layout` lines nested inside insets (e.g. a Note's inner
+ * `Plain Layout`) do NOT start a block: they sit between a matching
+ * `\begin_inset`/`\end_inset` pair. Layout blocks do not nest at the
+ * top level.
+ */
+export function splitTopLevelLayouts(body: string): string[] {
+  const lines = body.split(/\r?\n/);
+  const blocks: string[] = [];
+  let current: string[] | null = null;
+  let insetDepth = 0;
+  for (const line of lines) {
+    if (/^\\begin_inset\b/.test(line)) insetDepth++;
+    if (current === null) {
+      if (insetDepth === 0 && /^\\begin_layout\b/.test(line)) current = [line];
+    } else {
+      current.push(line);
+      if (insetDepth === 0 && /^\\end_layout\b/.test(line)) {
+        blocks.push(current.join('\n'));
+        current = null;
+      }
+    }
+    if (/^\\end_inset\b/.test(line)) insetDepth = Math.max(0, insetDepth - 1);
+  }
+  if (current && current.length > 0) blocks.push(current.join('\n'));
+  return blocks;
+}
+
+/**
+ * Whitespace-insensitive normalization for comparing raw .lyx markup
+ * blocks (e.g. a clipboard payload block vs the saved file's block):
+ * CRLF, trailing spaces, and blank lines are ignored; leading spaces
+ * are preserved (LyX uses them for layout argument lines).
+ */
+export function normalizeMarkupBlock(block: string): string {
+  return block
+    .split(/\r?\n/)
+    .map((line) => line.replace(/\s+$/, ''))
+    .filter((line) => line.length > 0)
+    .join('\n');
+}
+
+/**
  * Detect LaTeX-style constructs that LyX would mangle into literal text.
  * LyX uses its own token format: `\emph on` ... `\emph default` on their
  * own lines — not `\emph{...}`.
@@ -235,6 +278,17 @@ function findInBlocks(nodes: LyxNode[], blockTag: string, key: string): string |
 const INSET_PROP_LINE =
   /^(status\s+(open|collapsed)|key\s|literal\s|name\s|target\s|LatexCommand\s|label\s)/;
 
+/**
+ * Quoted inset arguments (`reference "eq:LotJ"`, `plural "false"`, … —
+ * CommandInset ref/citation options). The quoted form is required so that
+ * prose starting with the same words ("after the proof…") survives.
+ */
+const INSET_QUOTED_PROP_LINE = /^(reference|plural|caps|noprefix|nolink|prefix|after|before|options|entry|filename|type)\s+"[^"]*"$/;
+
+function isInsetSyntaxLine(text: string): boolean {
+  return INSET_PROP_LINE.test(text) || INSET_QUOTED_PROP_LINE.test(text);
+}
+
 function collectTexts(nodes: LyxNode[], insideInset = false): string[] {
   const out: string[] = [];
   for (const node of nodes) {
@@ -243,7 +297,7 @@ function collectTexts(nodes: LyxNode[], insideInset = false): string[] {
       // Only treat property-like lines as syntax when they sit directly
       // inside an inset block — paragraph text may legitimately start
       // with the same words.
-      if (insideInset && INSET_PROP_LINE.test(cleaned)) continue;
+      if (insideInset && isInsetSyntaxLine(cleaned)) continue;
       out.push(cleaned);
     } else if (node.type === 'block') {
       // Skip opaque blocks' raw markup in the preview, but note formulas.

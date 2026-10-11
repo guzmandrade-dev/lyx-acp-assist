@@ -530,6 +530,40 @@ property-like lines (`status open|collapsed`, `key `, `literal `, `name `,
 block — paragraph text that merely starts with those words survives.
 Regression tests in `test/context.test.ts`.
 
+**Preview pollution, round 2 (2026-10-10 live failure):** paragraph
+targeting failed on the RIGHT paragraph ("Let [Formula] be the polynomial
+justification for [ref eq:LotJ]…"): `CommandInset ref` arguments
+(`reference "eq:LotJ"`, `plural "false"`, `caps "false"`, `noprefix
+"false"`, `nolink "false"`) leaked into the preview as visible text
+(~60 chars of invisible junk poisoning the fuzzy windows). Fix:
+`INSET_QUOTED_PROP_LINE` in `src/lyx/context.ts` drops the exact
+`name "quoted value"` property form inside insets (quoted form required,
+so prose like "after the proof…" in a note survives).
+
+**Structure-vs-structure paragraph verification (2026-10-10 refactor):**
+formulas and complex formats are first-class for this user, so the whole
+"preview vs rendered UnicodeText" comparison was replaced (the
+normalizeForCompare/isLikelyMatch layer stays only as a fallback).
+`verifyParagraphSelection` (exported, `src/server.ts`) now checks, in
+order:
+1. **'markup'** — exact whitespace-insensitive comparison of the copied
+   selection's raw `application/x-lyx` payload (first top-level layout
+   block via `splitTopLevelLayouts` / `normalizeMarkupBlock`, both
+   exported from `src/lyx/context.ts` — inset-inner layouts do NOT
+   split) against the SAVED file's block at index N-1. Lossless: Formula
+   insets, refs, notes compare byte-for-byte; a pure display equation
+   verifies as reliably as prose.
+2. **'preview'** — same-parser fuzzy fallback (payload parsed by OUR
+   parser, preview compared with the outline preview): tolerates
+   cosmetic re-serialization by LyX, still rejects a different paragraph.
+3. **'text'** — legacy UnicodeText fuzzy match, only when the clipboard
+   holds no x-lyx payload.
+`gotoParagraph` reads the payload (not UnicodeText) after the
+verification copy and returns it as `payload` — `moveParagraph` reuses
+it instead of a second clipboard read. The stale-file semantics are
+unchanged: both sides compare against the SAVED file (the staleness rule
+saves before parsing; move re-saves after its deletion).
+
 **Pipe client rule (important):** never consume stale/unmatched replies
 from the buffer — Windows broadcast duplicates of earlier requests would
 be mistaken for fresh replies. Waiters are registered before sending, so

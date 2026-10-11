@@ -1,7 +1,7 @@
 import { describe, it, expect, afterAll } from 'vitest';
 import type { Server } from 'node:http';
 import type { Express } from 'express';
-import { createServer, parseAction, normalizeForCompare, isLikelyMatch, buildAutoPrompt, extractAttachmentText, findClassLayouts, listKnownDocuments, formatHistoryReplay } from '../src/server.js';
+import { createServer, parseAction, normalizeForCompare, isLikelyMatch, verifyParagraphSelection, buildAutoPrompt, extractAttachmentText, findClassLayouts, listKnownDocuments, formatHistoryReplay } from '../src/server.js';
 import type { RawClipboard } from '../src/clipboard/lyx-clipboard.js';
 
 /** Stub raw clipboard: enough for routes that never touch LyX. */
@@ -421,5 +421,144 @@ describe('agent action parsing', () => {
     expect(
       isLikelyMatch(normalizeForCompare('Apple has confirmed that a small number of users'), normalizeForCompare('Apple News')),
     ).toBe(false);
+  });
+});
+const VH = [
+  '#LyX 2.5 created this file. For more info see https://www.lyx.org/',
+  '\\lyxformat 643',
+  '\\begin_document',
+  '\\begin_header',
+  '\\textclass article',
+  '\\end_header',
+].join('\n');
+
+describe('verifyParagraphSelection', () => {
+  // The live 2026-10-10 failure: a formula-heavy paragraph ("Let [Formula]
+  // be the polynomial justification for [ref eq:LotJ]…") failed the old
+  // UnicodeText comparison even though the cursor was on the RIGHT
+  // paragraph. Structure-vs-structure verifies it exactly.
+  const formulaPara = [
+    '\\begin_layout Standard',
+    'Let ',
+    '\\begin_inset Formula $S=\\big(a\\cdot t\\cdot\\underbrace{a\\cdot a\\cdot\\dots\\cdot a}_{n-1}\\cdot l(1)\\big)$',
+    '\\end_inset',
+    '',
+    ' be the polynomial justification for ',
+    '\\begin_inset CommandInset ref',
+    'LatexCommand ref',
+    'reference "eq:LotJ"',
+    'plural "false"',
+    'caps "false"',
+    'noprefix "false"',
+    'nolink "false"',
+    '',
+    '\\end_inset',
+    '',
+    ', the statement ',
+    '\\begin_inset Formula $S:\\varphi$',
+    '\\end_inset',
+    '',
+    ' is derivable.',
+    '\\end_layout',
+  ].join('\n');
+
+  const doc = `${VH}\n\n\\begin_body\n\n${formulaPara}\n\n\\begin_layout Standard\nSecond paragraph.\n\\end_layout\n\n\\end_body\n\\end_document\n`;
+
+  function payloadDoc(body: string): string {
+    return `${VH}\n\n\\begin_body\n\n${body}\n\n\\end_body\n\\end_document\n`;
+  }
+
+  it('verifies a formula-heavy paragraph exactly via raw markup', () => {
+    const v = verifyParagraphSelection({
+      payload: payloadDoc(formulaPara),
+      clipboardText: 'rendered text',
+      diskRaw: doc,
+      index: 0,
+      expectedPreview: 'Let  be the polynomial justification for , the statement  is derivable.',
+    });
+    expect(v.ok).toBe(true);
+    expect(v.via).toBe('markup');
+  });
+
+  it('tolerates whitespace/CRLF differences between payload and disk file', () => {
+    const payload = payloadDoc(formulaPara).replace(/\n/g, '\r\n') + '   \n\n';
+    const v = verifyParagraphSelection({
+      payload,
+      clipboardText: null,
+      diskRaw: doc,
+      index: 0,
+      expectedPreview: 'Let  be the polynomial justification for , the statement  is derivable.',
+    });
+    expect(v.ok).toBe(true);
+    expect(v.via).toBe('markup');
+  });
+
+  it('falls back to the same-parser preview on cosmetic re-serialization', () => {
+    // LyX re-serialized the copy: an extra inset line changes the raw
+    // markup but the visible paragraph text is unchanged.
+    const reserialized = formulaPara.replace(' is derivable.', ' is derivable. \n\\begin_inset Formula $x$\n\\end_inset\n');
+    const v = verifyParagraphSelection({
+      payload: payloadDoc(reserialized),
+      clipboardText: null,
+      diskRaw: doc,
+      index: 0,
+      expectedPreview: 'Let  be the polynomial justification for , the statement  is derivable.',
+    });
+    expect(v.ok).toBe(true);
+    expect(v.via).toBe('preview');
+  });
+
+  it('rejects a genuinely different paragraph', () => {
+    const other = '\\begin_layout Standard\nCompletely different text about apples and oranges.\n\\end_layout';
+    const v = verifyParagraphSelection({
+      payload: payloadDoc(other),
+      clipboardText: null,
+      diskRaw: doc,
+      index: 0,
+      expectedPreview: 'Let  be the polynomial justification for , the statement  is derivable.',
+    });
+    expect(v.ok).toBe(false);
+    expect(v.via).toBe('none');
+  });
+
+  it('rejects when the disk file is stale (payload differs from file)', () => {
+    const staleDisk = `${VH}\n\n\\begin_body\n\n\\begin_layout Standard\nOld first paragraph, edited since.\n\\end_layout\n\n\\end_body\n\\end_document\n`;
+    const v = verifyParagraphSelection({
+      payload: payloadDoc(formulaPara),
+      clipboardText: null,
+      diskRaw: staleDisk,
+      index: 0,
+      expectedPreview: 'Old first paragraph, edited since.',
+    });
+    expect(v.ok).toBe(false);
+  });
+
+  it('falls back to the legacy UnicodeText match when no payload exists', () => {
+    // Prose-only paragraph: the legacy path never saw formulas (that is
+    // the bug this refactor fixes) — verify it still works for its case.
+    const proseDoc =
+      VH +
+      '\n\n\\begin_body\n\n\\begin_layout Standard\nThe quick brown fox jumps over the lazy dog near the river bank.\n\\end_layout\n\n\\end_body\n\\end_document\n';
+    const v = verifyParagraphSelection({
+      payload: null,
+      clipboardText: 'Standard The quick brown fox jumps over the lazy dog near the river bank.',
+      diskRaw: proseDoc,
+      index: 0,
+      expectedPreview: 'The quick brown fox jumps over the lazy dog near the river bank.',
+    });
+    expect(v.ok).toBe(true);
+    expect(v.via).toBe('text');
+  });
+
+  it('rejects a different paragraph via the legacy path too', () => {
+    const v = verifyParagraphSelection({
+      payload: null,
+      clipboardText: 'Bananas are yellow fruit.',
+      diskRaw: doc,
+      index: 0,
+      expectedPreview: 'Let  be the polynomial justification for , the statement  is derivable.',
+    });
+    expect(v.ok).toBe(false);
+    expect(v.via).toBe('none');
   });
 });
