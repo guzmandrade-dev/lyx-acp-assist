@@ -6,7 +6,9 @@ let lyxBusy = false;
 let lyxPipeAvailable = false;
 let currentAbort = null;
 let typingIndicator = null;
-let typingTimeout = null;
+let generationStart = 0;
+let typingTimer = null;
+let typingResumeTimer = null;
 
 const chat = document.getElementById('chat');
 const statusEl = document.getElementById('status');
@@ -114,6 +116,7 @@ function renderAssistantText(full, applied) {
 function renderConversation(turns) {
   chat.innerHTML = '';
   typingIndicator = null;
+  hideTyping();
   if (!turns || turns.length === 0) {
     showEmpty();
     return;
@@ -289,29 +292,84 @@ function ensureTypingIndicator() {
   if (!typingIndicator) {
     typingIndicator = document.createElement('div');
     typingIndicator.className = 'typing';
-    typingIndicator.innerHTML = '<span class="sr-only">Agent is writing</span>Agent is writing…';
+    // Animated three-dot scale-pulse: a visible "the agent is still
+    // working" signal during long generations (the text alone pulses
+    // subtly).
+    typingIndicator.innerHTML =
+      '<span class="sr-only">Agent is thinking</span>' +
+      '<span class="tdots" aria-hidden="true"><i></i><i></i><i></i></span>';
   }
   return typingIndicator;
+}
+
+/**
+ * The indicator gets a hint line with an elapsed-time readout
+ * ("Thinking… 1m 43s"), so a multi-minute generation reads as
+ * deliberate rather than stuck. The clock measures the whole turn
+ * (set at stream start, cleared when the turn ends), not just the
+ * current indicator stint — tool activity pauses and resumes the
+ * indicator without resetting it.
+ */
+const TYPING_HINTS = [
+  { after: 0, text: 'Reading the document…' },
+  { after: 15_000, text: 'Thinking…' },
+  { after: 60_000, text: 'Still working…' },
+];
+
+function formatElapsed(ms) {
+  const totalSec = Math.max(1, Math.round(ms / 1000));
+  if (totalSec < 60) return `${totalSec}s`;
+  return `${Math.floor(totalSec / 60)}m ${String(totalSec % 60).padStart(2, '0')}s`;
+}
+
+function typingHintText() {
+  const elapsed = generationStart ? Date.now() - generationStart : 0;
+  let text = TYPING_HINTS[0].text;
+  for (const h of TYPING_HINTS) {
+    if (elapsed >= h.after) text = h.text;
+  }
+  return `${text} ${formatElapsed(elapsed)}`;
+}
+
+function setTypingHint() {
+  if (!typingIndicator || !generationStart) return;
+  let hintEl = typingIndicator.querySelector('.typing-hint');
+  if (!hintEl) {
+    hintEl = document.createElement('span');
+    hintEl.className = 'typing-hint';
+    typingIndicator.appendChild(hintEl);
+  }
+  hintEl.textContent = typingHintText();
 }
 
 function showTyping() {
   const t = ensureTypingIndicator();
   if (!t.parentElement) chat.appendChild(t);
   t.hidden = false;
+  setTypingHint();
+  if (!typingTimer) {
+    typingTimer = setInterval(() => {
+      if (typingIndicator && !typingIndicator.hidden) setTypingHint();
+    }, 1000);
+  }
   scrollToBottomIfNear();
 }
 
 function hideTyping() {
   if (typingIndicator) typingIndicator.hidden = true;
-  if (typingTimeout) {
-    clearTimeout(typingTimeout);
-    typingTimeout = null;
+  if (typingTimer) {
+    clearInterval(typingTimer);
+    typingTimer = null;
+  }
+  if (typingResumeTimer) {
+    clearTimeout(typingResumeTimer);
+    typingResumeTimer = null;
   }
 }
 
 function scheduleTypingResume() {
-  if (typingTimeout) clearTimeout(typingTimeout);
-  typingTimeout = setTimeout(() => {
+  if (typingResumeTimer) clearTimeout(typingResumeTimer);
+  typingResumeTimer = setTimeout(() => {
     if (busy) showTyping();
   }, 1000);
 }
@@ -645,6 +703,7 @@ async function streamMessage(message) {
   const ctrl = new AbortController();
   currentAbort = ctrl;
   setBusy(true);
+  generationStart = Date.now();
   showTyping();
 
   let res;
@@ -662,6 +721,8 @@ async function streamMessage(message) {
     );
   } catch (e) {
     maybeSetBusyFromError(e);
+    hideTyping();
+    generationStart = 0;
     setBusy(false);
     throw e;
   }
@@ -670,6 +731,8 @@ async function streamMessage(message) {
     const body = await res.json().catch(() => ({}));
     const err = new Error(body.error ?? `${res.status} ${res.statusText}`);
     maybeSetBusyFromError(err);
+    hideTyping();
+    generationStart = 0;
     setBusy(false);
     throw err;
   }
@@ -748,11 +811,14 @@ async function streamMessage(message) {
     }
   } catch (e) {
     maybeSetBusyFromError(e);
+    hideTyping();
+    generationStart = 0;
     setBusy(false);
     throw e;
   }
 
   hideTyping();
+  generationStart = 0;
   if (toolLine) {
     if (usedTools.length > 0) setToolLine(`Used ${usedTools.join(', ')}`);
     else toolLine.remove();
