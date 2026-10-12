@@ -61,6 +61,8 @@ export interface TurnMeta {
   result: 'applied' | 'error' | 'cancelled';
   /** The error message when result is "error". */
   error?: string;
+  /** Which edit of a multi-action run this turn is (1-based). */
+  step?: number;
 }
 
 /** Key for the unsaved-document pseudo conversation. */
@@ -82,11 +84,35 @@ const HISTORY_REPLAY_CHAR_LIMIT = 500;
  */
 const OUTLINE_ONLY_BODY_LIMIT = 16_000;
 
+/**
+ * Maximum document edits one user message may apply. ACP only signals that
+ * a single response finished; continuing with the next edit is an app-level
+ * loop, so it needs a hard stop even if the agent keeps proposing actions.
+ */
+const MAX_ACTIONS_PER_MESSAGE = 10;
+
+/** Minimal agent surface the server needs (AcpClient satisfies this). */
+export interface AgentRunner {
+  start(): Promise<void>;
+  stop(): void;
+  createSession(sessionId: string): Promise<void>;
+  cancel(sessionId: string): void;
+  prompt(
+    sessionId: string,
+    content: ContentBlock[],
+    options?: {
+      onChunk?: (chunk: string) => void;
+      onToolCall?: (tool: { title: string; status: string; kind: string }) => void;
+      timeoutMs?: number;
+    },
+  ): Promise<string>;
+}
+
 export interface Session {
   id: string;
   lyx: LyxServerClient;
   clipboard: LyxClipboard;
-  agent: AcpClient;
+  agent: AgentRunner;
   /** Conversation history per document path. */
   conversations: Map<string, Turn[]>;
   /**
@@ -131,7 +157,12 @@ export interface Attachment {
   text: string | null;
 }
 
-export function createServer(options: ServerOptions) {
+export function createServer(options: ServerOptions & {
+  /** Test hook: inject a fake agent process instead of spawning one. */
+  agentFactory?: (settings: AgentSettings) => AgentRunner;
+  /** Test hook: inject a fake LyXServerClient instead of the real pipe. */
+  lyxFactory?: () => LyxServerClient;
+}) {
   const app = express();
   app.use(express.json({ limit: '50mb' }));
   app.use(express.static(options.publicDir, { maxAge: 0, etag: false, lastModified: false }));
@@ -275,14 +306,24 @@ export function createServer(options: ServerOptions) {
       // Defaults < persisted settings < explicit request body.
       const persisted = await readAgentSettingsFile();
       const requested = req.body?.agent as Partial<AgentSettings> | undefined;
-      const lyx = new LyxServerClient();
+      // Tests may inject a fake LyX pipe client and a fake agent runner so
+      // the whole multi-action loop can be exercised without live processes.
+      const lyx = options.lyxFactory
+        ? options.lyxFactory()
+        : new LyxServerClient();
       await lyx.start();
 
-      const agent = new AcpClient({
-        command: requested?.command ?? persisted.command ?? 'opencode',
-        args: requested?.args ?? persisted.args ?? [],
-        env: requested?.env ?? persisted.env ?? {},
-      });
+      const agent: AgentRunner = options.agentFactory
+        ? options.agentFactory({
+            command: requested?.command ?? persisted.command ?? 'opencode',
+            args: requested?.args ?? persisted.args ?? [],
+            env: requested?.env ?? persisted.env ?? {},
+          })
+        : new AcpClient({
+            command: requested?.command ?? persisted.command ?? 'opencode',
+            args: requested?.args ?? persisted.args ?? [],
+            env: requested?.env ?? persisted.env ?? {},
+          });
       await agent.start();
 
       const id = randomUUID();
@@ -444,17 +485,25 @@ export function createServer(options: ServerOptions) {
    *   [ACTION: insert]  - paste the ```lyx block at the cursor
    *   [ACTION: rewrite] - replace the current selection with the block
    *
+   * After a document action is applied, the app re-reads the saved document
+   * and prompts the agent again for the next edit, so one request can apply
+   * several edits. The run stops when the agent replies [ACTION: none],
+   * when an action fails, when the user cancels, or after
+   * MAX_ACTIONS_PER_MESSAGE edits.
+   *
    * SSE frames: {"text": ...} chunks, {"tool": {title, status}} for
-   * agent tool activity, then {"applied": "insert"|"rewrite"}
-   * or {"action": "none"}, then {"done": true}. Errors/cancellation
-   * are sent as {"error": ...} / {"cancelled": true} frames.
+   * agent tool activity, then {"applied": "insert"|"rewrite"} per edit,
+   * {"appliedStep": n} between edits, {"stopped": reason}, then
+   * {"done": true}. Errors/cancellation are sent as {"error": ...} /
+   * {"cancelled": true} frames.
    */
   app.post('/api/session/:id/message/stream', async (req, res) => {
-    const session = sessions.get(param(req.params['id']));
-    if (!session) {
+    const maybeSession = sessions.get(param(req.params['id']));
+    if (!maybeSession) {
       res.status(404).json({ error: 'Unknown session' });
       return;
     }
+    const session: Session = maybeSession;
     const message = (req.body?.message as string | undefined)?.trim();
     if (!message) {
       res.status(400).json({ error: 'message is required' });
@@ -467,6 +516,240 @@ export function createServer(options: ServerOptions) {
     let lastAction: AgentAction = 'none';
     let lastTarget: number | null = null;
     let lastTarget2: number | null = null;
+
+    type Send = (obj: unknown) => void;
+
+    interface ApplyResult {
+      ok: boolean;
+      cancelled: boolean;
+      error: string | null;
+      appliedAction: AgentAction | null;
+      appliedTarget: number | null;
+      appliedTarget2: number | null;
+      /** Number of edits applied so far in this multi-action run. */
+      appliedCount: number;
+    }
+
+    /**
+     * Prompt the agent once and, when it proposes a document action, apply
+     * exactly that action. `step` is 1 for the first edit of a run and >1
+     * for continuations; each applied edit is recorded as its own turn so
+     * undo-per-edit and restart-visible outcomes keep working.
+     */
+    async function promptAndApply(
+      prompt: string,
+      step: number,
+      selection: Awaited<ReturnType<typeof readSelection>>,
+      send: Send,
+      originalMessage: string,
+    ): Promise<{ reply: string; outcome: ActionOutcome; result: ApplyResult }> {
+      const zero: ApplyResult = {
+        ok: false,
+        cancelled: false,
+        error: null,
+        appliedAction: null,
+        appliedTarget: null,
+        appliedTarget2: null,
+        appliedCount: 0,
+      };
+      let reply = await session.agent.prompt(session.id, [{ type: 'text', text: prompt }], {
+        onChunk: (chunk) => send({ text: chunk, ...(step > 1 ? { step } : {}) }),
+        onToolCall: (tool) => send({ tool }),
+        timeoutMs: 240_000,
+      });
+      let outcome = parseAction(reply);
+
+      // If the agent wants to write into the document, validate the markup
+      // and retry once with a corrective prompt (VRP pattern).
+      if (!session.cancelRequested && outcome.action !== 'none' && outcome.action !== 'continue' && outcome.body) {
+        const problems = findMarkupProblems(outcome.body);
+        if (problems.length > 0) {
+          const retry = buildMarkupRetryPrompt(outcome.action, problems);
+          reply = await session.agent.prompt(session.id, [{ type: 'text', text: retry }], {
+            onChunk: (chunk) => send({ text: `\n${chunk}`, ...(step > 1 ? { step } : {}) }),
+            onToolCall: (tool) => send({ tool }),
+          });
+          outcome = parseAction(reply);
+        }
+      }
+
+      if (step === 1) {
+        await recordTurn(session, originalMessage, reply);
+      } else {
+        await recordActionStep(session, reply, step);
+      }
+      lastAction = outcome.action;
+      lastTarget = outcome.target;
+      lastTarget2 = outcome.target2;
+
+      const noteMeta = async (result: 'applied' | 'error' | 'cancelled', error?: string) => {
+        await recordTurnMeta(session, {
+          action: outcome.action,
+          target: outcome.target,
+          target2: outcome.target2,
+          result,
+          ...(error ? { error } : {}),
+          ...(step > 1 ? { step } : {}),
+        });
+      };
+
+      if (session.cancelRequested) {
+        send({ cancelled: true, ...(step > 1 ? { step } : {}) });
+        await noteMeta('cancelled');
+        return { reply, outcome, result: { ...zero, cancelled: true } };
+      }
+      if (outcome.action === 'none') {
+        send({ action: 'none', ...(step > 1 ? { step } : {}) });
+        await noteMeta('applied');
+        return { reply, outcome, result: { ...zero, ok: true, appliedAction: 'none' } };
+      }
+      if (outcome.action === 'continue') {
+        // Accepted for forward-compatibility; the server's multi-action loop
+        // drives continuations itself, so this tag means "nothing to do".
+        send({ action: 'none', ...(step > 1 ? { step } : {}) });
+        await noteMeta('applied');
+        return { reply, outcome, result: { ...zero, ok: true, appliedAction: 'none' } };
+      }
+
+      let appliedTarget: number | null = null;
+      let error: string | null = null;
+      let applied = false;
+
+      if (outcome.action === 'delete-at') {
+        // Delete needs no ```lyx block: walk, verify, select, delete the
+        // text, then merge the leftover empty paragraph away.
+        const gotoResult = await gotoParagraph(session, outcome.target, 'rewrite');
+        if (gotoResult.error) {
+          error = gotoResult.error;
+        } else {
+          const deleted = await session.lyx.deleteSelection();
+          if (deleted) {
+            await session.lyx.mergeAwayParagraph();
+            send({ applied: 'delete-at', target: outcome.target, ...(step > 1 ? { step } : {}) });
+            applied = true;
+          } else {
+            error = `LyX could not delete paragraph [p${outcome.target}].`;
+          }
+        }
+      } else if (outcome.action === 'merge') {
+        // Merge needs no ```lyx block: walk + verify + collapse to the end
+        // of [pN], then delete-forward merges [p(N+1)] into it.
+        const result = await mergeParagraph(session, outcome.target, outcome.target2);
+        if (result.error) {
+          error = result.error;
+        } else {
+          send({ applied: 'merge', target: outcome.target, target2: outcome.target2, ...(step > 1 ? { step } : {}) });
+          applied = true;
+        }
+      } else if (outcome.action === 'move') {
+        // Move needs no ```lyx block: capture the paragraph via the
+        // clipboard, delete it, then re-paste at the adjusted destination.
+        const result = await moveParagraph(session, outcome.target, outcome.target2);
+        if (result.error) {
+          error = result.error;
+        } else {
+          send({ applied: 'move', target: outcome.target, target2: outcome.target2, ...(step > 1 ? { step } : {}) });
+          applied = true;
+        }
+      } else {
+        // A write action: position the cursor, then paste.
+        if (!outcome.body) {
+          error = `Agent chose [ACTION: ${outcome.action}] but returned no \`\`\`lyx block.`;
+        } else {
+          let positionError: string | null = null;
+          let target = outcome.target;
+          if (outcome.action === 'rewrite' && !selection.hasSelection) {
+            positionError = 'Agent chose [ACTION: rewrite] but LyX has no active selection.';
+          } else if (outcome.action === 'insert' && selection.hasSelection) {
+            // A selection is active: paste would REPLACE it. The agent chose
+            // plain insert, not rewrite — collapse the selection so the
+            // user's text survives and the paste lands at the cursor.
+            await session.lyx.collapseSelection();
+          } else if (outcome.action === 'insert-top') {
+            const moved = await session.lyx.beginOfDocument();
+            if (!moved) {
+              positionError = 'Could not move the cursor to the start of the document (buffer-begin failed).';
+            } else {
+              // buffer-begin lands INSIDE the first paragraph: a paste there
+              // would merge into it and drop the pasted layout. Break the
+              // paragraph first so the paste lands in a fresh empty paragraph.
+              await session.lyx.breakParagraph();
+            }
+          } else if (outcome.action === 'rewrite-at') {
+            const gotoResult = await gotoParagraph(session, outcome.target, 'rewrite');
+            target = gotoResult.target;
+            positionError = gotoResult.error;
+          } else if (outcome.action === 'insert-after') {
+            const gotoResult = await gotoParagraph(session, outcome.target, 'insert-after');
+            target = gotoResult.target;
+            positionError = gotoResult.error;
+          } else if (outcome.action === 'insert-before') {
+            // Insert-before pN = insert-after p(N-1), reusing the fully
+            // verified insert-after choreography (walk, verify, collapse,
+            // break a fresh paragraph). For p1 it degenerates to the
+            // insert-top choreography; the reported target stays pN.
+            if (outcome.target === 1) {
+              const moved = await session.lyx.beginOfDocument();
+              if (!moved) {
+                positionError = 'Could not move the cursor to the start of the document (buffer-begin failed).';
+              } else {
+                await session.lyx.breakParagraph();
+              }
+            } else {
+              const gotoResult = await gotoParagraph(session, (outcome.target ?? 0) - 1, 'insert-after');
+              positionError = gotoResult.error;
+            }
+          }
+          if (positionError) {
+            error = positionError;
+          } else {
+            const header = (await currentHeader(session)) ?? FALLBACK_HEADER;
+            const doc = assemblePasteDocument(header, outcome.body);
+            const written = await session.clipboard.writeLyxDocumentVerified(doc, outcome.body);
+            if (!written) {
+              error =
+                'The .lyx payload could not be written to the clipboard; ' +
+                'nothing was pasted. Please try again.';
+            } else {
+              await sleep(100); // let the OS clipboard settle before paste
+              await session.lyx.paste(); // replaces the active selection if any
+              send({ applied: outcome.action, target, ...(step > 1 ? { step } : {}) });
+              applied = true;
+              appliedTarget = target;
+            }
+          }
+        }
+      }
+
+      if (error) {
+        send({ error, ...(step > 1 ? { step } : {}) });
+        await noteMeta('error', error);
+        return { reply, outcome, result: { ...zero, error } };
+      }
+      if (!applied) {
+        // Addressed actions without a successful paste still count as the
+        // turn's outcome; treat a missing application as an error so the
+        // loop does not silently spin.
+        const fallback = 'The document action could not be applied.';
+        send({ error: fallback, ...(step > 1 ? { step } : {}) });
+        await noteMeta('error', fallback);
+        return { reply, outcome, result: { ...zero, error: fallback } };
+      }
+      await noteMeta('applied');
+      return {
+        reply,
+        outcome,
+        result: {
+          ok: true,
+          cancelled: false,
+          error: null,
+          appliedAction: outcome.action,
+          appliedTarget: appliedTarget ?? outcome.target,
+          appliedTarget2: outcome.target2,
+          appliedCount: step,
+        },
+      };
+    }
 
     try {
       await refreshActiveDocument(session);
@@ -484,7 +767,7 @@ export function createServer(options: ServerOptions) {
       session.attachments = [];
 
       const historyPrefix = buildHistoryPrefix(session, conversationKey(session));
-      const prompt = buildAutoPrompt(contextText, selection, message, attachments, historyPrefix);
+      const initialPrompt = buildAutoPrompt(contextText, selection, message, attachments, historyPrefix);
       // The replayed (pre-restart) turns are in this prompt now, so the
       // agent knows them; only turns recorded from here on are new to it.
       // Without clearing, a second message after a restart would replay
@@ -492,189 +775,56 @@ export function createServer(options: ServerOptions) {
       if (historyPrefix) {
         session.historyHandoff.delete(conversationKey(session));
       }
-      let reply = await session.agent.prompt(session.id, [{ type: 'text', text: prompt }], {
-        onChunk: (chunk) => send({ text: chunk }),
-        onToolCall: (tool) => send({ tool }),
-        timeoutMs: 240_000,
-      });
-      let outcome = parseAction(reply);
 
-      // If the agent wants to write into the document, validate the markup
-      // and retry once with a corrective prompt (VRP pattern).
-      if (!session.cancelRequested && outcome.action !== 'none' && outcome.body) {
-        const problems = findMarkupProblems(outcome.body);
-        if (problems.length > 0) {
-          const retry = buildMarkupRetryPrompt(outcome.action, problems);
-          reply = await session.agent.prompt(session.id, [{ type: 'text', text: retry }], {
-            onChunk: (chunk) => send({ text: `\n${chunk}` }),
-            onToolCall: (tool) => send({ tool }),
-          });
-          outcome = parseAction(reply);
+      const completed: string[] = [];
+      let step = 0;
+      let stoppedReason: 'done' | 'none' | 'cancelled' | 'error' | 'limit' = 'done';
+
+      while (step < MAX_ACTIONS_PER_MESSAGE) {
+        step += 1;
+        if (session.cancelRequested) {
+          send({ cancelled: true });
+          stoppedReason = 'cancelled';
+          break;
         }
+        // The first step uses the normal prompt; continuations get fresh
+        // document context because paragraph addresses shift after edits.
+        let prompt: string;
+        let stepSelection = selection;
+        if (step === 1) {
+          prompt = initialPrompt;
+        } else {
+          await refreshActiveDocument(session);
+          if (session.documentPath) await session.lyx.save();
+          const freshContext = await buildContextBlock(session);
+          stepSelection = await readSelection(session);
+          prompt = buildContinuationPrompt(freshContext, stepSelection, message, completed);
+        }
+        const { outcome, result } = await promptAndApply(prompt, step, stepSelection, send, message);
+        turnRecorded = true;
+
+        if (result.cancelled) {
+          stoppedReason = 'cancelled';
+          break;
+        }
+        if (result.error) {
+          stoppedReason = 'error';
+          break;
+        }
+        if (outcome.action === 'none' || outcome.action === 'continue') {
+          stoppedReason = 'none';
+          break;
+        }
+        // A document edit landed: record what was done and continue.
+        completed.push(describeAction(outcome));
+        send({ appliedStep: result.appliedCount, action: outcome.action, target: result.appliedTarget, target2: result.appliedTarget2 });
       }
 
-      recordTurn(session, message, reply);
-      turnRecorded = true;
-      lastAction = outcome.action;
-      lastTarget = outcome.target;
-      lastTarget2 = outcome.target2;
-
-      if (session.cancelRequested) {
-        send({ cancelled: true });
-        await recordTurnMeta(session, {
-          action: outcome.action, target: outcome.target, target2: outcome.target2,
-          result: 'cancelled',
-        });
-      } else if (outcome.action === 'none') {
-        send({ action: 'none' });
-        await recordTurnMeta(session, {
-          action: 'none', target: null, target2: null, result: 'applied',
-        });
-      } else if (outcome.action === 'delete-at') {
-        // Delete needs no ```lyx block: walk, verify, select, delete the
-        // text, then merge the leftover empty paragraph away.
-        const gotoResult = await gotoParagraph(session, outcome.target, 'rewrite');
-        if (gotoResult.error) {
-          send({ error: gotoResult.error });
-          await recordTurnMeta(session, {
-            action: 'delete-at', target: outcome.target, target2: null,
-            result: 'error', error: gotoResult.error,
-          });
-        } else {
-          const deleted = await session.lyx.deleteSelection();
-          if (deleted) {
-            await session.lyx.mergeAwayParagraph();
-            send({ applied: 'delete-at', target: outcome.target });
-            await recordTurnMeta(session, {
-              action: 'delete-at', target: outcome.target, target2: null, result: 'applied',
-            });
-          } else {
-            const err = `LyX could not delete paragraph [p${outcome.target}].`;
-            send({ error: err });
-            await recordTurnMeta(session, {
-              action: 'delete-at', target: outcome.target, target2: null,
-              result: 'error', error: err,
-            });
-          }
-        }
-      } else if (outcome.action === 'merge') {
-        // Merge needs no ```lyx block: walk + verify + collapse to the end
-        // of [pN], then delete-forward merges [p(N+1)] into it.
-        const result = await mergeParagraph(session, outcome.target, outcome.target2);
-        if (result.error) {
-          send({ error: result.error });
-          await recordTurnMeta(session, {
-            action: 'merge', target: outcome.target, target2: outcome.target2,
-            result: 'error', error: result.error,
-          });
-        } else {
-          send({ applied: 'merge', target: outcome.target, target2: outcome.target2 });
-          await recordTurnMeta(session, {
-            action: 'merge', target: outcome.target, target2: outcome.target2, result: 'applied',
-          });
-        }
-      } else if (outcome.action === 'move') {
-        // Move needs no ```lyx block: capture the paragraph via the
-        // clipboard, delete it, then re-paste at the adjusted destination.
-        const result = await moveParagraph(session, outcome.target, outcome.target2);
-        if (result.error) {
-          send({ error: result.error });
-          await recordTurnMeta(session, {
-            action: 'move', target: outcome.target, target2: outcome.target2,
-            result: 'error', error: result.error,
-          });
-        } else {
-          send({ applied: 'move', target: outcome.target, target2: outcome.target2 });
-          await recordTurnMeta(session, {
-            action: 'move', target: outcome.target, target2: outcome.target2, result: 'applied',
-          });
-        }
-      } else {
-        // A write action: position the cursor, then paste.
-        if (!outcome.body) {
-          const err = `Agent chose [ACTION: ${outcome.action}] but returned no \`\`\`lyx block.`;
-          send({ error: err });
-          await recordTurnMeta(session, {
-            action: outcome.action, target: outcome.target, target2: outcome.target2,
-            result: 'error', error: err,
-          });
-          send({ done: true });
-          res.end();
-          return;
-        }
-        let positionError: string | null = null;
-        let target = outcome.target;
-        if (outcome.action === 'rewrite' && !selection.hasSelection) {
-          positionError = 'Agent chose [ACTION: rewrite] but LyX has no active selection.';
-        } else if (outcome.action === 'insert' && selection.hasSelection) {
-          // A selection is active: paste would REPLACE it. The agent chose
-          // plain insert, not rewrite — collapse the selection so the
-          // user's text survives and the paste lands at the cursor.
-          await session.lyx.collapseSelection();
-        } else if (outcome.action === 'insert-top') {
-          const moved = await session.lyx.beginOfDocument();
-          if (!moved) {
-            positionError = 'Could not move the cursor to the start of the document (buffer-begin failed).';
-          } else {
-            // buffer-begin lands INSIDE the first paragraph: a paste there
-            // would merge into it and drop the pasted layout. Break the
-            // paragraph first so the paste lands in a fresh empty paragraph.
-            await session.lyx.breakParagraph();
-          }
-        } else if (outcome.action === 'rewrite-at') {
-          const gotoResult = await gotoParagraph(session, outcome.target, 'rewrite');
-          target = gotoResult.target;
-          positionError = gotoResult.error;
-        } else if (outcome.action === 'insert-after') {
-          const gotoResult = await gotoParagraph(session, outcome.target, 'insert-after');
-          target = gotoResult.target;
-          positionError = gotoResult.error;
-        } else if (outcome.action === 'insert-before') {
-          // Insert-before pN = insert-after p(N-1), reusing the fully
-          // verified insert-after choreography (walk, verify, collapse,
-          // break a fresh paragraph). For p1 it degenerates to the
-          // insert-top choreography; the reported target stays pN.
-          if (outcome.target === 1) {
-            const moved = await session.lyx.beginOfDocument();
-            if (!moved) {
-              positionError = 'Could not move the cursor to the start of the document (buffer-begin failed).';
-            } else {
-              await session.lyx.breakParagraph();
-            }
-          } else {
-            const gotoResult = await gotoParagraph(session, (outcome.target ?? 0) - 1, 'insert-after');
-            positionError = gotoResult.error;
-          }
-        }
-        if (positionError) {
-          send({ error: positionError });
-          await recordTurnMeta(session, {
-            action: outcome.action, target: outcome.target, target2: outcome.target2,
-            result: 'error', error: positionError,
-          });
-        } else {
-          const header = (await currentHeader(session)) ?? FALLBACK_HEADER;
-          const doc = assemblePasteDocument(header, outcome.body);
-          const written = await session.clipboard.writeLyxDocumentVerified(doc, outcome.body);
-          if (!written) {
-            const err =
-              'The .lyx payload could not be written to the clipboard; ' +
-              'nothing was pasted. Please try again.';
-            send({ error: err });
-            await recordTurnMeta(session, {
-              action: outcome.action, target: outcome.target, target2: outcome.target2,
-              result: 'error', error: err,
-            });
-          } else {
-            await sleep(100); // let the OS clipboard settle before paste
-            await session.lyx.paste(); // replaces the active selection if any
-            send({ applied: outcome.action, target });
-            await recordTurnMeta(session, {
-              action: outcome.action, target, target2: outcome.target2, result: 'applied',
-            });
-          }
-        }
+      if (step >= MAX_ACTIONS_PER_MESSAGE && stoppedReason === 'done') {
+        stoppedReason = 'limit';
+        send({ text: `\nStopped after ${MAX_ACTIONS_PER_MESSAGE} document edits (safety limit). Send "continue" to apply more edits.` });
       }
+      send({ stopped: stoppedReason, appliedCount: completed.length });
       send({ done: true });
       res.end();
     } catch (err) {
@@ -801,6 +951,29 @@ export function createServer(options: ServerOptions) {
         logError('[history] save failed', e),
       );
     }
+  }
+
+  /**
+   * Record one step of a multi-action run WITHOUT a matching user turn: the
+   * user asked once, the app applied several edits to the document. UI and
+   * history see each outcome, but the conversation log keeps the original
+   * request as the user turn.
+   */
+  async function recordActionStep(session: Session, assistant: string, step: number) {
+    const key = conversationKey(session);
+    const turns = await ensureConversation(session, key);
+    const stepTurn: Turn = {
+      role: 'assistant',
+    content: assistant,
+      timestamp: new Date().toISOString(),
+    };
+    turns.push(stepTurn);
+    if (options.historyDir) {
+      saveHistory(options.historyDir, key, turns).catch((e) =>
+        logError('[history] save failed', e),
+      );
+    }
+    return stepTurn;
   }
 
   async function sessionInfo(session: Session) {
@@ -1157,6 +1330,7 @@ export function createServer(options: ServerOptions) {
 
 type AgentAction =
   | 'none'
+  | 'continue'
   | 'insert'
   | 'insert-top'
   | 'insert-after'
@@ -1179,16 +1353,75 @@ interface ActionOutcome {
 /** Extract the trailing [ACTION: ...] tag and the ```lyx block from a reply. */
 export function parseAction(reply: string): ActionOutcome {
   const m = reply.match(
-    /\[ACTION:\s*(merge|move|delete-at|rewrite-at|insert-before|insert-after|insert-top|rewrite|insert|none)(?:\s+p(\d+))?(?:\s+(?:to\s+)?p(\d+))?\s*\]/i,
+    /\[ACTION:\s*(continue|merge|move|delete-at|rewrite-at|insert-before|insert-after|insert-top|rewrite|insert|none)(?:\s+p(\d+))?(?:\s+(?:to\s+)?p(\d+))?\s*\]/i,
   );
   const action = ((m?.[1] ?? 'none').toLowerCase() as AgentAction);
   const target = m?.[2] ? Number.parseInt(m[2], 10) : null;
   const target2 = m?.[3] ? Number.parseInt(m[3], 10) : null;
-  const body = action === 'none' ? null : extractBodyLayouts(reply);
+  // `continue` is accepted for forward-compatibility but is not a document
+  // edit: the server's multi-action loop drives continuations itself.
+  const body = action === 'none' || action === 'continue' ? null : extractBodyLayouts(reply);
   return { action, body, target, target2 };
 }
 
-/** Build the unified "agent decides" prompt for a user message. */
+/** Describe one applied step compactly for the next continuation prompt. */
+export function describeAction(outcome: ActionOutcome): string {
+  const parts: string[] = [outcome.action];
+  if (outcome.target !== null) parts.push(`p${outcome.target}`);
+  if (outcome.target2 !== null) parts.push(`p${outcome.target2}`);
+  return `[ACTION: ${parts.join(' ')}]`;
+}
+
+/**
+ * Continuation prompt after a successfully applied edit. The document was
+ * just edited, so the fresh context below has the NEW paragraph numbering;
+ * the agent must not reuse addresses from before the edit.
+ */
+export function buildContinuationPrompt(
+  contextText: string,
+  selection: { hasSelection: boolean; lyxBody: string | null; text: string | null; layout: string | null },
+  originalMessage: string,
+  completed: string[],
+): string {
+  const parts = [
+    'You are continuing the SAME user request after one edit was applied ' +
+      'to the live LyX document. The document context below is FRESH: ' +
+      'paragraph addresses ([pN]) may have shifted because of the edit.',
+    '',
+    'Original user request:', originalMessage,
+    '',
+    'Edits already applied (do not repeat them):',
+    ...completed.map((entry) => `- ${entry}`),
+    '',
+    'If the request needs MORE edits, END your reply with exactly one ' +
+      'document action tag from the action list (rewrite-at, insert-after, ' +
+      'insert-before, insert-top, insert, rewrite, delete-at, merge, move) ' +
+      'on its own last line, and include the ```lyx block when the action ' +
+      'needs content.',
+    `If the request is now complete, or you need the user to answer a ` +
+      `question, reply in prose only and end with [ACTION: none].`,
+    `If you are not sure whether more edits remain, ask one short question ` +
+      `with [ACTION: none] instead of guessing.`,
+    `The app enforces a safety limit of ${MAX_ACTIONS_PER_MESSAGE} document ` +
+      `edits per user message; if that limit is reached it stops and tells ` +
+      `the user, who can ask you to continue in a follow-up message.`,
+    '',
+    CHAT_KNOWLEDGE,
+    '',
+    contextText,
+  ];
+  if (selection.hasSelection) {
+    parts.push(
+      '',
+      `Current LyX selection (cursor paragraph layout: ${selection.layout ?? 'unknown'}):`,
+      '```lyx',
+      selection.lyxBody ?? selection.text ?? '',
+      '```',
+    );
+  }
+  return parts.join('\n');
+}
+
 /**
  * Format the leading `unseen` turns of a conversation for replay into an
  * agent prompt: one compact line per turn (roles swapped to User/You),
@@ -1291,7 +1524,10 @@ export function buildAutoPrompt(
     '- [ACTION: rewrite-at pN] to REPLACE the entire paragraph [pN] from ' +
       'the outline (use this when the user asks to modify, fix or remove ' +
       'content in a specific paragraph and nothing is selected): include a ' +
-      '```lyx fenced block with the complete replacement paragraph(s).',
+      '```lyx fenced block with the complete replacement paragraph(s).', +
+      ' When one request needs SEVERAL edits, apply the FIRST edit now and ' +
+      'let the app ask you again with fresh paragraph numbers for the next ' +
+      'one — do not try to plan later edits against the current outline.',
     '',
     'Rules for document actions:',
     '- The ```lyx block must contain just the \\begin_layout ... \\end_layout ' +

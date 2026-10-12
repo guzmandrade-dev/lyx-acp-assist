@@ -423,6 +423,30 @@ the tag + block; markup problems trigger one corrective retry
 "insert"|"insert-top"|"rewrite"}`, `{"action":"none"}`,
 `{"cancelled":true}`, `{"error"}`, `{"done":true}`.
 
+## Multi-action runs (2026-10-11)
+
+ACP only signals that ONE response finished (`stop`); it has no event for
+"the agent has more planned edits". Continuing across edits is therefore an
+app-level loop in `/message/stream`, on the same ACP session:
+
+- After each successfully applied document action, the server re-reads the
+  active document, SAVES the buffer, rebuilds the context, and prompts the
+  agent again with `buildContinuationPrompt`: the original request, the
+  list of already-applied edits, and the FRESH outline (paragraph addresses
+  shift after edits — never let the agent plan against a stale outline).
+- The run stops when the agent replies `[ACTION: none]` (complete, or needs
+  user input), when an action FAILS (no automatic retry — a LyX timeout
+  such as a modal-blocked `paste` ends the run; earlier edits stay applied),
+  when the user presses Stop, or after `MAX_ACTIONS_PER_MESSAGE` (10) edits.
+- Each applied edit is recorded as its own assistant turn (with `meta.step`)
+  and its own `{"applied": ...}` + `{"appliedStep": n}` SSE frames, so the UI
+  shows one bubble + undo button per edit and history survives restarts.
+- The prompt tells the agent to apply only the FIRST edit of a multi-edit
+  request and let the app re-ask with fresh paragraph numbers.
+- Regression tests: `test/multi-action.test.ts` (fake agent + fake LyX over
+  the real SSE endpoint) covers multi-edit success, immediate completion,
+  failure halting, user cancel between edits, and the 10-edit safety limit.
+
 **Insert-top pitfall (live-verified failure):** `buffer-begin` puts the
 cursor INSIDE the first paragraph; pasting there is an intra-paragraph
 insert — LyX merges the pasted content into the existing paragraph and
