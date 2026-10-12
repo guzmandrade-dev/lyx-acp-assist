@@ -1,0 +1,15 @@
+# Consistent line endings: store and check out LF (Unix style) everywhere.
+# The project is cross-platform (CI runs on Linux; installers target
+# Windows/macOS/Linux). PowerShell 5.1/7 run LF-only .ps1 scripts fine,
+# and the .lyx test fixtures must stay LF for the parser tests.
+* text=auto eol=lf
+
+# Never normalize binary assets.
+*.png binary
+*.ico binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.pdf binary
+*.zip binary

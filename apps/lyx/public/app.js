@@ -710,7 +710,7 @@ function renderFeedback(msgDiv, { applied, target, target2, cancelled, error }) 
 }
 
 async function streamMessage(message) {
-  const { div, textDiv } = addMessage('assistant', '');
+  let { div, textDiv } = addMessage('assistant', '');
   const ctrl = new AbortController();
   currentAbort = ctrl;
   setBusy(true);
@@ -757,9 +757,13 @@ async function streamMessage(message) {
   let target2 = null;
   let cancelled = false;
   let error = null;
+  let stopReason = null;
   let started = false;
   const usedTools = [];
   let toolLine = null;
+  // Multi-action runs: close one assistant bubble per applied edit and
+  // start a fresh bubble for the next agent step in the same request.
+  const streamSteps = [];
 
   const setToolLine = (text) => {
     if (!toolLine) {
@@ -813,10 +817,34 @@ async function streamMessage(message) {
           target = payload.target ?? null;
           target2 = payload.target2 ?? null;
           div._applied = applied; // quote strips the ```lyx block like the render does
+        } else if (payload.appliedStep) {
+          // Boundary between two edits of one multi-action run: close the
+          // current bubble (with its feedback) and start a fresh one below
+          // for the next agent step.
+          div._rawText = full;
+          div._applied = applied;
+          textDiv.innerHTML =
+            renderAssistantText(full, applied) || (started ? '' : '<p>(no response)</p>');
+          renderFeedback(div, { applied, target, target2, cancelled, error });
+          streamSteps.push({ div, textDiv, text: full, applied, target, target2, error, cancelled });
+          const next = addMessage('assistant', '');
+          div = next.div;
+          textDiv = next.textDiv;
+          toolLine = null;
+          usedTools.length = 0;
+          applied = null;
+          target = null;
+          target2 = null;
+          error = null;
+          cancelled = false;
+          full = '';
+          started = false;
         } else if (payload.action === 'none') {
           applied = 'none';
         } else if (payload.cancelled) {
           cancelled = true;
+        } else if (payload.stopped) {
+          stopReason = payload.stopped;
         }
       }
     }
@@ -838,6 +866,25 @@ async function streamMessage(message) {
   div._applied = applied;
   textDiv.innerHTML = renderAssistantText(full, applied) || (started ? '' : '<p>(no response)</p>');
   renderFeedback(div, { applied, target, target2, cancelled, error });
+  if (stopReason) {
+    const appliedCount = streamSteps.filter((s) => s.applied && s.applied !== 'none').length + (applied && applied !== 'none' ? 1 : 0);
+    const note = document.createElement('div');
+    note.className = 'feedback none';
+    const labels = {
+      done: null,
+      none: appliedCount > 0
+        ? `Finished after ${appliedCount} edit${appliedCount === 1 ? '' : 's'}`
+        : null,
+      cancelled: `Stopped by user after ${appliedCount} edit${appliedCount === 1 ? '' : 's'}`,
+      error: `Stopped because an edit failed (${appliedCount} earlier edit${appliedCount === 1 ? '' : 's'} applied)`,
+      limit: `Stopped after the safety limit of ${appliedCount} edit${appliedCount === 1 ? '' : 's'} — send "continue" for more`,
+    };
+    const text = labels[stopReason] ?? `Stopped (${stopReason})`;
+    if (text) {
+      note.textContent = text;
+      div.appendChild(note);
+    }
+  }
   scrollToBottomIfNear();
   setBusy(false);
   return { full, applied, cancelled, error };
