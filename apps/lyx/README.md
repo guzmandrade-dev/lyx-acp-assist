@@ -64,10 +64,16 @@ https://github.com/user-attachments/assets/ce301d65-6185-4de0-8086-4a246bd8fc85
   \serverpipe "//./pipe/lyxpipe"
   ```
 
+  The GUI dialog *displays* the OS-level name (`\\.\pipe\lyxpipe`), but LyX
+  stores and expects the portable forward-slash form in the `preferences`
+  file — it normalizes between the two on save. Don't be confused by the
+  difference; what matters is the forward-slash form.
+
   On Windows the forward-slash form is required — backslashes cannot round-trip
-  LyX's config lexer. On Linux/macOS use the path form LyX expects for your
-  install (e.g. `~/.lyxpipe`), or point the app at it with the `LYX_PIPE`
-  environment variable.
+  LyX's config lexer (typing `\\\.\pipe\lyxpipe` by hand in the file silently
+  breaks the pipe: LyX eats the backslashes as escapes). On Linux/macOS use the
+  path form LyX expects for your install (e.g. `~/.lyxpipe`), or point the app
+  at it with the `LYX_PIPE` environment variable.
 - **Node.js 22+**
 - **An ACP agent CLI** — any of:
   - `opencode acp`
