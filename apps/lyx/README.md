@@ -49,6 +49,12 @@ Applied edits are confirmed quietly under the reply ("Inserted after [p5] · Und
 edit") and every paste is verified against the document before it happens — a
 mis-targeted paste is refused, never applied.
 
+
+
+https://github.com/user-attachments/assets/ce301d65-6185-4de0-8086-4a246bd8fc85
+
+
+
 ## Requirements
 
 - **LyX 2.5+** with the LyXServer pipe enabled in preferences:
