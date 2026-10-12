@@ -49,11 +49,12 @@ Applied edits are confirmed quietly under the reply ("Inserted after [p5] · Und
 edit") and every paste is verified against the document before it happens — a
 mis-targeted paste is refused, never applied.
 
+## Demo
 
+Watch the app rewrite a selection, insert a paragraph, and answer questions
+alongside a live LyX document:
 
 https://github.com/user-attachments/assets/ce301d65-6185-4de0-8086-4a246bd8fc85
-
-
 
 ## Requirements
 
@@ -63,17 +64,23 @@ https://github.com/user-attachments/assets/ce301d65-6185-4de0-8086-4a246bd8fc85
   \serverpipe "//./pipe/lyxpipe"
   ```
 
-  The forward-slash form is required on Windows — backslashes cannot round-trip
-  LyX's config lexer.
+  On Windows the forward-slash form is required — backslashes cannot round-trip
+  LyX's config lexer. On Linux/macOS use the path form LyX expects for your
+  install (e.g. `~/.lyxpipe`), or point the app at it with the `LYX_PIPE`
+  environment variable.
 - **Node.js 22+**
 - **An ACP agent CLI** — any of:
   - `opencode acp`
   - `copilot --acp`
   - `goose acp`
+  - `vibe-acp` (no arguments)
 
   Configurable at runtime in the app's "Agent settings" panel.
-- **Windows** for the native clipboard path (custom `application/x-lyx` clipboard
-  formats are written via .NET WinForms; Linux and macOS adapters are stubbed).
+- **Native clipboard access** for the `application/x-lyx` custom format, via:
+  - **Windows:** .NET WinForms (PowerShell helper; works out of the box)
+  - **Linux:** `wl-copy`/`wl-paste` on Wayland, or `xclip` on X11
+    (install `wl-clipboard` or `xclip`)
+  - **macOS:** `osascript` + NSPasteboard (works out of the box)
 
 ## Getting started
 
@@ -101,12 +108,18 @@ shows the active document, selection word count, and connection status.
 npm test         # vitest (parser, context, server, mocked LyXServer pipe)
 npm run typecheck
 npm run build
-npm run package  # Windows installer + portable exe (electron-builder)
+npm run package  # installers for Windows (nsis/portable/zip), macOS (dmg/zip),
+                 # Linux (AppImage/deb/tar.gz) via electron-builder
 ```
 
-The packaged app writes its data (chat history, attachments) to
-`%APPDATA%\LyX ACP Assist`. Build output goes to `../lyx-acp-assist-release`,
-outside the repo, so editor file watchers cannot lock the artifacts.
+Build output goes to `dist-release/`, gitignored. GitHub Actions builds and
+uploads artifacts for all three OSes on every push, and publishes a draft
+release when a `v*` tag is pushed.
+
+The packaged app writes its data (chat history, attachments, logs) to the
+Electron user-data directory — `%APPDATA%\LyX ACP Assist` on Windows,
+`~/Library/Application Support/LyX ACP Assist` on macOS, and
+`~/.config/LyX ACP Assist` on Linux.
 
 ```
 src/lyx/         read-only .lyx parser, outline/context building, markup validation
@@ -121,10 +134,18 @@ test/            vitest suites incl. a fake LyXServer speaking the real pipe pro
 
 ## Status
 
-Spike-tested against live LyX 2.5.3 on Windows (pipe round-trip, clipboard
-fidelity, end-to-end edit loop) and validated end-to-end with `opencode acp`
-and `copilot --acp` as agents. Packageable as a Windows installer and
-portable exe.
+Validated end-to-end against live LyX 2.5.3 on **Windows** (pipe round-trip,
+clipboard fidelity, multi-edit loop) with `opencode acp` and `copilot --acp`
+as agents.
+
+Linux and macOS are supported in code — the clipboard adapters (wl-copy/xclip,
+NSPasteboard), the FIFO-based LyXServer client, layout-class discovery, and
+cross-platform packaging with CI are all implemented — but the live LyX
+round-trip has only been verified on Windows. The floating-on-top behavior is
+Windows-only for now (the window simply stays a normal window elsewhere).
+Linux/macOS testers very welcome — especially the clipboard write → `paste`
+round-trip in LyX, since a failed custom-format write silently falls back to
+literal text.
 
 ## Acknowledgements
 
