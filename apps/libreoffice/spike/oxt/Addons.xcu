@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<oor:component-data xmlns:oor="http://openoffice.org/2001/registry" xmlns:xs="http://www.w3.org/2001/XMLSchema" oor:name="Addons" oor:package="org.openoffice.Office">
+  <node oor:name="AddonUI">
+    <node oor:name="OfficeMenuBar">
+      <node oor:name="org.libreofficeacp.bridge.menu" oor:op="replace">
+        <prop oor:name="Title" oor:type="xs:string">
+          <value xml:lang="en-US">ACP Assist</value>
+        </prop>
+        <node oor:name="Submenu">
+          <node oor:name="M0" oor:op="replace">
+            <prop oor:name="Title">
+              <value xml:lang="en-US">Start bridge</value>
+            </prop>
+            <prop oor:name="URL">
+              <value>service:org.libreofficeacp.bridge?start</value>
+            </prop>
+            <prop oor:name="Target" oor:type="xs:string">
+              <value>_self</value>
+            </prop>
+          </node>
+          <node oor:name="M1" oor:op="replace">
+            <prop oor:name="Title">
+              <value xml:lang="en-US">Stop bridge</value>
+            </prop>
+            <prop oor:name="URL">
+              <value>service:org.libreofficeacp.bridge?stop</value>
+            </prop>
+            <prop oor:name="Target" oor:type="xs:string">
+              <value>_self</value>
+            </prop>
+          </node>
+        </node>
+      </node>
+    </node>
+  </node>
+</oor:component-data>

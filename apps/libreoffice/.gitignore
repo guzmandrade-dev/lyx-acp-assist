@@ -1,0 +1,17 @@
+# Node (companion app, Phase 1+)
+node_modules/
+dist/
+release/
+dist-release/
+*.log
+
+# Packaged extension artifacts — rebuilt from spike/oxt/ sources
+*.oxt
+
+# Scratch LibreOffice profile used for testing
+lo-acp-spike/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
