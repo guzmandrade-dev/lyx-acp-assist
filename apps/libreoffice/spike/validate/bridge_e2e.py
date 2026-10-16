@@ -30,16 +30,35 @@ def check(name, ok, detail=""):
 
 
 def load_bridge():
+    """Newest LIVE bridge record: stale records from previous soffice
+    processes accumulate in the discovery directory."""
     base = os.environ.get("APPDATA")
     bridges = os.path.join(base, "LibreOffice ACP Assist", "bridges")
     records = []
     for fn in os.listdir(bridges):
         with open(os.path.join(bridges, fn), encoding="utf-8") as f:
             records.append(json.load(f))
-    if not records:
-        raise SystemExit("no bridge discovery records found")
-    r = records[-1]
-    return r["port"], r["token"]
+    live = [r for r in records if _pid_alive(r["pid"])]
+    if not live:
+        raise SystemExit("no live bridge discovery records found")
+    live.sort(key=lambda r: r["startedAt"])
+    return live[-1]["port"], live[-1]["token"]
+
+
+def _pid_alive(pid):
+    if os.name == "nt":
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(1, False, int(pid))  # PROCESS_QUERY_LIMITED_INFORMATION
+        if handle:
+            kernel32.CloseHandle(handle)
+            return True
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
 
 
 def http(method, path, payload=None, token=None, timeout=40):

@@ -352,6 +352,22 @@ def _require_writer(desktop):
     return doc
 
 
+def _dispatch_delete(doc):
+    """Delete the view-cursor selection via the UI's own edit route.
+
+    Raw setString('') on a selection that includes the paragraph break
+    silently no-ops or coalesces unpredictably under RecordChanges inside
+    undo contexts (probes 8-9); the dispatch path records a clean
+    pending-deletion redline (probe 10) and coalesces never-accepted
+    insertions the way the UI does.
+    """
+    ctx = _context()
+    dispatcher = ctx.ServiceManager.createInstanceWithContext(
+        "com.sun.star.frame.DispatchHelper", ctx)
+    dispatcher.executeDispatch(
+        doc.getCurrentController().getFrame(), ".uno:Delete", "", 0, ())
+
+
 def _edit(desktop, payload):
     mode = payload.get("mode")
     if mode not in ("insert", "insert-top", "insert-after",
@@ -419,12 +435,26 @@ def _edit(desktop, payload):
         elif mode == "delete-at":
             para = _nth_paragraph(doc, target)
             vc.gotoRange(para.getStart(), False)
-            # Extend over the paragraph break so the paragraph really
-            # disappears; the last paragraph has no break to eat, so its
-            # text is just emptied.
             if not vc.goRight(len(para.getString()) + 1, True):
                 vc.goRight(len(para.getString()), True)
-            vc.setString("")
+            _dispatch_delete(doc)
+            # Coalescing artifact (probe 11): deleting a never-accepted
+            # insertion cancels its text but leaves an EMPTY paragraph.
+            # It is content-free, so remove it UNTRACKED inside the same
+            # undo transaction — the user sees no stray empty line and
+            # one undo restores everything.
+            paras = _writer_paragraphs(doc)
+            if len(paras) >= target and paras[target - 1]["text"] == "":
+                if tracked:
+                    doc.setPropertyValue("RecordChanges", False)
+                try:
+                    empty = _nth_paragraph(doc, target)
+                    vc.gotoRange(empty.getStart(), False)
+                    vc.goRight(1, True)
+                    vc.setString("")
+                finally:
+                    if tracked:
+                        doc.setPropertyValue("RecordChanges", True)
     finally:
         um.leaveUndoContext()
 

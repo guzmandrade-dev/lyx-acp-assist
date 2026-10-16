@@ -153,6 +153,18 @@ companion outside.**
     FontSlant NONE when a flag is absent): typing continues the previous
     run's direct character formatting, so an unstyled run after a bold
     run would silently inherit bold.
+15. **Tracked paragraph-mark deletions need the dispatch path.** Raw
+    `setString("")` on a view-cursor selection that includes the
+    paragraph break silently no-ops (or half-applies, cancelling
+    never-accepted insertions but leaving an empty paragraph) under
+    RecordChanges inside undo contexts — probes 8-9. Use the
+    `.uno:Delete` dispatch instead (the UI's own edit route): it records
+    a clean pending-deletion redline for real content, and coalesces
+    never-accepted insertions like the UI does. After it, if the target
+    paragraph became EMPTY (the coalescing artifact), remove that empty
+    paragraph with an UNTRACKED setString cleanup inside the same undo
+    context — content-free, so nothing reviewable is lost, and one undo
+    restores the whole edit (probes 10-11).
 
 ## Spike artifacts (Phase 0, all 26 checks passed, 2026-10-16)
 
