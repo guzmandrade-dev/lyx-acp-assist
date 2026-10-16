@@ -166,21 +166,58 @@ companion outside.**
     context — content-free, so nothing reviewable is lost, and one undo
     restores the whole edit (probes 10-11).
 
+## Calc bridge rules (verified 2026-10-16, Phase 2)
+
+16. **Structural row/column inserts use `insertByIndex`** —
+    `sheet.getRows().insertByIndex(row, count)` /
+    `sheet.getColumns().insertByIndex(col, count)`. There is no
+    `insertBy` (AttributeError). Edits live in the same
+    one-undo-transaction pattern as Writer.
+17. **Formula references follow the moved data on row/col inserts**:
+    with `=B2*2` at B3, inserting a row above row 2 moves the formula
+    to B4 AND rewrites it to `=B3*2` — the computed value is preserved.
+    Do not assume refs stay textually fixed.
+18. **`RecordChanges` is a readable/writable document property on Calc**
+    (reads `False` by default; toggling around the undo context works).
+    The bridge treats it as optional anyway (`_get_record_changes`
+    returns None for modules that don't expose it). Calc redline
+    enumeration is NOT yet verified — only content + undo are asserted.
+19. **Read path is `getDataArray()` + `getFormulaArray()`** on a capped
+    range: raw values (floats for numbers AND dates — no display
+    formatting), normalized by the bridge (int-valued floats → ints,
+    None → ""). The formula grid is returned only when at least one
+    cell's formula starts with `=`; otherwise `formulas` is null.
+20. **`loadComponentFromURL` over the UNO socket does NOT focus the new
+    document** — the bridge serves the desktop's CURRENT component, so
+    validation harnesses must `controller.getFrame().activate()` after
+    loading (this bit both the Writer and Calc e2e sections on a fresh
+    soffice). This is a harness concern, not a companion one: real user
+    interaction always has a focused window.
+21. **Calc selection objects come in two shapes**: single range
+    (SheetCellRange — `getRangeAddress()`) and multi (SheetCellRanges —
+    enumerate). The bridge handles both; data is read from the FIRST
+    range, all range names are listed.
+
 ## Spike artifacts (Phase 0, all 26 checks passed, 2026-10-16)
 
 - `spike/oxt/` — the bridge `.oxt` sources: `acpbridge.py` (HTTP server,
-  discovery records, token auth, `/status`, `/document` (paragraphs +
-  styles + selection + cursorStyle + lazy preview mode), `/documents`,
-  `/document/p/:i` lazy paragraph fetch, `/edit` (modes: insert,
-  insert-top, insert-after, rewrite, rewrite-at, delete-at; structured
-  paragraphs with per-run bold/italic/code + per-paragraph styles,
-  tracked-changes + one undo transaction per edit), `/activate`,
-  `/undo`, `/events?since&timeout` long-poll), `Addons.xcu` (ACP Assist
-  menu), `description.xml`, `META-INF/manifest.xml`.
+  discovery records, token auth, `/status`, `/document` (Writer: paragraphs +
+  styles + selection + cursorStyle + lazy preview mode; Calc: sheet
+  inventory + capped selection/used-range values+formulas grids),
+  `/documents`, `/document/p/:i` lazy paragraph fetch, `/edit` (Writer
+  modes: insert, insert-top, insert-after, rewrite, rewrite-at, delete-at;
+  Calc modes: write-cells (A1 anchor or selection top-left, `=`-prefixed
+  cells become formulas), insert-rows, insert-cols; tracked-changes + one
+  undo transaction per edit), `/activate`, `/undo`, `/events?since&timeout`
+  long-poll), `Addons.xcu` (ACP Assist menu), `description.xml`,
+  `META-INF/manifest.xml`.
 - `spike/validate/client_validate.py` — UNO-mechanics suite (13 checks), run
   against a socket-connected LibreOffice with a scratch profile.
-- `spike/validate/bridge_e2e.py` — end-to-end bridge suite (18 checks),
-  reads the discovery record, exercises every endpoint over HTTP.
+- `spike/validate/bridge_e2e.py` — end-to-end bridge suite (25 checks:
+  18 Writer + 7 Calc), reads the discovery record, exercises every
+  endpoint over HTTP. Needs a FRESH soffice (its initial checks assume
+  no open documents; run it after a restart, not right after
+  client_validate.py which leaves documents open).
 - `spike/validate/bridge_ctl.py` — start/stop the bridge over the UNO
   socket (test helper).
 - `spike/validate/cursor_probe*.py` — the empirical UNO cursor-semantics
@@ -206,7 +243,19 @@ run the relevant suite before declaring the work done.
 
 ## Current state
 
-Phase 0 spike complete and validated end-to-end (Windows, LibreOffice
-26.8.1.1). No companion code yet — Phase 1 is porting the lyx-acp-assist
-companion against the spike bridge through a proper module-adapter
-interface. Roadmap and scope live in README.md.
+Phase 1 (Writer MVP) is complete and live-tested end-to-end with opencode:
+companion ported from lyx-acp-assist, multi-action loop, bridge client,
+Writer adapter — all 37 unit/server tests pass.
+
+Phase 2 (Calc) is implemented and bridge-validated (2026-10-16):
+- Bridge: Calc read (sheets, selection values+formulas, active-sheet
+  used-range data, all capped/trimmed) + write-cells / insert-rows /
+  insert-cols inside one undo transaction; e2e 25/25, mechanics 13/13.
+- Companion: `src/modules/calc.ts` adapter (A1 addressing, ```calc TSV
+  blocks, write-cells/rewrite/insert-rows/insert-cols action tags),
+  Calc-aware context/selection building, UI feedback labels.
+- NOT yet done: a live agent (opencode) regression against a real Calc
+  document, like the one done for Writer.
+
+Next: Phase 3 (Impress/Draw) — slide outline context, slide/frame actions
+on the same adapter pattern. Roadmap and scope live in README.md.

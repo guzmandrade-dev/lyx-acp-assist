@@ -118,6 +118,10 @@ def main():
     text.insertString(cur, "Spike paragraph two.", False)
     vc = doc.getCurrentController().getViewCursor()
     vc.gotoEnd(False)  # deterministic: cursor after the last paragraph
+    # A doc loaded over the socket is not focused automatically; the bridge
+    # serves the desktop's CURRENT component, so activate the frame.
+    doc.getCurrentController().getFrame().activate()
+    time.sleep(0.3)
 
     code, status = http("GET", "/status", token=TOKEN)
     check("GET /status sees active Writer doc",
@@ -262,6 +266,82 @@ def main():
     check("GET /events long-poll receives selection-changed",
           ev[0] == 200 and "selection-changed" in kinds,
           f"{len(kinds)} events")
+
+    # --- Calc: /document read + write-cells / insert-rows ------------------
+    calc = desktop.loadComponentFromURL("private:factory/scalc", "_blank", 0, ())
+    time.sleep(0.5)
+    csheet = calc.getSheets().getByIndex(0)
+    csheet.getCellByPosition(0, 0).setString("Name")
+    csheet.getCellByPosition(1, 0).setString("Qty")
+    csheet.getCellByPosition(0, 1).setString("Widget")
+    csheet.getCellByPosition(1, 1).setValue(5)
+    csheet.getCellByPosition(1, 2).setFormula("=B2*2")
+    # loadComponentFromURL from the socket does NOT focus the new doc —
+    # activate its frame explicitly (same reason the /activate check exists).
+    calc.getCurrentController().getFrame().activate()
+    time.sleep(0.5)
+    calc.getCurrentController().select(csheet.getCellRangeByName("A1:B3"))
+
+    code, st = http("GET", "/status", token=TOKEN)
+    check("calc: GET /status sees the active Calc document",
+          code == 200 and st.get("active") and st.get("module") == "calc",
+          f"module={st.get('module')}, recordChanges={st.get('recordChanges')!r}")
+
+    code, d = http("GET", "/document", token=TOKEN)
+    sel = (d.get("calc") or {}).get("selection") or {}
+    check("calc: /document returns sheets + selection values and formulas",
+          code == 200 and d.get("module") == "calc"
+          and [s["name"] for s in d.get("calc", {}).get("sheets", [])] == ["Sheet1"]
+          and d["calc"]["sheets"][0]["usedRange"] == "A1:B3"
+          and sel.get("ranges") == ["Sheet1!A1:B3"]
+          and sel.get("anchor") == "A1"
+          and sel.get("values") == [["Name", "Qty"], ["Widget", "5"], ["", "10"]]
+          and (sel.get("formulas") or [])[2][1] == "=B2*2"
+          and (d.get("calc", {}).get("data") or {}).get("range") == "A1:B3"
+          and d["calc"]["data"]["values"] == [["Name", "Qty"], ["Widget", "5"], ["", "10"]],
+          f"sel={ {k: v for k, v in sel.items() if k != 'values'} }")
+
+    code, out = http("POST", "/edit", token=TOKEN, payload={
+        "mode": "write-cells", "anchor": "C1",
+        "rows": [["Total"], ["=SUM(B2:B3)"]],
+    })
+    check("calc: write-cells writes text and formulas at the anchor",
+          code == 200 and out.get("applied") and out.get("anchor") == "C1"
+          and csheet.getCellByPosition(2, 0).getString() == "Total"
+          and csheet.getCellByPosition(2, 1).getFormula() == "=SUM(B2:B3)"
+          and csheet.getCellByPosition(2, 1).getValue() == 15,
+          f"out={out}")
+
+    code, out = http("POST", "/edit", token=TOKEN, payload={
+        "mode": "insert-rows", "anchor": "A2", "count": 1,
+    })
+    check("calc: insert-rows shifts data down and keeps formulas",
+          code == 200 and out.get("applied")
+          and csheet.getCellByPosition(0, 1).getString() == ""
+          and csheet.getCellByPosition(0, 2).getString() == "Widget"
+          # the =B2*2 ref followed the moved data: B3*2 (value preserved)
+          and csheet.getCellByPosition(1, 3).getFormula() == "=B3*2"
+          and csheet.getCellByPosition(1, 3).getValue() == 10,
+          f"out={out}")
+
+    code, out = http("POST", "/undo", token=TOKEN)
+    check("calc: undo reverts the insert-rows edit",
+          code == 200 and out.get("undone")
+          and csheet.getCellByPosition(0, 1).getString() == "Widget"
+          and csheet.getCellByPosition(1, 2).getString() == "10",
+          f"out={out}")
+
+    code, out = http("POST", "/edit", token=TOKEN, payload={
+        "mode": "write-cells", "anchor": "!!", "rows": [["x"]],
+    })
+    check("calc: bad anchor refused with a clear error",
+          code == 500 and "not a valid A1" in str(out.get("error")),
+          f"code={code}, err={out.get('error')!r}")
+
+    code, out = http("POST", "/edit", token=TOKEN, payload={"mode": "sum-all"})
+    check("calc: unknown edit mode refused",
+          code == 500 and "unknown edit mode" in str(out.get("error")),
+          f"code={code}, err={out.get('error')!r}")
 
     # --- activate (second document)
     doc2 = desktop.loadComponentFromURL("private:factory/swriter", "_blank", 0, ())

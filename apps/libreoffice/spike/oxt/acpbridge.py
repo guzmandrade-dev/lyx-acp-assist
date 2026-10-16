@@ -44,6 +44,9 @@ TIMEOUT_S = 30
 BODY_LIMIT = 32_000
 # Per-paragraph preview length in preview mode.
 PREVIEW_LEN = 200
+# Calc: max rows/cols of a selected range returned per /document read.
+CALC_MAX_ROWS = 200
+CALC_MAX_COLS = 20
 
 _STATE = {"server": None, "port": None, "token": None, "startedAt": None}
 _EVENTS = []
@@ -200,6 +203,164 @@ def _nth_paragraph(doc, n):
     raise RuntimeError(f"paragraph [p{n}] does not exist")
 
 
+# ----------------------------------------------------------- calc helpers
+
+def _col_letters(col):
+    """0-based column index -> A1 letters (0 -> 'A', 25 -> 'Z', 26 -> 'AA')."""
+    s = ""
+    n = col + 1
+    while n > 0:
+        n, r = divmod(n - 1, 26)
+        s = chr(65 + r) + s
+    return s
+
+
+def _a1_range(addr):
+    """CellRangeAddress -> 'A1:C3' (sheet-relative)."""
+    return (f"{_col_letters(addr.StartColumn)}{addr.StartRow + 1}:"
+            f"{_col_letters(addr.EndColumn)}{addr.EndRow + 1}")
+
+
+def _parse_a1(token):
+    """'B12' -> (col, row) 0-based; user-facing error on bad addresses."""
+    m = re.match(r"^([A-Za-z]{1,4})([1-9][0-9]{0,6})$", str(token).strip())
+    if m is None:
+        raise RuntimeError(f"{token!r} is not a valid A1 cell address (e.g. B2)")
+    col = 0
+    for ch in m.group(1).upper():
+        col = col * 26 + (ord(ch) - 64)
+    return col - 1, int(m.group(2)) - 1
+
+
+def _calc_value(v):
+    """One cell value from getDataArray() -> a compact string."""
+    if v is None:
+        return ""
+    if isinstance(v, (int, float)) and float(v).is_integer():
+        return str(int(v))
+    return str(v)
+
+
+def _calc_sel_ranges(sel):
+    """Selection object -> list of CellRangeAddress (single or multi range)."""
+    out = []
+    try:
+        if sel.supportsService("com.sun.star.sheet.SheetCellRanges"):
+            enum = sel.createEnumeration()
+            while enum.hasMoreElements():
+                out.append(enum.nextElement().getRangeAddress())
+        else:
+            out.append(sel.getRangeAddress())
+    except Exception:
+        pass
+    return out
+
+
+def _trim_empty(values):
+    """Drop trailing empty rows/columns from a values grid."""
+    while values and all(c == "" for c in values[-1]):
+        values.pop()
+    if values:
+        width = len(values[0])
+        while width > 0 and all(row[width - 1] == "" for row in values):
+            width -= 1
+        if width < len(values[0]):
+            values = [row[:width] for row in values]
+    return values
+
+
+def _calc_range_data(sheet, a):
+    """Capped values + formulas for one CellRangeAddress."""
+    rows = a.EndRow - a.StartRow + 1
+    cols = a.EndColumn - a.StartColumn + 1
+    cap_rows = min(rows, CALC_MAX_ROWS)
+    cap_cols = min(cols, CALC_MAX_COLS)
+    block = sheet.getCellRangeByPosition(
+        a.StartColumn, a.StartRow,
+        a.StartColumn + cap_cols - 1, a.StartRow + cap_rows - 1)
+    values = [[_calc_value(v) for v in row] for row in block.getDataArray()]
+    truncated = rows > cap_rows or cols > cap_cols
+    while values and sum(len(c) for row in values for c in row) > BODY_LIMIT:
+        values.pop()
+        truncated = True
+    values = _trim_empty(values)
+    formulas = None
+    if values:
+        block2 = sheet.getCellRangeByPosition(
+            a.StartColumn, a.StartRow,
+            a.StartColumn + len(values[0]) - 1, a.StartRow + len(values) - 1)
+        frows = [[str(f) for f in row] for row in block2.getFormulaArray()]
+        if any(f.startswith("=") for row in frows for f in row):
+            formulas = frows
+    return values, formulas, truncated
+
+
+def _read_calc(doc):
+    """Calc branch of /document: sheet inventory + selection data."""
+    ctrl = doc.getCurrentController()
+    sheets = []
+    active_sheet = None
+    try:
+        active_sheet = ctrl.getActiveSheet()
+    except Exception:
+        pass
+    active_name = active_sheet.getName() if active_sheet is not None else None
+    container = doc.getSheets()
+    for name in container.getElementNames():
+        used = "A1:A1"
+        try:
+            cur = container.getByName(name).createCursor()
+            cur.gotoEndOfUsedArea(False)
+            cur.gotoStartOfUsedArea(True)
+            used = _a1_range(cur.getRangeAddress())
+        except Exception:
+            pass
+        sheets.append({"name": name, "usedRange": used,
+                       "active": name == active_name})
+
+    out = {"sheets": sheets, "selection": None, "data": None}
+    ranges = _calc_sel_ranges(ctrl.getSelection())
+    if not ranges:
+        return out
+    a = ranges[0]
+    names = []
+    for r in ranges:
+        sheet_name = container.getByIndex(r.Sheet).getName()
+        names.append(f"{sheet_name}!{_a1_range(r)}")
+
+    sheet = container.getByIndex(a.Sheet)
+    values, formulas, truncated = _calc_range_data(sheet, a)
+    out["selection"] = {
+        "sheet": sheet.getName(),
+        "ranges": names,
+        "anchor": f"{_col_letters(a.StartColumn)}{a.StartRow + 1}",
+        "rows": len(values),
+        "cols": len(values[0]) if values else 0,
+        "values": values,
+        "formulas": formulas,
+        "truncated": truncated,
+    }
+
+    # Active sheet's used-range data: the agent's window beyond the
+    # selection (capped + trimmed the same way).
+    if active_sheet is not None:
+        cur = active_sheet.createCursor()
+        cur.gotoEndOfUsedArea(False)
+        cur.gotoStartOfUsedArea(True)
+        addr = cur.getRangeAddress()
+        dvalues, dformulas, dtruncated = _calc_range_data(active_sheet, addr)
+        out["data"] = {
+            "sheet": active_name,
+            "range": _a1_range(addr),
+            "values": dvalues,
+            "formulas": dformulas,
+            "truncated": dtruncated,
+        }
+    return out
+
+
+
+
 # ------------------------------------------------ main-thread operations
 
 def _doc_status(desktop):
@@ -212,7 +373,7 @@ def _doc_status(desktop):
         "module": _module_of(doc),
         "title": doc.getTitle(),
         "url": _doc_url(doc),
-        "recordChanges": bool(doc.getPropertyValue("RecordChanges")),
+        "recordChanges": _get_record_changes(doc),
     }
 
 
@@ -248,6 +409,9 @@ def _read_document(desktop):
         "url": _doc_url(doc),
         "cursorStyle": _view_cursor_style(doc),
     }
+    if base["module"] == "calc":
+        base["calc"] = _read_calc(doc)
+        return base
     if base["module"] != "writer":
         return base
 
@@ -344,6 +508,22 @@ def _write_paragraphs(doc, cursor, paragraphs, break_mode):
             text.insertControlCharacter(cursor, PARAGRAPH_BREAK, False)
 
 
+def _get_record_changes(doc):
+    """Read RecordChanges; None when the module doesn't expose it."""
+    try:
+        return bool(doc.getPropertyValue("RecordChanges"))
+    except Exception:
+        return None
+
+
+def _set_record_changes(doc, value):
+    try:
+        doc.setPropertyValue("RecordChanges", value)
+        return True
+    except Exception:
+        return False
+
+
 def _require_writer(desktop):
     doc = _active_doc(desktop)
     if doc is None or _module_of(doc) != "writer":
@@ -368,11 +548,116 @@ def _dispatch_delete(doc):
         doc.getCurrentController().getFrame(), ".uno:Delete", "", 0, ())
 
 
+def _require_calc(desktop):
+    doc = _active_doc(desktop)
+    if doc is None or _module_of(doc) != "calc":
+        raise RuntimeError("no active Calc document")
+    _ensure_listener(doc)
+    return doc
+
+
+def _set_cell(cell, value):
+    """One TSV cell -> the sheet cell: '=' formulas, numbers, else text."""
+    if value is None:
+        cell.setString("")
+        return
+    s = str(value)
+    if s.startswith("="):
+        cell.setFormula(s)
+        return
+    try:
+        cell.setValue(float(s))
+        return
+    except ValueError:
+        pass
+    cell.setString(s)
+
+
+def _edit_calc(desktop, payload):
+    mode = payload.get("mode")
+
+    doc = _require_calc(desktop)
+    ctrl = doc.getCurrentController()
+    sheet = ctrl.getActiveSheet()
+    sheet_name = sheet.getName()
+
+    if mode == "write-cells":
+        rows = payload.get("rows")
+        if (not isinstance(rows, list) or not rows
+                or not all(isinstance(r, list) for r in rows)):
+            raise RuntimeError(
+                "mode 'write-cells' requires rows ([[cell, ...], ...])")
+        for row in rows:
+            if len(row) > 1024:
+                raise RuntimeError("write-cells row longer than 1024 cells")
+        if len(rows) > 2000:
+            raise RuntimeError("write-cells block larger than 2000 rows")
+    elif mode in ("insert-rows", "insert-cols"):
+        try:
+            count = int(payload.get("count") or 1)
+        except (TypeError, ValueError):
+            raise RuntimeError("count must be an integer")
+        if not 1 <= count <= 1000:
+            raise RuntimeError("count must be between 1 and 1000")
+
+    # Anchor: explicit A1 address, else the selection's top-left cell.
+    anchor = payload.get("anchor")
+    sel_ranges = _calc_sel_ranges(ctrl.getSelection())
+    if anchor:
+        col, row = _parse_a1(anchor)
+    elif sel_ranges:
+        a = sel_ranges[0]
+        col, row = a.StartColumn, a.StartRow
+    else:
+        raise RuntimeError(
+            f"mode {mode!r} needs an anchor (A1) or an active selection")
+    anchor_name = f"{_col_letters(col)}{row + 1}"
+
+    tracked = bool(payload.get("tracked", True))
+    was_tracking = _get_record_changes(doc)
+    if tracked and was_tracking is False:
+        _set_record_changes(doc, True)
+
+    um = doc.getUndoManager()
+    um.enterUndoContext("ACP edit")
+    try:
+        if mode == "write-cells":
+            for r, row_cells in enumerate(payload.get("rows")):
+                for c, value in enumerate(row_cells):
+                    _set_cell(sheet.getCellByPosition(col + c, row + r), value)
+        elif mode == "insert-rows":
+            count = int(payload.get("count") or 1)
+            sheet.getRows().insertByIndex(row, count)
+        elif mode == "insert-cols":
+            count = int(payload.get("count") or 1)
+            sheet.getColumns().insertByIndex(col, count)
+    finally:
+        um.leaveUndoContext()
+
+    if tracked and was_tracking is False:
+        _set_record_changes(doc, False)
+
+    _record_event("document-edited")
+    return {"applied": True, "title": doc.getTitle(), "mode": mode,
+            "sheet": sheet_name, "anchor": anchor_name}
+
+
+WRITER_MODES = ("insert", "insert-top", "insert-after",
+                "rewrite", "rewrite-at", "delete-at")
+CALC_MODES = ("write-cells", "insert-rows", "insert-cols")
+
+
 def _edit(desktop, payload):
     mode = payload.get("mode")
-    if mode not in ("insert", "insert-top", "insert-after",
-                    "rewrite", "rewrite-at", "delete-at"):
-        raise RuntimeError(f"unknown edit mode {mode!r}")
+    if mode in WRITER_MODES:
+        return _edit_writer(desktop, payload)
+    if mode in CALC_MODES:
+        return _edit_calc(desktop, payload)
+    raise RuntimeError(f"unknown edit mode {mode!r}")
+
+
+def _edit_writer(desktop, payload):
+    mode = payload.get("mode")
 
     doc = _require_writer(desktop)
     text = doc.getText()
