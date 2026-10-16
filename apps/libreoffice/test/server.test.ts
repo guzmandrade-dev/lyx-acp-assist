@@ -208,6 +208,84 @@ describe('server message loop (fake agent + fake bridge)', () => {
     srv.close();
   });
 
+  it('runs a Calc write-cells action through the calc adapter', async () => {
+    const edits: EditPayload[] = [];
+    const calcBridge = new (class extends BridgeClient {
+      constructor() {
+        super({ app: 'test', protocol: 1, pid: process.pid, port: 0, token: 't', startedAt: '' });
+      }
+      override status(): Promise<BridgeStatus> {
+        return Promise.resolve({
+          active: true, module: 'calc', title: 'Budget', url: 'file:///fake/budget.ods',
+          recordChanges: false, pid: process.pid, port: 0, startedAt: '',
+        });
+      }
+      override document(): Promise<BridgeDocument> {
+        return Promise.resolve({
+          active: true, module: 'calc', title: 'Budget', url: 'file:///fake/budget.ods',
+          calc: {
+            sheets: [{ name: 'Sheet1', usedRange: 'A1:B3', active: true }],
+            selection: {
+              sheet: 'Sheet1', ranges: ['Sheet1!A1:B3'], anchor: 'A1', rows: 3, cols: 2,
+              values: [['Name', 'Qty'], ['Widget', '5'], ['', '10']],
+              formulas: null, truncated: false,
+            },
+            data: {
+              sheet: 'Sheet1', range: 'A1:B3',
+              values: [['Name', 'Qty'], ['Widget', '5'], ['', '10']],
+              formulas: null, truncated: false,
+            },
+          },
+          cursorStyle: null,
+        });
+      }
+      override edit(payload: EditPayload) {
+        edits.push(payload);
+        return Promise.resolve({
+          applied: true, title: 'Budget', mode: payload.mode,
+          anchor: payload.anchor ?? 'A1',
+        });
+      }
+    })();
+    const app = createServer({
+      publicDir,
+      historyDir,
+      agentFactory: fakeAgent([
+        'Writing the totals.\n```calc\nTotal\t=SUM(B2:B3)\n```\n[ACTION: write-cells C1]',
+        'Done.\n[ACTION: none]',
+      ]),
+      bridgeFactory: () => calcBridge,
+    });
+    const srv = app.listen(0, '127.0.0.1');
+    await new Promise<void>((r) => srv.on('listening', r));
+    const addr = srv.address() as { port: number };
+    const url = `http://127.0.0.1:${addr.port}`;
+    const session = (await (await fetch(`${url}/api/session`, { method: 'POST' })).json()) as {
+      sessionId: string;
+      outline: string;
+    };
+    expect(session.outline).toContain('Sheet1 (used A1:B3) *');
+
+    const res = await fetch(`${url}/api/session/${session.sessionId}/message/stream`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'Add a total in C1.' }),
+    });
+    const frames = sseFrames(await res.text());
+    const applied = frames.filter((f) => 'applied' in f);
+    expect(applied).toEqual([{ applied: 'write-cells', target: null, address: 'C1' }]);
+    expect(edits).toMatchObject([
+      { mode: 'write-cells', anchor: 'C1', rows: [['Total', '=SUM(B2:B3)']], tracked: true },
+    ]);
+
+    const info = (await (await fetch(`${url}/api/session/${session.sessionId}`)).json()) as {
+      conversation: Array<{ meta?: { action: string; address: string | null; result: string } }>;
+    };
+    const meta = info.conversation.find((t) => t.meta)?.meta;
+    expect(meta).toMatchObject({ action: 'write-cells', address: 'C1', result: 'applied' });
+    srv.close();
+  });
+
   it('undo routes through the bridge and reports when nothing is undoable', async () => {
     const app = createServer({
       publicDir,
@@ -237,11 +315,11 @@ describe('server message loop (fake agent + fake bridge)', () => {
       bridgeFactory: () => {
         const b = new FakeBridge();
         b.status = () => Promise.resolve({
-          active: true, module: 'calc', title: 'Sheet', url: 'file:///fake/sheet.ods',
+          active: true, module: 'impress', title: 'Deck', url: 'file:///fake/deck.odp',
           recordChanges: false, pid: process.pid, port: 0, startedAt: '',
         });
         b.document = () => Promise.resolve({
-          active: true, module: 'calc', title: 'Sheet', url: 'file:///fake/sheet.ods',
+          active: true, module: 'impress', title: 'Deck', url: 'file:///fake/deck.odp',
           cursorStyle: null,
         });
         return b;

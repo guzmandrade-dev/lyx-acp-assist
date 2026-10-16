@@ -13,11 +13,12 @@ truth, all edits go through the application's own machinery, and the agent
 expresses intent through a small vocabulary of action tags that the app
 executes mechanically.
 
-> **Status: Phase 0 spike complete** — the whole risky core (in-process
-> bridge, undo transactions, tracked changes, formatted inserts, live
-> selection events) is validated end-to-end on LibreOffice 26.8.1.1 / Windows.
-> Phase 1 (Writer MVP) is next. Developer-facing notes, decisions, and
-> verified technical facts live in [AGENTS.md](AGENTS.md).
+> **Status: Phase 1 (Writer MVP) complete and live-tested; Phase 2 (Calc)
+> implemented and bridge-validated** — the in-process bridge, undo
+> transactions, tracked changes, formatted inserts, live selection events,
+> and Calc cell reads/writes all pass their validation suites on LibreOffice
+> 26.8.1.1 / Windows. Developer-facing notes, decisions, and verified
+> technical facts live in [AGENTS.md](AGENTS.md).
 
 ## Why this is *easier* than the LyX version
 
@@ -99,14 +100,15 @@ change with a one-click Undo.**
 | `[ACTION: rewrite-at pN]` | Replace paragraph `[pN]` (verified first) |
 | `[ACTION: delete-at pN]` | Delete paragraph `[pN]` |
 
-**Calc** (selection surfaced as a TSV/table sketch, cells addressed as `A1`):
+**Calc** (active sheet + selection surfaced as TSV with values *and*
+formulas, cells addressed as `A1`):
 
 | Action | Effect |
 |---|---|
-| `[ACTION: write-cells]` | Write a TSV block at the selection / given anchor |
+| `[ACTION: write-cells]` | Write a TSV block at the selection's top-left cell; `[ACTION: write-cells B2]` anchors it at `B2` |
 | `[ACTION: rewrite]` | Replace the selected cells |
-| `[ACTION: insert-rows]` / `[ACTION: insert-cols]` | Structural inserts |
-| `[ACTION: formula-col col]` | Fill a column with formulas (verified) |
+| `[ACTION: insert-rows]` / `[ACTION: insert-rows A5]` | Insert an empty row above the selection / cell |
+| `[ACTION: insert-cols]` / `[ACTION: insert-cols C1]` | Insert an empty column left of the selection / cell |
 
 **Impress** (slides addressed as `[sN]`):
 
@@ -158,10 +160,12 @@ implements the replacement: a live in-process HTTP bridge in `spike/oxt/`.
 
 - **Phase 0 — spike: done.** All feasibility risks validated (see
   [AGENTS.md](AGENTS.md) for the findings).
-- **Phase 1 — Writer MVP:** port the LyX app's chat + action loop against the
-  bridge, through the module-adapter interface. Parity with LyX ACP Assist
-  for text documents.
-- **Phase 2 — Calc:** context builder (TSV + formulas) and cell actions.
+- **Phase 1 — Writer MVP: done.** Chat + action loop ported and live-tested
+  against the bridge; parity with LyX ACP Assist for text documents.
+- **Phase 2 — Calc: implemented.** Sheet/selection context (TSV values +
+  formulas) and cell actions (write-cells, rewrite, insert-rows/cols),
+  bridge-validated end-to-end (25/25 checks). A live-agent regression
+  pass is still pending.
 - **Phase 3 — Impress/Draw:** slide outline context, slide/frame actions.
 - **Phase 4 — polish:** sidebar deck in LibreOffice (connection status,
   launch/focus companion, restart bridge, refresh agent), multi-document

@@ -22,6 +22,7 @@ import {
   discoverBridges,
 } from './bridge/client.js';
 import { writerAdapter } from './modules/writer.js';
+import { calcAdapter, parseCalcAction } from './modules/calc.js';
 import { genericAdapter } from './modules/generic.js';
 import type { ModuleAdapter, AgentAction, ActionOutcome, SelectionInfo } from './modules/types.js';
 import { extractContentBlock, parseContentBlock } from './modules/markdown.js';
@@ -44,6 +45,8 @@ export interface Turn {
 export interface TurnMeta {
   action: string;
   target?: number | null;
+  /** Calc: A1 anchor address, when the tag carried one. */
+  address?: string | null;
   result: 'applied' | 'error' | 'cancelled';
   error?: string;
   step?: number;
@@ -170,7 +173,14 @@ export function createServer(options: ServerOptions & {
   // --- adapter selection ---------------------------------------------------
 
   function adapterFor(module: string): ModuleAdapter {
-    return module === 'writer' ? writerAdapter : genericAdapter;
+    if (module === 'writer') return writerAdapter;
+    if (module === 'calc') return calcAdapter;
+    return genericAdapter;
+  }
+
+  /** Parse one agent reply with the active adapter's action grammar. */
+  function parseOutcome(adapter: ModuleAdapter, reply: string): ActionOutcome {
+    return adapter.id === 'calc' ? parseCalcAction(reply) : parseAction(reply);
   }
 
   // --- status / settings ---------------------------------------------------
@@ -442,6 +452,7 @@ export function createServer(options: ServerOptions & {
     let turnRecorded = false;
     let lastAction: AgentAction = 'none';
     let lastTarget: number | null = null;
+    let lastAddress: string | null = null;
 
     try {
       await refreshActiveDocument(session);
@@ -494,7 +505,7 @@ export function createServer(options: ServerOptions & {
           onToolCall: (tool) => send({ tool }),
           timeoutMs: 240_000,
         });
-        const outcome = parseAction(reply);
+        const outcome = parseOutcome(adapter, reply);
 
         if (step === 1) {
           await recordTurn(session, message, reply);
@@ -504,11 +515,13 @@ export function createServer(options: ServerOptions & {
         turnRecorded = true;
         lastAction = outcome.action;
         lastTarget = outcome.target;
+        lastAddress = outcome.address;
 
         const noteMeta = async (result: 'applied' | 'error' | 'cancelled', error?: string) => {
           await recordTurnMeta(session, {
             action: outcome.action,
             target: outcome.target,
+            address: outcome.address,
             result,
             ...(error ? { error } : {}),
             ...(step > 1 ? { step } : {}),
@@ -531,7 +544,7 @@ export function createServer(options: ServerOptions & {
         try {
           const freshDoc = step === 1 ? doc : await session.bridge.document();
           const applied = await adapter.applyAction(session.bridge, freshDoc, await readSelection(session), outcome);
-          send({ applied: outcome.action, target: outcome.target, ...(step > 1 ? { step } : {}) });
+          send({ applied: outcome.action, target: outcome.target, address: outcome.address, ...(step > 1 ? { step } : {}) });
           await noteMeta('applied');
           completed.push(applied.description);
           send({ appliedStep: step, action: outcome.action, target: outcome.target });
@@ -565,6 +578,7 @@ export function createServer(options: ServerOptions & {
         await recordTurnMeta(session, {
           action: lastAction,
           target: lastTarget,
+          address: lastAddress,
           result: lastAction === 'none' ? 'applied' : 'error',
           error: message2,
         }).catch(() => undefined);
@@ -689,9 +703,10 @@ export function createServer(options: ServerOptions & {
     const texts = doc.selection ?? null;
     const text = texts && texts.length > 0 ? texts.join('\n') : null;
     return {
-      hasSelection: Boolean(text && text.length > 0),
+      hasSelection: Boolean(doc.calc?.selection || (text && text.length > 0)),
       text,
       cursorStyle: doc.cursorStyle ?? null,
+      calc: doc.calc ?? null,
     };
   }
 
@@ -716,7 +731,9 @@ export function parseAction(reply: string): ActionOutcome {
   return {
     action,
     target,
+    address: null,
     block: needsContent ? (rawBlock !== null ? parseContentBlock(rawBlock) : null) : null,
+    grid: null,
   };
 }
 
@@ -724,16 +741,15 @@ export function parseAction(reply: string): ActionOutcome {
 
 const CHAT_KNOWLEDGE = [
   'ADDRESSING AND EDITS',
-  '- The document context lists paragraphs as [pN] ids with their styles.',
   '- Edits are applied to the LIVE document as tracked changes (the user',
   '  accepts or rejects them in Edit > Track Changes), and each edit is a',
   '  single undo step.',
-  '- Pending tracked changes are part of the context: text the user has not',
-  '  accepted yet may still appear (deleted text can remain visible in the',
-  '  context as struck-through content). Do not re-delete or re-edit text',
-  '  that a previous edit already removed; the changes are waiting for the',
-  '  user, not lost.',
-  '- Content for actions goes in ONE ```writer fenced block (markdown-lite).',
+  '- Pending tracked changes are part of the context: content the user has',
+  '  not accepted yet may still appear there. Do not re-delete or re-edit',
+  '  content a previous edit already removed; the changes are waiting for',
+  '  the user, not lost.',
+  '- Content for actions goes in ONE fenced content block; the action',
+  '  instructions above name its language (```writer or ```calc).',
 ].join('\n');
 
 export function buildAutoPrompt(
@@ -807,7 +823,7 @@ export function buildContinuationPrompt(
     '',
     'If the request needs MORE edits, END your reply with exactly one ' +
       'document action tag from the action list on its own last line, and ' +
-      'include the ```writer block when the action needs content.',
+      'include the content block when the action needs content.',
     'If the request is now complete, reply in prose only and end with [ACTION: none].',
     'If you are not sure whether more edits remain, ask one short question ' +
       'with [ACTION: none] instead of guessing.',
@@ -836,7 +852,7 @@ export function formatHistoryReplay(turns: Turn[], unseen: number): string {
   for (const turn of turns.slice(0, count)) {
     const label = turn.role === 'user' ? 'User' : 'You';
     let text = (turn.content ?? '')
-      .replace(/```writer[\s\S]*?```/g, '')
+      .replace(/```(?:writer|calc)[\s\S]*?```/g, '')
       .replace(/\[ACTION:\s*[^\]]*\]/gi, '')
       .replace(/\s+/g, ' ')
       .trim();
@@ -847,7 +863,8 @@ export function formatHistoryReplay(turns: Turn[], unseen: number): string {
     if (turn.role === 'assistant' && turn.meta) {
       const m = turn.meta;
       if (m.result === 'applied' && m.action !== 'none') {
-        lines.push(`  (applied [ACTION: ${m.action}${m.target ? ` p${m.target}` : ''}] in the document)`);
+        const at = m.target ? ` p${m.target}` : m.address ? ` ${m.address}` : '';
+        lines.push(`  (applied [ACTION: ${m.action}${at}] in the document)`);
       } else if (m.result === 'error') {
         lines.push(`  (action ${m.action} FAILED: ${m.error ?? 'unknown error'})`);
       } else if (m.result === 'cancelled') {

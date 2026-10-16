@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { parseAction } from '../src/server.js';
-import { extractContentBlock, parseContentBlock, parseInline } from '../src/modules/markdown.js';
+import { calcAdapter, parseCalcAction } from '../src/modules/calc.js';
+import { extractContentBlock, parseContentBlock, parseInline, parseTsvBlock } from '../src/modules/markdown.js';
 import { writerAdapter } from '../src/modules/writer.js';
-import type { BridgeDocument } from '../src/bridge/client.js';
+import type { BridgeClient, BridgeDocument } from '../src/bridge/client.js';
 
 const writerDoc = (paragraphs: Array<[string, string]>, extra: Partial<BridgeDocument> = {}): BridgeDocument => ({
   active: true,
@@ -20,7 +21,9 @@ describe('parseAction', () => {
     expect(parseAction('Just an answer.')).toEqual({
       action: 'none',
       target: null,
+      address: null,
       block: null,
+      grid: null,
     });
   });
 
@@ -172,9 +175,197 @@ describe('writerAdapter context', () => {
   });
 
   it('renders the selection block only when a selection exists', () => {
-    expect(writerAdapter.buildSelectionBlock({ hasSelection: false, text: null, cursorStyle: 'Standard' })).toBe('');
+    expect(writerAdapter.buildSelectionBlock({ hasSelection: false, text: null, cursorStyle: 'Standard', calc: null })).toBe('');
     expect(
-      writerAdapter.buildSelectionBlock({ hasSelection: true, text: 'sel text', cursorStyle: 'Standard' }),
+      writerAdapter.buildSelectionBlock({ hasSelection: true, text: 'sel text', cursorStyle: 'Standard', calc: null }),
     ).toContain('sel text');
+  });
+});
+// --- Calc adapter ---------------------------------------------------------------
+
+import type { CalcInfo, EditPayload } from '../src/bridge/client.js';
+
+const calcInfo = (extra: Partial<CalcInfo> = {}): CalcInfo => ({
+  sheets: [{ name: 'Sheet1', usedRange: 'A1:B3', active: true }],
+  selection: {
+    sheet: 'Sheet1',
+    ranges: ['Sheet1!A1:B3'],
+    anchor: 'A1',
+    rows: 3,
+    cols: 2,
+    values: [
+      ['Name', 'Qty'],
+      ['Widget', '5'],
+      ['', '10'],
+    ],
+    formulas: null,
+    truncated: false,
+  },
+  data: {
+    sheet: 'Sheet1',
+    range: 'A1:B3',
+    values: [
+      ['Name', 'Qty'],
+      ['Widget', '5'],
+      ['', '10'],
+    ],
+    formulas: null,
+    truncated: false,
+  },
+  ...extra,
+});
+
+const calcDoc = (extra: Partial<BridgeDocument> = {}): BridgeDocument => ({
+  active: true,
+  module: 'calc',
+  title: 'Budget',
+  url: 'file:///C:/docs/budget.ods',
+  calc: calcInfo(),
+  cursorStyle: null,
+  ...extra,
+});
+
+const calcSel = (calc: CalcInfo | null = calcInfo()) => ({
+  hasSelection: true,
+  text: null,
+  cursorStyle: null,
+  calc,
+});
+
+describe('parseCalcAction', () => {
+  it('parses a plain prose reply as none', () => {
+    expect(parseCalcAction('Just an answer.')).toEqual({
+      action: 'none',
+      target: null,
+      address: null,
+      block: null,
+      grid: null,
+    });
+  });
+
+  it('parses write-cells with an A1 anchor and a TSV block', () => {
+    const reply = 'Here.\n```calc\nTotal\t=SUM(B2:B3)\n\n```\n[ACTION: write-cells C1]';
+    const out = parseCalcAction(reply);
+    expect(out.action).toBe('write-cells');
+    expect(out.address).toBe('C1');
+    expect(out.grid).toEqual([['Total', '=SUM(B2:B3)']]);
+  });
+
+  it('defaults the anchor to null (selection) and takes the last tag', () => {
+    const out = parseCalcAction('[ACTION: insert-rows]\nmore\n[ACTION: insert-rows A5]');
+    expect(out.action).toBe('insert-rows');
+    expect(out.address).toBe('A5');
+    expect(out.grid).toBeNull();
+  });
+
+  it('content action without a block yields null grid (apply refuses)', () => {
+    const out = parseCalcAction('I will write cells. [ACTION: write-cells]');
+    expect(out.action).toBe('write-cells');
+    expect(out.grid).toBeNull();
+  });
+
+  it('writer tags do not parse in the calc grammar', () => {
+    expect(parseCalcAction('[ACTION: rewrite-at p3]').action).toBe('none');
+  });
+});
+
+describe('parseTsvBlock', () => {
+  it('splits rows on tabs and drops action tags and trailing empties', () => {
+    const block = 'A\tB\n[ACTION: none]\nC\tD\n\n\n';
+    expect(parseTsvBlock(block)).toEqual([
+      ['A', 'B'],
+      ['C', 'D'],
+    ]);
+  });
+});
+
+describe('extractContentBlock (calc)', () => {
+  it('extracts the calc fence and ignores the writer fence', () => {
+    expect(extractContentBlock('```writer\nnope\n```\n```calc\nyes\n```', 'calc')).toBe('yes\n');
+    expect(extractContentBlock('```calc\nyes\n```')).toBeNull();
+  });
+});
+
+describe('calcAdapter context', () => {
+  it('renders sheets, used range, values, and selection anchor', () => {
+    const ctx = calcAdapter.buildContextBlock(calcDoc(), 'file:///C:/docs/budget.ods');
+    expect(ctx).toContain('Sheets: Sheet1 (used A1:B3) [active]');
+    expect(ctx).toContain('```tsv');
+    expect(ctx).toContain('Name\tQty');
+    expect(ctx).toContain('Widget\t5');
+  });
+
+  it('renders formulas only when present', () => {
+    const info = calcInfo({
+      selection: { ...calcInfo().selection!, formulas: [['Name', 'Qty'], ['Widget', '5'], ['', '=B2*2']] },
+      data: { ...calcInfo().data!, formulas: [['Name', 'Qty'], ['Widget', '5'], ['', '=B2*2']] },
+    });
+    const ctx = calcAdapter.buildContextBlock(calcDoc({ calc: info }), null);
+    expect(ctx).toContain('=B2*2');
+  });
+
+  it('does not duplicate the selection grid when the data block covers it', () => {
+    const sel = calcSel();
+    const block = calcAdapter.buildSelectionBlock(sel);
+    expect(block).toContain('Current selection: Sheet1!A1:B3 (anchor A1)');
+    expect(block).not.toContain('```tsv');
+  });
+
+  it('shows the selection grid when it is outside the data block', () => {
+    const info = calcInfo({ data: null });
+    const block = calcAdapter.buildSelectionBlock(calcSel(info));
+    expect(block).toContain('```tsv');
+  });
+});
+
+describe('calcAdapter applyAction', () => {
+  const edits: EditPayload[] = [];
+  const bridge = {
+    edit: async (payload: EditPayload) => {
+      edits.push(payload);
+      return {
+        applied: true,
+        title: 'Budget',
+        mode: payload.mode,
+        anchor: payload.anchor ?? 'A1',
+      };
+    },
+  } as unknown as BridgeClient;
+
+  it('write-cells sends the TSV rows to the bridge at the anchor', async () => {
+    const out = parseCalcAction('```calc\nTotal\t15\n```\n[ACTION: write-cells C1]');
+    const r = await calcAdapter.applyAction(bridge, calcDoc(), calcSel(), out);
+    expect(edits[edits.length - 1]).toMatchObject({
+      mode: 'write-cells',
+      anchor: 'C1',
+      rows: [['Total', '15']],
+      tracked: true,
+    });
+    expect(r.description).toBe('[ACTION: write-cells at C1]');
+  });
+
+  it('write-cells without an anchor uses the selection', async () => {
+    const out = parseCalcAction('```calc\nX\n```\n[ACTION: write-cells]');
+    await calcAdapter.applyAction(bridge, calcDoc(), calcSel(), out);
+    expect(edits[edits.length - 1]).toMatchObject({ anchor: undefined, rows: [['X']] });
+  });
+
+  it('insert-rows/insert-cols pass count 1 and the anchor', async () => {
+    await calcAdapter.applyAction(bridge, calcDoc(), calcSel(), parseCalcAction('[ACTION: insert-rows A5]'));
+    expect(edits[edits.length - 1]).toMatchObject({ mode: 'insert-rows', anchor: 'A5', count: 1 });
+    await calcAdapter.applyAction(bridge, calcDoc(), calcSel(), parseCalcAction('[ACTION: insert-cols]'));
+    expect(edits[edits.length - 1]).toMatchObject({ mode: 'insert-cols', anchor: undefined, count: 1 });
+  });
+
+  it('write-cells without a content block is refused with nothing sent', async () => {
+    const out = parseCalcAction('Sure. [ACTION: write-cells]');
+    const before = edits.length;
+    await expect(calcAdapter.applyAction(bridge, calcDoc(), calcSel(), out)).rejects.toThrow('calc');
+    expect(edits.length).toBe(before);
+  });
+
+  it('rewrite without a Calc selection is refused', async () => {
+    const out = parseCalcAction('```calc\nX\n```\n[ACTION: rewrite]');
+    await expect(calcAdapter.applyAction(bridge, calcDoc(), calcSel(null), out)).rejects.toThrow('no selection');
   });
 });

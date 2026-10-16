@@ -5,26 +5,35 @@
  * new adapters, not new architectures.
  */
 
-import type { BridgeClient, BridgeDocument, BlockParagraph } from '../bridge/client.js';
+import type { BridgeClient, BridgeDocument, BlockParagraph, CalcInfo } from '../bridge/client.js';
 
-/** Writer action vocabulary (see README / writer adapter). */
+/** Action vocabulary (Writer tags first, then Calc; see the adapters). */
 export type AgentAction =
   | 'none'
   | 'continue'
+  // Writer
   | 'insert'
   | 'insert-top'
   | 'insert-after'
   | 'rewrite'
   | 'rewrite-at'
-  | 'delete-at';
+  | 'delete-at'
+  // Calc
+  | 'write-cells'
+  | 'insert-rows'
+  | 'insert-cols';
 
 /** A parsed agent action tag plus its content block. */
 export interface ActionOutcome {
   action: AgentAction;
-  /** Parsed content paragraphs; null for none/continue/delete-at or missing block. */
+  /** Writer: parsed content paragraphs; null for actions without content. */
   block: BlockParagraph[] | null;
-  /** 1-based paragraph address for insert-after / rewrite-at / delete-at. */
+  /** Calc: parsed TSV rows; null for actions without content. */
+  grid: string[][] | null;
+  /** Writer: 1-based paragraph address for insert-after/rewrite-at/delete-at. */
   target: number | null;
+  /** Calc: A1 anchor address (e.g. "B2"), when the tag carries one. */
+  address: string | null;
 }
 
 /** What the server knows about the selection right now. */
@@ -34,6 +43,8 @@ export interface SelectionInfo {
   text: string | null;
   /** Style name of the paragraph containing the cursor. */
   cursorStyle: string | null;
+  /** Calc only: sheets, selection grid, active-sheet data. */
+  calc: CalcInfo | null;
 }
 
 /** Result of applying one action. */
@@ -66,5 +77,6 @@ export interface ModuleAdapter {
   applyAction(bridge: BridgeClient, doc: BridgeDocument, sel: SelectionInfo, outcome: ActionOutcome): Promise<AppliedAction>;
 }
 
-/** The built-in Writer adapter (Phase 1). */
+/** The built-in adapters: Writer (Phase 1), Calc (Phase 2). */
 export { writerAdapter } from './writer.js';
+export { calcAdapter } from './calc.js';

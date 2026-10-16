@@ -186,13 +186,32 @@ export function parseContentBlock(block: string): BlockParagraph[] {
 }
 
 /**
- * Extract the ```writer fenced block from a reply (the content payload
- * for document actions). Returns null when the reply contains none.
- * The LAST fence wins — some agents echo the block while explaining;
- * like action tags, the final one is the operative content.
+ * Extract a fenced content block from a reply (the content payload for
+ * document actions). `lang` selects the fence language ("writer" for
+ * markdown-lite paragraphs, "calc" for TSV). Returns null when the reply
+ * contains none. The LAST fence wins — some agents echo the block while
+ * explaining; like action tags, the final one is the operative content.
  */
-export function extractContentBlock(reply: string): string | null {
-  const fences = [...reply.matchAll(/```writer\s*\n([\s\S]*?)```/gi)];
+export function extractContentBlock(reply: string, lang: string = 'writer'): string | null {
+  const re = new RegExp('```' + lang + '\\s*\\n([\\s\\S]*?)```', 'gi');
+  const fences = [...reply.matchAll(re)];
   const last = fences[fences.length - 1];
   return last?.[1] ?? null;
+}
+
+/**
+ * Parse a ```calc content block into TSV rows: one sheet row per line,
+ * cells split on tabs. Action tags are protocol, never content — they are
+ * dropped wherever they appear. Trailing empty lines are removed.
+ */
+export function parseTsvBlock(block: string): string[][] {
+  const rows: string[][] = [];
+  for (const raw of block.replace(/\r\n/g, '\n').split('\n')) {
+    if (/^\s*\[ACTION:\s*[^\]]*\]\s*$/i.test(raw)) continue;
+    rows.push(raw.split('\t'));
+  }
+  while (rows.length > 0 && (rows[rows.length - 1] ?? []).every((c) => c.trim() === '')) {
+    rows.pop();
+  }
+  return rows;
 }

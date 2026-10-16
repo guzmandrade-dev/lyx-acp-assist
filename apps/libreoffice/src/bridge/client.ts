@@ -114,6 +114,46 @@ export interface WriterParagraph {
   style: string;
 }
 
+/** One sheet in a Calc document. */
+export interface CalcSheet {
+  name: string;
+  /** Used range in A1 notation (e.g. "A1:D12"), sheet-relative. */
+  usedRange: string;
+  active: boolean;
+}
+
+/** A capped values/formulas grid read from a Calc sheet. */
+export interface CalcGrid {
+  values: string[][];
+  /** Full grid (plain values where no formula); null when none has one. */
+  formulas: string[][] | null;
+  truncated: boolean;
+}
+
+/** The user's current selection in a Calc document. */
+export interface CalcSelection extends CalcGrid {
+  sheet: string;
+  /** All selected ranges ("Sheet1!A1:B3"); data below is the FIRST range. */
+  ranges: string[];
+  /** Top-left cell of the first range (A1). */
+  anchor: string;
+  rows: number;
+  cols: number;
+}
+
+/** The active sheet's used-range data (the agent's window on the sheet). */
+export interface CalcSheetData extends CalcGrid {
+  sheet: string;
+  range: string;
+}
+
+/** Calc branch of /document (see _read_calc in the bridge). */
+export interface CalcInfo {
+  sheets: CalcSheet[];
+  selection: CalcSelection | null;
+  data: CalcSheetData | null;
+}
+
 export interface BridgeDocument {
   active: boolean;
   module: string;
@@ -125,6 +165,8 @@ export interface BridgeDocument {
   text?: string;
   /** Writer only: selected text ranges, null when nothing is selected. */
   selection?: string[] | null;
+  /** Calc only: sheets, selection data, active-sheet data. */
+  calc?: CalcInfo;
   /** Style name of the paragraph containing the cursor. */
   cursorStyle?: string | null;
   /** True when the paragraph list is preview-truncated (lazy fetch). */
@@ -146,16 +188,25 @@ export interface BlockParagraph {
   runs: BlockRun[];
 }
 
-export type EditMode = 'insert' | 'insert-top' | 'insert-after' | 'rewrite' | 'rewrite-at' | 'delete-at';
+export type EditMode =
+  | 'insert' | 'insert-top' | 'insert-after' | 'rewrite' | 'rewrite-at' | 'delete-at'
+  // Calc
+  | 'write-cells' | 'insert-rows' | 'insert-cols';
 
 export interface EditPayload {
   mode: EditMode;
   /** 1-based paragraph address for insert-after / rewrite-at / delete-at. */
   target?: number | null;
+  /** Calc: A1 anchor cell for write-cells / insert-rows / insert-cols. */
+  anchor?: string | null;
+  /** Calc: number of rows/columns to insert (default 1). */
+  count?: number;
   /** Record the edit as a tracked change (default true). */
   tracked?: boolean;
-  /** Content paragraphs; required for every mode except delete-at. */
+  /** Writer: content paragraphs; required for every mode except delete-at. */
   paragraphs?: BlockParagraph[];
+  /** Calc: TSV rows of cells for write-cells (strings; '=' prefix = formula). */
+  rows?: string[][];
 }
 
 export interface EditResult {
@@ -163,6 +214,9 @@ export interface EditResult {
   title: string;
   mode: EditMode;
   target?: number | null;
+  /** Calc: sheet name and resolved A1 anchor. */
+  sheet?: string;
+  anchor?: string;
 }
 
 // --- client ----------------------------------------------------------------

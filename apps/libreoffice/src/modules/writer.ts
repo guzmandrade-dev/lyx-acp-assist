@@ -87,6 +87,7 @@ export const writerAdapter: ModuleAdapter = {
       'Prefer paragraph styles that already appear in the document context.',
       '',
       'Rules for document actions:',
+      '- The document context lists paragraphs as [pN] ids with their styles.',
       '- The action tag must be the very last line of your reply.',
       '- The action is applied to the LIVE document, recorded as a tracked',
       '  change the user can accept or reject in Edit > Track Changes.',

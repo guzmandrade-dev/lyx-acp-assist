@@ -73,12 +73,12 @@ function renderInlineFormatting(html) {
 function renderAssistantText(full, applied) {
   let text = full.replace(/\[ACTION:\s*[^\]]*\]/gi, '').trim();
   if (applied && applied !== 'none') {
-    text = text.replace(/```writer\s*\n[\s\S]*?```\s*/g, '').trim();
+    text = text.replace(/```(?:writer|calc)\s*\n[\s\S]*?```\s*/g, '').trim();
   }
   if (!text) return '';
 
   const parts = [];
-  const regex = /```writer\s*\n([\s\S]*?)```/g;
+  const regex = /```(?:writer|calc)\s*\n([\s\S]*?)```/g;
   let lastIndex = 0;
   let match;
   while ((match = regex.exec(text)) !== null) {
@@ -139,6 +139,7 @@ function renderConversation(turns) {
               : null,
         target: turn.meta.target ?? null,
         target2: turn.meta.target2 ?? null,
+        address: turn.meta.address ?? null,
         cancelled: turn.meta.result === 'cancelled',
         error: turn.meta.result === 'error' ? turn.meta.error : null,
       });
@@ -201,7 +202,7 @@ function messagePlainText(div) {
   if (!div.classList.contains('assistant')) return raw;
   let text = raw.replace(/\[ACTION:\s*[^\]]*\]/gi, '').trim();
   if (div._applied && div._applied !== 'none') {
-    text = text.replace(/```writer\s*\n[\s\S]*?```\s*/g, '').trim();
+    text = text.replace(/```(?:writer|calc)\s*\n[\s\S]*?```\s*/g, '').trim();
   }
   return text;
 }
@@ -634,7 +635,7 @@ async function reconnect() {
   }
 }
 
-function renderFeedback(msgDiv, { applied, target, target2, cancelled, error }) {
+function renderFeedback(msgDiv, { applied, target, target2, address, cancelled, error }) {
   const feedback = document.createElement('div');
   let prefix = '';
   let undoLabel = 'Undo edit';
@@ -668,6 +669,15 @@ function renderFeedback(msgDiv, { applied, target, target2, cancelled, error }) 
         break;
       case 'rewrite':
         prefix = 'Replaced the selection in LibreOffice';
+        break;
+      case 'write-cells':
+        prefix = `Wrote cells at ${address ?? 'the selection'} in LibreOffice`;
+        break;
+      case 'insert-rows':
+        prefix = `Inserted a row above ${address ?? 'the selection'} in LibreOffice`;
+        break;
+      case 'insert-cols':
+        prefix = `Inserted a column left of ${address ?? 'the selection'} in LibreOffice`;
         break;
       case 'rewrite-at':
         prefix = `Replaced [p${target ?? '?'}] in LibreOffice`;
@@ -755,6 +765,7 @@ async function streamMessage(message) {
   let applied = null;
   let target = null;
   let target2 = null;
+  let address = null;
   let cancelled = false;
   let error = null;
   let stopReason = null;
@@ -816,6 +827,7 @@ async function streamMessage(message) {
           applied = payload.applied;
           target = payload.target ?? null;
           target2 = payload.target2 ?? null;
+          address = payload.address ?? null;
           div._applied = applied; // quote strips the ```writer block like the render does
         } else if (payload.appliedStep) {
           // Boundary between two edits of one multi-action run: close the
@@ -825,8 +837,8 @@ async function streamMessage(message) {
           div._applied = applied;
           textDiv.innerHTML =
             renderAssistantText(full, applied) || (started ? '' : '<p>(no response)</p>');
-          renderFeedback(div, { applied, target, target2, cancelled, error });
-          streamSteps.push({ div, textDiv, text: full, applied, target, target2, error, cancelled });
+          renderFeedback(div, { applied, target, target2, address, cancelled, error });
+          streamSteps.push({ div, textDiv, text: full, applied, target, target2, address, error, cancelled });
           const next = addMessage('assistant', '');
           div = next.div;
           textDiv = next.textDiv;
@@ -835,6 +847,7 @@ async function streamMessage(message) {
           applied = null;
           target = null;
           target2 = null;
+          address = null;
           error = null;
           cancelled = false;
           full = '';
@@ -865,7 +878,7 @@ async function streamMessage(message) {
   div._rawText = full; // final raw text for the copy/quote actions
   div._applied = applied;
   textDiv.innerHTML = renderAssistantText(full, applied) || (started ? '' : '<p>(no response)</p>');
-  renderFeedback(div, { applied, target, target2, cancelled, error });
+  renderFeedback(div, { applied, target, target2, address, cancelled, error });
   if (stopReason) {
     const appliedCount = streamSteps.filter((s) => s.applied && s.applied !== 'none').length + (applied && applied !== 'none' ? 1 : 0);
     const note = document.createElement('div');
