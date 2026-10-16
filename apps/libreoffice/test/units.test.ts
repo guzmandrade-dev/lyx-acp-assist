@@ -105,12 +105,47 @@ describe('parseContentBlock', () => {
     expect(parseContentBlock('one\ntwo').length).toBe(1);
     expect(parseContentBlock('one\n\ntwo').length).toBe(2);
   });
+
+  it('never turns action tags into content (agents put them inside fences)', () => {
+    const block = '## Future Work\nA paragraph.\n[ACTION: insert-after p2]';
+    expect(parseContentBlock(block)).toEqual([
+      { style: 'Heading 2', runs: [{ text: 'Future Work', bold: false, italic: false, code: false }] },
+      { style: null, runs: [{ text: 'A paragraph.', bold: false, italic: false, code: false }] },
+    ]);
+  });
+
+  it('regression: live-agent reply with tag inside the fence, echoed block', () => {
+    const reply = [
+      '```writer',
+      '## Future Work',
+      'We plan to extend this.',
+      '[ACTION: insert-after p2]',
+      '```',
+      '```writer',
+      '## Future Work',
+      'We plan to extend this.',
+      '[ACTION: insert-after p2]',
+      '```',
+    ].join('\n');
+    const out = parseAction(reply);
+    expect(out.action).toBe('insert-after');
+    expect(out.target).toBe(2);
+    expect(out.block).toEqual([
+      { style: 'Heading 2', runs: [{ text: 'Future Work', bold: false, italic: false, code: false }] },
+      { style: null, runs: [{ text: 'We plan to extend this.', bold: false, italic: false, code: false }] },
+    ]);
+  });
 });
 
 describe('extractContentBlock', () => {
   it('extracts the writer fence and ignores others', () => {
     expect(extractContentBlock('```text\nnope\n```\n```writer\nyes\n```')).toBe('yes\n');
     expect(extractContentBlock('no fences')).toBeNull();
+  });
+
+  it('takes the LAST writer fence when the block is echoed', () => {
+    const reply = '```writer\nfirst\n```\nExplanation.\n```writer\nsecond\n```';
+    expect(extractContentBlock(reply)).toBe('second\n');
   });
 });
 

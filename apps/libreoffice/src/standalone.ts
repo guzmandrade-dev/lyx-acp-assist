@@ -12,7 +12,7 @@ import { createServer } from './server.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const publicDir = path.join(__dirname, '..', '..', 'public');
+const publicDir = path.join(__dirname, '..', 'public');
 if (!fs.existsSync(path.join(publicDir, 'index.html'))) {
   throw new Error(`public dir not found at ${publicDir}`);
 }
@@ -26,8 +26,8 @@ const server = createServer({
 });
 
 const port = process.env.PORT ? Number.parseInt(process.env.PORT, 10) : 0;
-server.listen(port, '127.0.0.1', () => {
-  const address = server.address();
+const httpServer = server.listen(port, '127.0.0.1', () => {
+  const address = httpServer.address();
   const actual = typeof address === 'object' && address ? address.port : port;
   console.log(`LibreOffice ACP Assist dev server at http://127.0.0.1:${actual}`);
 });

@@ -122,6 +122,13 @@ export function parseContentBlock(block: string): BlockParagraph[] {
 
   for (const raw of lines) {
     const line = raw.trimEnd();
+    // Agents sometimes put the action tag INSIDE the fenced block (and
+    // echo the block twice). Tags are protocol, never content: drop them
+    // wherever they appear so they can never land in the document.
+    if (/^\s*\[ACTION:\s*[^\]]*\]\s*$/i.test(line)) {
+      flush();
+      continue;
+    }
     if (inCodeFence) {
       if (line.trim().startsWith('```')) {
         for (const l of codeLines) paragraphs.push({ style: 'Preformatted Text', runs: [{ text: l }] });
@@ -181,8 +188,11 @@ export function parseContentBlock(block: string): BlockParagraph[] {
 /**
  * Extract the ```writer fenced block from a reply (the content payload
  * for document actions). Returns null when the reply contains none.
+ * The LAST fence wins — some agents echo the block while explaining;
+ * like action tags, the final one is the operative content.
  */
 export function extractContentBlock(reply: string): string | null {
-  const fence = reply.match(/```writer\s*\n([\s\S]*?)```/i);
-  return fence?.[1] ?? null;
+  const fences = [...reply.matchAll(/```writer\s*\n([\s\S]*?)```/gi)];
+  const last = fences[fences.length - 1];
+  return last?.[1] ?? null;
 }
