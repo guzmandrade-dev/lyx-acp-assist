@@ -1,0 +1,80 @@
+{
+  "name": "libreoffice-acp-assist",
+  "version": "1.0.0",
+  "description": "Copilot-for-Word-style LLM assistant for LibreOffice: ACP agent companion with an in-process UNO bridge (.oxt).",
+  "author": {
+    "name": "guzmandrade-dev",
+    "email": "117118816+guzmandrade-dev@users.noreply.github.com"
+  },
+  "type": "module",
+  "main": "./dist/electron/main.js",
+  "scripts": {
+    "build": "tsc && tsc -p tsconfig.preload.json",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit",
+    "start": "npm run build && electron ./dist/electron/main.js",
+    "package": "npm run build && electron-builder",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.1.1",
+    "electron": "^44.5.1",
+    "electron-builder": "^26.15.3",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.10"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "^1.7.0",
+    "express": "^5.2.1",
+    "zod": "^4.6.5"
+  },
+  "build": {
+    "appId": "com.guzma.libreoffice-acp-assist",
+    "productName": "LibreOffice ACP Assist",
+    "directories": {
+      "output": "dist-release"
+    },
+    "files": [
+      "dist/**/*",
+      "public/**/*",
+      "!test/**",
+      "!spikes/**"
+    ],
+    "icon": "build/icon.ico",
+    "win": {
+      "target": [
+        "nsis",
+        "portable",
+        "zip"
+      ],
+      "icon": "build/icon.ico"
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "Office",
+      "icon": "build/icon-512.png"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb",
+        "tar.gz"
+      ],
+      "category": "Office",
+      "icon": "build/icon-256.png"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false
+    }
+  }
+}
