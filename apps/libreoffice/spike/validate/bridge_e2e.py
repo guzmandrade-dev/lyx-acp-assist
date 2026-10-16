@@ -1,7 +1,8 @@
-"""Phase 0 spike, step B: end-to-end test of the in-process HTTP bridge.
+"""Phase 1 bridge e2e: HTTP suite for the in-process bridge (.oxt).
 
-Prerequisites: LibreOffice running with --accept socket (port 2002) and the
-bridge started (service:org.libreofficeacp.bridge?start).
+Prerequisites: LibreOffice running with --accept socket (port 2002), the
+bridge extension installed, and the bridge started
+(service:org.libreofficeacp.bridge?start).
 
 Run with the bundled LibreOffice Python:
   "C:\\Program Files\\LibreOffice\\program\\python.exe" bridge_e2e.py
@@ -9,19 +10,22 @@ Run with the bundled LibreOffice Python:
 
 import json
 import os
+import sys
 import threading
 import time
-import urllib.request
 import urllib.error
+import urllib.request
 
 import uno
 
 RESULTS = []
+PORT = None
+TOKEN = None
 
 
 def check(name, ok, detail=""):
     status = "PASS" if ok else "FAIL"
-    RESULTS.append((status, name, detail))
+    RESULTS.append((status, name))
     print(f"[{status}] {name}" + (f" — {detail}" if detail else ""))
 
 
@@ -61,12 +65,18 @@ def connect_uno(port=2002):
         f"uno:socket,host=localhost,port={port};urp;StarOffice.ComponentContext")
 
 
+def para_runs(runs, style=None):
+    p = {"runs": runs}
+    if style:
+        p["style"] = style
+    return p
+
+
 def main():
     global PORT, TOKEN
     PORT, TOKEN = load_bridge()
     check("discovery file read", True, f"port={PORT}")
 
-    # auth check: request without token must be rejected
     code, body = http("GET", "/status", token=None)
     check("auth: request without token rejected", code == 401, f"code={code}")
 
@@ -74,75 +84,147 @@ def main():
     smgr = ctx.ServiceManager
     desktop = smgr.createInstanceWithContext("com.sun.star.frame.Desktop", ctx)
 
-    # status before any document
     code, status = http("GET", "/status", token=TOKEN)
-    check("GET /status (no document)", code == 200 and status.get("active") in (True, False),
+    check("GET /status (no document)", code == 200 and status.get("active") is False,
           f"code={code}, status={status}")
 
-    # open a Writer doc with seed text (via UNO, main thread)
+    # Seed a Writer document via UNO (main thread): two paragraphs.
     doc = desktop.loadComponentFromURL("private:factory/swriter", "_blank", 0, ())
     text = doc.Text
+    from com.sun.star.text.ControlCharacter import PARAGRAPH_BREAK
     text.getEnd().setString("Spike paragraph one.")
     cur = text.createTextCursor()
     cur.gotoEnd(False)
-    from com.sun.star.text.ControlCharacter import PARAGRAPH_BREAK
     text.insertControlCharacter(cur, PARAGRAPH_BREAK, False)
     text.insertString(cur, "Spike paragraph two.", False)
     vc = doc.getCurrentController().getViewCursor()
-    vc.gotoEnd(False)  # deterministic: inserts land at the cursor
+    vc.gotoEnd(False)  # deterministic: cursor after the last paragraph
 
     code, status = http("GET", "/status", token=TOKEN)
     check("GET /status sees active Writer doc",
           code == 200 and status.get("active") and status.get("module") == "writer",
-          f"module={status.get('module')}, title={status.get('title')!r}")
+          f"module={status.get('module')}, url={status.get('url')!r}")
 
     code, docinfo = http("GET", "/document", token=TOKEN)
-    ok = (code == 200 and docinfo.get("module") == "writer"
+    check("GET /document returns paragraphs + cursorStyle + selection",
+          code == 200
           and [p["text"] for p in docinfo.get("paragraphs", [])]
           == ["Spike paragraph one.", "Spike paragraph two."]
-          and docinfo["paragraphs"][0]["style"] in ("Default Style", "Standard", "Text Body"))
-    check("GET /document returns paragraphs with styles", ok,
-          f"paragraphs={[(p['text'][:18], p['style']) for p in docinfo.get('paragraphs', [])]}")
+          and isinstance(docinfo.get("cursorStyle"), str)
+          and docinfo.get("selection") is None,
+          f"paras={[(p['text'][:18], p['style']) for p in docinfo.get('paragraphs', [])]}")
 
     code, docs = http("GET", "/documents", token=TOKEN)
-    check("GET /documents lists open documents",
-          code == 200 and any(d["active"] and d["module"] == "writer"
-                              for d in docs.get("documents", [])),
+    check("GET /documents lists the document with url",
+          code == 200 and len(docs["documents"]) == 1 and docs["documents"][0]["active"],
           f"docs={docs.get('documents')}")
 
-    # formatted, tracked insert: leading \n makes it a fresh paragraph
-    code, out = http("POST", "/insert", token=TOKEN,
-                     payload={"text": "\nSpiked HTTP heading", "style": "Heading 2",
-                              "bold": True, "tracked": True})
-    check("POST /insert formatted + tracked", code == 200 and out.get("applied"),
-          f"out={out}")
-
+    # --- edit: insert at cursor (fresh paragraph below, heading + bold run)
+    code, out = http("POST", "/edit", token=TOKEN, payload={
+        "mode": "insert",
+        "paragraphs": [
+            para_runs([{"text": "Spiked ", "bold": True}, {"text": "heading"}],
+                      style="Heading 2"),
+            para_runs([{"text": "plain tail"}]),
+        ],
+    })
     paras = [(p.getString(), p.getPropertyValue("ParaStyleName"),
-              p.getPropertyValue("CharWeight"))
-             for p in doc.getText().createEnumeration()]
-    ok = (len(paras) == 3
-          and paras[2][0] == "Spiked HTTP heading"
-          and paras[2][1] == "Heading 2"
-          and paras[2][2] >= 100.0)
-    check("insert applied as fresh Heading 2 + bold paragraph", ok,
-          f"paras={[(t[:24], s, w) for t, s, w in paras]}")
-
-    redlines = list(doc.getRedlines().createEnumeration())
-    check("insert recorded as redline (tracked changes)",
-          len(redlines) >= 1,
-          f"{len(redlines)} redline(s)")
-
-    # multi-paragraph insert over HTTP: two fresh paragraphs at the cursor
-    code, out = http("POST", "/insert", token=TOKEN,
-                     payload={"text": "\nLine A\nLine B", "tracked": True})
-    paras = [p.getString() for p in doc.getText().createEnumeration()]
-    check("POST /insert multi-paragraph creates real paragraphs",
+              p.getPropertyValue("CharWeight")) for p in text.createEnumeration()]
+    check("edit insert: fresh paragraphs at cursor with style + bold run",
           code == 200 and out.get("applied")
-          and paras == ["Spike paragraph one.", "Spike paragraph two.",
-                        "Spiked HTTP heading", "Line A", "Line B"],
-          f"{len(paras)} paragraphs: {paras}")
+          and [p[0] for p in paras]
+          == ["Spike paragraph one.", "Spike paragraph two.",
+              "Spiked heading", "plain tail"]
+          and paras[2][1] == "Heading 2" and paras[2][2] >= 100.0,
+          f"paras={[(t[:20], s, w) for t, s, w in paras]}")
 
-    # events long-poll: subscribe, then change selection via UNO
+    # --- edit: insert-after p1
+    code, out = http("POST", "/edit", token=TOKEN, payload={
+        "mode": "insert-after", "target": 1,
+        "paragraphs": [para_runs([{"text": "After one"}], style="Heading 3")],
+    })
+    paras = [p.getString() for p in text.createEnumeration()]
+    check("edit insert-after p1 lands between p1 and p2",
+          code == 200 and out.get("applied")
+          and paras == ["Spike paragraph one.", "After one", "Spike paragraph two.",
+                        "Spiked heading", "plain tail"],
+          f"paras={paras}")
+
+    # --- edit: rewrite-at p3 (replace whole paragraph with two paragraphs)
+    code, out = http("POST", "/edit", token=TOKEN, payload={
+        "mode": "rewrite-at", "target": 3,
+        "paragraphs": [
+            para_runs([{"text": "Two dot A", "italic": True}]),
+            para_runs([{"text": "Two dot B"}]),
+        ],
+    })
+    paras = [p.getString() for p in text.createEnumeration()]
+    # Tracked changes keep the deleted text in the MODEL (the user sees it
+    # struck through pending accept); the typed replacement precedes it.
+    check("edit rewrite-at p3 replaces and splits the paragraph",
+          code == 200 and out.get("applied")
+          and len(paras) == 6
+          and paras[2].startswith("Two dot A")
+          and paras[2].endswith("Spike paragraph two.")
+          and paras[3] == "Two dot B",
+          f"paras={paras}")
+
+    # --- edit: rewrite (selection)
+    enum5 = list(text.createEnumeration())
+    sel_cursor = text.createTextCursorByRange(enum5[5])  # "plain tail"
+    doc.getCurrentController().select(sel_cursor)
+    code, out = http("POST", "/edit", token=TOKEN, payload={
+        "mode": "rewrite",
+        "paragraphs": [para_runs([{"text": "replaced tail"}])],
+    })
+    paras = [p.getString() for p in text.createEnumeration()]
+    check("edit rewrite replaces the selection in place",
+          code == 200 and out.get("applied")
+          and paras[-1] == "replaced tail" and len(paras) == 6,
+          f"paras={paras}")
+
+    # --- tracked changes recorded
+    rls = list(doc.getRedlines().createEnumeration())
+    check("edits recorded as redlines (tracked changes)", len(rls) >= 4,
+          f"{len(rls)} redlines")
+
+    # --- lazy paragraph fetch
+    code, one = http("GET", "/document/p/1", token=TOKEN)
+    check("GET /document/p/1 returns the full paragraph",
+          code == 200 and one["text"] == "After one" and one["i"] == 1,
+          f"one={one}")
+
+    # --- out-of-range target is refused, nothing written
+    before = [p.getString() for p in text.createEnumeration()]
+    code, out = http("POST", "/edit", token=TOKEN, payload={
+        "mode": "delete-at", "target": 99,
+    })
+    after = [p.getString() for p in text.createEnumeration()]
+    check("out-of-range target refused without touching the document",
+          code == 500 and "does not exist" in str(out.get("error")) and before == after,
+          f"code={code}")
+
+    # --- edit: delete-at p2, UNTRACKED (real deletion so undo is observable)
+    before = [p.getString() for p in text.createEnumeration()]
+    code, out = http("POST", "/edit", token=TOKEN, payload={
+        "mode": "delete-at", "target": 2, "tracked": False,
+    })
+    paras = [p.getString() for p in text.createEnumeration()]
+    check("edit delete-at p2 removes the paragraph (untracked)",
+          code == 200 and out.get("applied")
+          and paras == ["Spike paragraph one.",
+                        "Two dot ASpike paragraph two.", "Two dot B",
+                        "Spiked heading", "replaced tail"],
+          f"paras={paras}")
+
+    # --- undo reverts the delete (one labeled transaction)
+    code, out = http("POST", "/undo", token=TOKEN)
+    paras = [p.getString() for p in text.createEnumeration()]
+    check("undo reverts the last edit as one transaction",
+          code == 200 and out.get("undone") and paras == before,
+          f"paras={paras}")
+
+    # --- events long-poll sees selection-changed
     events_result = {}
 
     def poll():
@@ -152,24 +234,30 @@ def main():
     t.start()
     time.sleep(1.0)
     dispatcher = smgr.createInstanceWithContext("com.sun.star.frame.DispatchHelper", ctx)
-    dispatcher.executeDispatch(doc.getCurrentController().getFrame(), ".uno:SelectAll", "", 0, ())
-    dispatcher.executeDispatch(doc.getCurrentController().getFrame(), ".uno:GoDown", "", 0, ())
+    frame = doc.getCurrentController().getFrame()
+    dispatcher.executeDispatch(frame, ".uno:SelectAll", "", 0, ())
+    dispatcher.executeDispatch(frame, ".uno:GoDown", "", 0, ())
     t.join(timeout=20)
     ev = events_result.get("resp", (0, {}))
     kinds = [e["type"] for e in ev[1].get("events", [])]
     check("GET /events long-poll receives selection-changed",
           ev[0] == 200 and "selection-changed" in kinds,
-          f"events={kinds}")
+          f"{len(kinds)} events")
 
-    # undo via HTTP reverts the last insert (one undo context = both paragraphs)
-    code, out = http("POST", "/undo", token=TOKEN)
-    paras = [p.getString() for p in doc.getText().createEnumeration()]
-    check("POST /undo reverts last edit", code == 200 and out.get("undone")
-          and paras == ["Spike paragraph one.", "Spike paragraph two.",
-                        "Spiked HTTP heading"],
-          f"out={out}, {len(paras)} paragraphs")
+    # --- activate (second document)
+    doc2 = desktop.loadComponentFromURL("private:factory/swriter", "_blank", 0, ())
+    doc2.Text.getEnd().setString("Second document body.")
+    time.sleep(0.5)
+    code, out = http("POST", "/activate", token=TOKEN,
+                     payload={"url": doc.getURL() or doc.getTitle()})
+    time.sleep(0.5)
+    code2, st = http("GET", "/status", token=TOKEN)
+    active_title = st.get("title")
+    check("POST /activate switches the active document",
+          code == 200 and out.get("activated") and active_title == doc.getTitle(),
+          f"activated={out.get('activated')!r}, now active={active_title!r}")
 
-    # stop the bridge via UNO dispatch (menu path)
+    # --- stop shuts the server down (discovery record removed)
     dispatcher.executeDispatch(desktop, "service:org.libreofficeacp.bridge?stop", "", 0, ())
     time.sleep(1)
     try:
@@ -186,5 +274,4 @@ def main():
 
 
 if __name__ == "__main__":
-    sys_exit_code = main()
-    raise SystemExit(sys_exit_code)
+    sys.exit(main())

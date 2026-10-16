@@ -125,18 +125,55 @@ companion outside.**
    `http://openoffice.org/2000/description` is rejected by unopkg in 26.8).
 9. **pyuno object identity**: `d is other` is always False across calls
    (fresh wrappers); compare by `getTitle()`/URL or UNO equality, not `is`.
+10. **Only the VIEW cursor has typing semantics.** Plain `XTextCursor`
+    inserts never advance the cursor past the written text (and
+    `insertString` on a text cursor can land *before* previously written
+    text — probes 1–3), so multi-paragraph writes through a text cursor
+    degenerate. Every bridge edit mode therefore positions the
+    **view cursor** (`vc.gotoRange(...)`) and types through it.
+11. **`createTextCursorByRange(para)` returns a COLLAPSED cursor** (at the
+    range end), not an expanded range. To select a paragraph's text:
+    `vc.gotoRange(para.getStart(), False)` then `vc.goRight(n, True)`.
+    Verified working for delete/rewrite selections (probe 5/7).
+12. **insert-top needs the content-then-break choreography**: break-first
+    at the document start degenerates (empty paragraph + content merges
+    into the old first paragraph). Insert content first, then a break
+    after EVERY paragraph — verified by probe 7 (T1/T1b).
+13. **Tracked deletions keep ghost text in model reads**: with
+    `RecordChanges` on, deleted text stays in the document model until
+    the user accepts the redline — paragraph enumeration `getString()`
+    still includes it, with the typed replacement PRECEDING the ghost
+    (probe 6/7 + e2e). Consequences: (a) `/document` reads show the
+    pre-accept state — the agent's context says so; (b) paragraph indices
+    stay stable across pending deletions, which keeps [pN] addressing
+    consistent in multi-action runs; (c) e2e assertions on edited
+    paragraphs must expect `NEW + OLD` concatenation in tracked mode.
+    Untracked edits (`tracked: false`) delete for real.
+14. **Set run properties explicitly ON and OFF** (CharWeight 100 /
+    FontSlant NONE when a flag is absent): typing continues the previous
+    run's direct character formatting, so an unstyled run after a bold
+    run would silently inherit bold.
 
 ## Spike artifacts (Phase 0, all 26 checks passed, 2026-10-16)
 
-- `spike/oxt/` — the bridge `.oxt` sources: `acpbridge.py` (~380 lines:
-  HTTP server, discovery records, token auth, `/status`, `/document`,
-  `/documents`, `/insert` (text, style, bold, tracked), `/undo`,
-  `/events?since&timeout` long-poll), `Addons.xcu` (ACP Assist menu),
-  `description.xml`, `META-INF/manifest.xml`.
+- `spike/oxt/` — the bridge `.oxt` sources: `acpbridge.py` (HTTP server,
+  discovery records, token auth, `/status`, `/document` (paragraphs +
+  styles + selection + cursorStyle + lazy preview mode), `/documents`,
+  `/document/p/:i` lazy paragraph fetch, `/edit` (modes: insert,
+  insert-top, insert-after, rewrite, rewrite-at, delete-at; structured
+  paragraphs with per-run bold/italic/code + per-paragraph styles,
+  tracked-changes + one undo transaction per edit), `/activate`,
+  `/undo`, `/events?since&timeout` long-poll), `Addons.xcu` (ACP Assist
+  menu), `description.xml`, `META-INF/manifest.xml`.
 - `spike/validate/client_validate.py` — UNO-mechanics suite (13 checks), run
   against a socket-connected LibreOffice with a scratch profile.
-- `spike/validate/bridge_e2e.py` — end-to-end bridge suite (13 checks),
+- `spike/validate/bridge_e2e.py` — end-to-end bridge suite (18 checks),
   reads the discovery record, exercises every endpoint over HTTP.
+- `spike/validate/bridge_ctl.py` — start/stop the bridge over the UNO
+  socket (test helper).
+- `spike/validate/cursor_probe*.py` — the empirical UNO cursor-semantics
+  probes that produced rules 10–14 above (kept for reference; not part of
+  the pass/fail suites).
 - Re-run cycle: repackage (zip `spike/oxt` contents with the bundled python's
   `zipfile` — forward-slash entries matter), `unopkg remove` + `add` with the
   scratch profile env, relaunch soffice with `--accept`, dispatch
