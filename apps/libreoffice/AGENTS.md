@@ -247,15 +247,18 @@ Phase 1 (Writer MVP) is complete and live-tested end-to-end with opencode:
 companion ported from lyx-acp-assist, multi-action loop, bridge client,
 Writer adapter — all 37 unit/server tests pass.
 
-Phase 2 (Calc) is implemented and bridge-validated (2026-10-16):
+Phase 2 (Calc) is complete and live-tested end-to-end with opencode
+(2026-10-17, re-verified independently):
 - Bridge: Calc read (sheets, selection values+formulas, active-sheet
   used-range data, all capped/trimmed) + write-cells / insert-rows /
   insert-cols inside one undo transaction; e2e 25/25, mechanics 13/13.
 - Companion: `src/modules/calc.ts` adapter (A1 addressing, ```calc TSV
   blocks, write-cells/rewrite/insert-rows/insert-cols action tags),
   Calc-aware context/selection building, UI feedback labels.
-- NOT yet done: a live agent (opencode) regression against a real Calc
-  document, like the one done for Writer.
+- Live regression (opencode): the agent ran a two-action run
+  (insert-cols E1, then write-cells E1 with correct per-row
+  =Qty*Price formulas) and stopped cleanly; both edits reverted with
+  one undo each.
 
 Next: Phase 3 (Impress/Draw) — slide outline context, slide/frame actions
 on the same adapter pattern. Roadmap and scope live in README.md.
