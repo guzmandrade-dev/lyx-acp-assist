@@ -343,6 +343,209 @@ def main():
           code == 500 and "unknown edit mode" in str(out.get("error")),
           f"code={code}, err={out.get('error')!r}")
 
+    # --- Impress: /document read + slide edits + journal undo -------------
+    imp = desktop.loadComponentFromURL("private:factory/simpress", "_blank", 0, ())
+    imp.getCurrentController().getFrame().activate()
+    time.sleep(0.5)
+    ipages = imp.getDrawPages()
+    ipages.getByIndex(0).getByIndex(0).getText().setString("Q1 Results")
+    ipages.getByIndex(0).getByIndex(1).getText().setString("Revenue up\nCosts flat")
+
+    def deck_texts(doc):
+        pages = doc.getDrawPages()
+        out = []
+        for i in range(pages.getCount()):
+            p = pages.getByIndex(i)
+            out.append([(p.getByIndex(j).getShapeType().rsplit(".", 1)[-1],
+                         p.getByIndex(j).getText().getString())
+                        for j in range(p.getCount())])
+        return out
+
+    code, st = http("GET", "/status", token=TOKEN)
+    check("impress: GET /status sees the active Impress document",
+          code == 200 and st.get("active") and st.get("module") == "impress"
+          and st.get("recordChanges") is None,
+          f"module={st.get('module')}, recordChanges={st.get('recordChanges')!r}")
+
+    code, d = http("GET", "/document", token=TOKEN)
+    slides = d.get("slides", [])
+    check("impress: /document returns the slide outline with kinds",
+          code == 200 and d.get("module") == "impress"
+          and len(slides) == 1 and slides[0]["current"] is True
+          and [(s["kind"], s["text"]) for s in slides[0]["shapes"]]
+          == [("title", "Q1 Results"), ("body", "Revenue up\nCosts flat")]
+          and d.get("selection") is None and d.get("truncated") is False,
+          f"slides={slides}")
+
+    code, out = http("POST", "/edit", token=TOKEN, payload={
+        "mode": "insert-slide-after", "slide": 1,
+        "title": "Agenda", "body": ["First point", "Second point"],
+    })
+    check("impress: insert-slide-after s1 adds a title+body slide",
+          code == 200 and out.get("applied") and out.get("slide") == 1
+          and deck_texts(imp) == [
+              [("TitleTextShape", "Q1 Results"), ("SubtitleShape", "Revenue up\nCosts flat")],
+              [("TitleTextShape", "Agenda"), ("OutlinerShape", "First point\nSecond point")]],
+          f"deck={deck_texts(imp)}")
+
+    code, out = http("POST", "/undo", token=TOKEN)
+    check("impress: undo reverts the slide insert as one step",
+          code == 200 and out.get("undone") and len(deck_texts(imp)) == 1
+          and deck_texts(imp)[0][0][1] == "Q1 Results",
+          f"deck={deck_texts(imp)}")
+
+    # re-insert (deck grows to 2 for the rest of the section)
+    http("POST", "/edit", token=TOKEN, payload={
+        "mode": "insert-slide-after", "slide": 1,
+        "title": "Agenda", "body": ["First point", "Second point"],
+    })
+
+    code, out = http("POST", "/edit", token=TOKEN, payload={
+        "mode": "insert-slide-after", "slide": 0,
+        "title": "Cover", "body": [],
+    })
+    deck = deck_texts(imp)
+    check("impress: insert-slide-after s0 swaps content to the very start",
+          code == 200 and out.get("applied")
+          and deck[0] == [("TitleTextShape", "Cover"), ("SubtitleShape", "")]
+          and deck[1][0] == ("TitleTextShape", "Q1 Results")
+          and deck[1][1] == ("OutlinerShape", "Revenue up\nCosts flat")
+          and deck[2][0] == ("TitleTextShape", "Agenda"),
+          f"deck={deck}")
+
+    code, out = http("POST", "/undo", token=TOKEN)
+    deck = deck_texts(imp)
+    check("impress: undo reverts s0 (texts restored, page removed)",
+          code == 200 and out.get("undone") and len(deck) == 2
+          and deck[0] == [("TitleTextShape", "Q1 Results"),
+                          ("SubtitleShape", "Revenue up\nCosts flat")]
+          and deck[1][1] == ("OutlinerShape", "First point\nSecond point"),
+          f"deck={deck}")
+
+    code, out = http("POST", "/edit", token=TOKEN, payload={
+        "mode": "rewrite-slide", "slide": 0,
+        "title": "Q1 Results v2",
+        "body": ["Revenue up", "Costs flat", "Margins up"],
+    })
+    check("impress: rewrite-slide replaces title and body",
+          code == 200 and out.get("applied")
+          and deck_texts(imp)[0]
+          == [("TitleTextShape", "Q1 Results v2"),
+              ("SubtitleShape", "Revenue up\nCosts flat\nMargins up")],
+          f"deck={deck_texts(imp)}")
+
+    code, out = http("POST", "/undo", token=TOKEN)
+    check("impress: undo reverts the rewrite-slide as one step",
+          code == 200 and out.get("undone")
+          and deck_texts(imp)[0]
+          == [("TitleTextShape", "Q1 Results"),
+              ("SubtitleShape", "Revenue up\nCosts flat")],
+          f"deck={deck_texts(imp)}")
+
+    code, out = http("POST", "/edit", token=TOKEN, payload={
+        "mode": "rewrite-frame", "slide": 1, "shape": 1,
+        "paragraphs": ["Replaced point one", "Replaced point two"],
+    })
+    check("impress: rewrite-frame replaces one shape's text",
+          code == 200 and out.get("applied")
+          and deck_texts(imp)[1][1]
+          == ("OutlinerShape", "Replaced point one\nReplaced point two"),
+          f"deck={deck_texts(imp)}")
+
+    # selection: select the title of slide 2 via UNO, then read /document
+    ctrl = imp.getCurrentController()
+    ctrl.select(ipages.getByIndex(1).getByIndex(0))
+    code, d = http("GET", "/document", token=TOKEN)
+    sel = d.get("selection")
+    check("impress: /document reports the selected frame with indices",
+          code == 200 and sel and sel[0]["slide"] == 1 and sel[0]["shape"] == 0
+          and sel[0]["kind"] == "title" and sel[0]["text"] == "Agenda",
+          f"sel={sel}")
+
+    code, one = http("GET", "/document/s/1", token=TOKEN)
+    check("impress: GET /document/s/1 returns the full slide",
+          code == 200 and one["slide"]["i"] == 1
+          and [(s["kind"], s["text"]) for s in one["slide"]["shapes"]]
+          == [("title", "Agenda"),
+              ("body", "Replaced point one\nReplaced point two")],
+          f"one={one}")
+
+    before = deck_texts(imp)
+    code, out = http("POST", "/edit", token=TOKEN, payload={
+        "mode": "rewrite-slide", "slide": 9, "title": "x", "body": ["y"],
+    })
+    code2, out2 = http("POST", "/edit", token=TOKEN, payload={
+        "mode": "insert-slide-after", "slide": 9, "title": "x", "body": [],
+    })
+    check("impress: out-of-range slide edits refused without touching the deck",
+          code == 500 and "does not exist" in str(out.get("error"))
+          and code2 == 500 and "does not exist" in str(out2.get("error"))
+          and before == deck_texts(imp),
+          f"err={out.get('error')!r} / {out2.get('error')!r}")
+
+    code, out = http("POST", "/undo", token=TOKEN)
+    check("impress: undo reverts the rewrite-frame as one step",
+          code == 200 and out.get("undone")
+          and deck_texts(imp)[1][1] == ("OutlinerShape", "First point\nSecond point"),
+          f"deck={deck_texts(imp)}")
+
+    # events: switching slides (setCurrentPage) fires selection-changed
+    events_result = {}
+
+    def poll_impress():
+        events_result["resp"] = http("GET", "/events?since=0&timeout=15", token=TOKEN)
+
+    t = threading.Thread(target=poll_impress)
+    t.start()
+    time.sleep(1.0)
+    ctrl.setCurrentPage(ipages.getByIndex(1))
+    t.join(timeout=20)
+    ev = events_result.get("resp", (0, {}))
+    kinds = [e["type"] for e in ev[1].get("events", [])]
+    check("impress: /events long-poll receives slide-change events",
+          ev[0] == 200 and "selection-changed" in kinds,
+          f"{len(kinds)} events")
+
+    # --- Draw smoke --------------------------------------------------------
+    drw = desktop.loadComponentFromURL("private:factory/sdraw", "_blank", 0, ())
+    drw.getCurrentController().getFrame().activate()
+    time.sleep(0.5)
+    dpage = drw.getDrawPages().getByIndex(0)
+    dframe = drw.createInstance("com.sun.star.drawing.TextShape")
+    dpage.add(dframe)
+    dframe.setSize(uno.createUnoStruct("com.sun.star.awt.Size", 8000, 2000))
+    dframe.setPosition(uno.createUnoStruct("com.sun.star.awt.Point", 1000, 1000))
+    dframe.getText().setString("Draw frame one\nsecond para")
+
+    code, st = http("GET", "/status", token=TOKEN)
+    code, d = http("GET", "/document", token=TOKEN)
+    check("draw: /document reads a plain TextShape frame",
+          code == 200 and st.get("module") == "draw" and d.get("module") == "draw"
+          and len(d.get("slides", [])) == 1
+          and d["slides"][0]["shapes"][0]["kind"] == "text"
+          and d["slides"][0]["shapes"][0]["text"] == "Draw frame one\nsecond para",
+          f"slides={d.get('slides')}")
+
+    drw.getCurrentController().select(dframe)
+    code, d = http("GET", "/document", token=TOKEN)
+    sel = d.get("selection")
+    code, out = http("POST", "/edit", token=TOKEN, payload={
+        "mode": "rewrite-frame", "slide": 0, "shape": 0,
+        "paragraphs": ["Replaced draw text"],
+    })
+    check("draw: rewrite-frame replaces the frame text",
+          code == 200 and out.get("applied") and sel
+          and sel[0] == {"slide": 0, "shape": 0, "kind": "text",
+                         "text": "Draw frame one\nsecond para"}
+          and dframe.getText().getString() == "Replaced draw text",
+          f"sel={sel}")
+
+    code, out = http("POST", "/undo", token=TOKEN)
+    check("draw: undo restores the frame text",
+          code == 200 and out.get("undone")
+          and dframe.getText().getString() == "Draw frame one\nsecond para",
+          f"text={dframe.getText().getString()!r}")
+
     # --- activate (second document)
     doc2 = desktop.loadComponentFromURL("private:factory/swriter", "_blank", 0, ())
     doc2.Text.getEnd().setString("Second document body.")

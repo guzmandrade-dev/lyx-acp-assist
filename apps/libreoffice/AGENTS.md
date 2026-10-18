@@ -198,6 +198,97 @@ companion outside.**
     enumerate). The bridge handles both; data is read from the FIRST
     range, all range names are listed.
 
+## Impress/Draw bridge rules (verified 2026-10-18, Phase 3 probes 12–12i)
+
+22. **Slide enumeration**: `doc.getDrawPages()` (XIndexAccess) →
+    `getCount()` / `getByIndex(i)`; each page is an XShapes
+    (`getCount()` / `getByIndex(j)`). `page.getName()` returns POSITIONAL
+    names (`page1`, `page2`, … renumbered after inserts) — never use it as
+    identity; the 0-based page index is the identity. A fresh
+    `private:factory/simpress` deck has ONE slide with `TitleTextShape` +
+    `SubtitleShape` placeholders; placeholder shapes read as `''` (the
+    "Click to add" hints are UI-only).
+23. **Shape classification must use `getShapeType()`**, NOT
+    `supportsService` — a SubtitleShape reports `supportsService(
+    "com.sun.star.presentation.SubtitleShape") == False` (it only
+    supports `drawing.TextShape`) while its type name is correct. Kind
+    mapping: `presentation.TitleTextShape` → title;
+    `presentation.OutlinerShape` / `presentation.SubtitleShape` → body;
+    `drawing.TextShape` → text; everything else → other (count only).
+24. **Shape text**: `getString()`/`setString()` use `\n` as the paragraph
+    separator (NO `\r\n`, unlike Writer — normalization is a harmless
+    no-op). `setString("a\nb")` creates real paragraphs. `ParaStyleName`
+    does NOT exist on shape paragraphs (UnknownPropertyException on read
+    AND write — even non-empty ones); never touch it. Manually created
+    presentation shapes auto-format correctly (title CharHeight 44,
+    outliner 32 with bullets), so plain `setString` is enough.
+25. **pyuno `==` works across fresh wrappers** (a page fetched twice
+    compares equal); `is` never does. Use `==` scans for "which slide
+    index is this page / which (slide, shape) is this selected shape".
+    `ctrl.getCurrentPage()` returns the active page; index discovery is an
+    `==` scan. `ctrl.setCurrentPage(page)` switches it and fires
+    selection-changed (as does `ctrl.select(shape)`).
+26. **Selection**: `ctrl.getSelection()` is `None` with nothing selected,
+    else an SvxShapeCollection (XShapes: `getCount()`/`getByIndex()`) for
+    single AND multi shape selections. Locate each selected shape's
+    (slide, shape) indices by `==` scan over all pages. What a controller
+    returns while the user is TEXT-EDITING inside a shape is unprobed (no
+    programmatic route into text-edit mode) — the bridge treats
+    non-shape selections as no-selection.
+27. **Impress/Draw undo is fundamentally different from Writer/Calc**
+    (probe 12d): API text edits (`setString`, cursor insertString), plain
+    `drawing.TextShape` adds, and `shape.dispose()` create NO undo
+    actions; `insertNewByIndex` pushes a BROKEN action (undo() succeeds
+    but the page stays). Only presentation-shape adds, shape moves, and
+    the `.uno:InsertPage` / `.uno:DeletePage` dispatches record working
+    actions. Therefore: Impress/Draw edits run inside
+    `um.lock()`/`um.unlock()` (verified to suppress ALL undo recording,
+    API and dispatch alike) and the bridge keeps a **per-edit undo
+    journal**; `/undo` pops the journal entry (restore texts and/or
+    `.uno:DeletePage` the inserted page, both under lock). Empty journal →
+    fall back to the native `um.undo()` (the user's own UI edits). Known
+    limitation: interleaved user edits can desync journal indices
+    (best-effort, skip-missing on restore).
+28. **`enterHiddenUndoContext()` is unusable** — it throws
+    EmptyUndoStackException without a previous undo action. `lock()` is
+    the recording suppressor.
+29. **`insertNewByIndex(i)` lands the new page at 0-based index `i+1`**
+    (AFTER page i) — `insertNewByIndex(0)` can NEVER produce index 0. To
+    insert after 1-based slide N → `insertNewByIndex(N-1)`. API-inserted
+    pages are EMPTY (no placeholders): create the presentation shapes
+    manually with cloned default geometry — title pos (1400,628) size
+    (25199,2629); body pos (1400,3685) size (25199,9134).
+30. **Page deletion**: XDrawPages has NO `removeByIndex`, and
+    `page.dispose()` is a TRAP — it does not remove the page, it corrupts
+    it (subsequent reads throw RuntimeException). The only working
+    removal is the `.uno:DeletePage` dispatch, which deletes the CURRENT
+    page: steer with `setCurrentPage(target)` first. Under `um.lock()` it
+    records no undo action; without lock it is properly undoable.
+31. **s0 (insert at the very start) needs a text-swap choreography**
+    (rule 29 blocks a page at index 0): insert the new page at index 1,
+    move slide 1's title/body text into the new page's shapes, then write
+    the new content into slide 1's shapes. Net effect: new content on
+    slide 1, old slide-1 content on slide 2. Journal: restore slide 1's
+    original texts + delete the page at index 1. Requires slide 1 to have
+    a title frame (refused otherwise).
+32. **`.uno:InsertSlide` and `.uno:DeleteSlide` are dead in the socket
+    context** (no-op even with a verified current page); `.uno:InsertPage`
+    works even inside Impress (creates a Title+Outliner placeholder page
+    after the current page — the bridge does not use it; the API route +
+    journal is chosen) and `.uno:DuplicatePage` duplicates after the
+    current page.
+33. **`RecordChanges` and `getRedlines()` are ABSENT on Impress/Draw
+    documents** (getPropertyValue/getRedlines throw) — the tracking
+    toggle is skipped (`_get_record_changes` already returns None) and
+    edits are undo-only (via the journal). This matches the README's
+    promise.
+34. **Draw behaves identically for every primitive above** (verified
+    12i): getDrawPages/getCurrentPage/setCurrentPage/`==` scans/
+    selection-as-collection/locked DeletePage all work the same. Draw has
+    no presentation shapes — inserted pages get a plain `TextShape`
+    carrying the whole content, and `rewrite-slide` is refused (no
+    title/body frames; use rewrite on a selected frame).
+
 ## Spike artifacts (Phase 0, all 26 checks passed, 2026-10-16)
 
 - `spike/oxt/` — the bridge `.oxt` sources: `acpbridge.py` (HTTP server,
@@ -222,7 +313,8 @@ companion outside.**
   socket (test helper).
 - `spike/validate/cursor_probe*.py` — the empirical UNO cursor-semantics
   probes that produced rules 10–14 above (kept for reference; not part of
-  the pass/fail suites).
+  the pass/fail suites). `cursor_probe12*.py` (12, 12b–12i) did the same
+  for Impress/Draw and produced rules 22–34.
 - Re-run cycle: repackage (zip `spike/oxt` contents with the bundled python's
   `zipfile` — forward-slash entries matter), `unopkg remove` + `add` with the
   scratch profile env, relaunch soffice with `--accept`, dispatch

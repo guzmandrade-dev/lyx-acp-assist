@@ -359,6 +359,399 @@ def _read_calc(doc):
     return out
 
 
+# --------------------------------------------------------- slides helpers
+
+# Impress/Draw: read caps and the cloned default placeholder geometry
+# (probe 12h H4 — matches what .uno:InsertPage creates).
+IMPRESS_MAX_SLIDES = 200
+IMPRESS_SHAPE_TEXT_LIMIT = 4_000
+SEL_SHAPES_LIMIT = 50
+SLIDE_TITLE_POS = (1400, 628)
+SLIDE_TITLE_SIZE = (25199, 2629)
+SLIDE_BODY_POS = (1400, 3685)
+SLIDE_BODY_SIZE = (25199, 9134)
+
+# Impress/Draw edits bypass the native undo stack entirely (rule 27:
+# API text edits create no undo actions and insertNewByIndex pushes a
+# broken one) — every edit runs inside um.lock()/unlock() and appends a
+# journal entry; /undo pops it. Entries: {"texts": [[slide, shape,
+# before], ...], "deletePage": int|None}.
+_SLIDES_JOURNAL = {}
+
+
+def _shape_kind(shape):
+    """Classify a slide shape by its TYPE name (rule 23: supportsService
+    lies for presentation shapes). 'other' shapes are counted, not read."""
+    try:
+        t = shape.getShapeType()
+    except Exception:
+        return "other"
+    if t.endswith("presentation.TitleTextShape"):
+        return "title"
+    if t.endswith("presentation.OutlinerShape") or t.endswith("presentation.SubtitleShape"):
+        return "body"
+    if t.endswith("drawing.TextShape"):
+        return "text"
+    return "other"
+
+
+def _shape_text(shape):
+    try:
+        return shape.getText().getString().replace("\r\n", "\n")
+    except Exception:
+        return None
+
+
+def _current_page_index(doc):
+    """Index of the active draw page via == comparison (rule 25)."""
+    try:
+        cur = doc.getCurrentController().getCurrentPage()
+        pages = doc.getDrawPages()
+        for i in range(pages.getCount()):
+            if pages.getByIndex(i) == cur:
+                return i
+    except Exception:
+        pass
+    return None
+
+
+def _slide_payload(doc, index):
+    """One slide: {i, name, current, shapes: [{i, kind, text}]}."""
+    page = doc.getDrawPages().getByIndex(index)
+    budget = IMPRESS_SHAPE_TEXT_LIMIT
+    shapes = []
+    for j in range(page.getCount()):
+        s = page.getByIndex(j)
+        kind = _shape_kind(s)
+        text = None
+        if kind != "other":
+            text = _shape_text(s) or ""
+            if len(text) > budget:
+                text = text[:max(budget, 0)] + "…"
+            budget -= len(text)
+        shapes.append({"i": j, "kind": kind, "text": text})
+    return {"i": index, "name": page.getName(),
+            "current": _current_page_index(doc) == index, "shapes": shapes}
+
+
+def _impress_selection(doc):
+    """Selected shapes -> [{slide, shape, kind, text}] (rule 26)."""
+    try:
+        sel = doc.getCurrentController().getSelection()
+    except Exception:
+        return None
+    if sel is None:
+        return None
+    targets = []
+    try:
+        for k in range(min(sel.getCount(), SEL_SHAPES_LIMIT)):
+            targets.append(sel.getByIndex(k))
+    except Exception:
+        if hasattr(sel, "getShapeType"):
+            targets.append(sel)
+        else:
+            return None  # text-edit selection or unknown: treat as none
+    pages = doc.getDrawPages()
+    out = []
+    for target in targets:
+        found = None
+        for i in range(pages.getCount()):
+            p = pages.getByIndex(i)
+            for j in range(p.getCount()):
+                if p.getByIndex(j) == target:
+                    found = (i, j)
+                    break
+            if found is not None:
+                break
+        if found is None:
+            continue
+        out.append({"slide": found[0], "shape": found[1],
+                    "kind": _shape_kind(target),
+                    "text": _shape_text(target) if _shape_kind(target) != "other" else None})
+    return out or None
+
+
+def _read_slides(doc):
+    """Impress/Draw branch of /document: the deck outline + selection."""
+    pages = doc.getDrawPages()
+    count = pages.getCount()
+    slides = [_slide_payload(doc, i) for i in range(min(count, IMPRESS_MAX_SLIDES))]
+    return {
+        "slides": slides,
+        "selection": _impress_selection(doc),
+        "truncated": count > IMPRESS_MAX_SLIDES,
+    }
+
+
+def _require_slides(desktop):
+    doc = _active_doc(desktop)
+    if doc is None or _module_of(doc) not in ("impress", "draw"):
+        raise RuntimeError("no active Impress/Draw document")
+    _ensure_listener(doc)
+    return doc
+
+
+def _get_slide(doc, index):
+    """0-based slide accessor with user-facing errors."""
+    pages = doc.getDrawPages()
+    if not isinstance(index, int) or index < 0:
+        raise RuntimeError("slide index must be a non-negative integer")
+    if index >= pages.getCount():
+        raise RuntimeError(
+            f"slide [s{index + 1}] does not exist (deck has {pages.getCount()} slides)")
+    return pages.getByIndex(index)
+
+
+def _get_frame(doc, slide_index, shape_index):
+    page = _get_slide(doc, slide_index)
+    if not isinstance(shape_index, int) or shape_index < 0:
+        raise RuntimeError("shape index must be a non-negative integer")
+    if shape_index >= page.getCount():
+        raise RuntimeError(
+            f"shape [{shape_index}] does not exist on slide "
+            f"[s{slide_index + 1}] (slide has {page.getCount()} shapes)")
+    shape = page.getByIndex(shape_index)
+    if _shape_kind(shape) == "other" or _shape_text(shape) is None:
+        raise RuntimeError(
+            f"the frame at slide [s{slide_index + 1}] shape {shape_index} "
+            "holds no text")
+    return shape
+
+
+def _find_title_body(page, draw=False):
+    """First title-ish and body-ish shapes of a slide (rule 23)."""
+    title = body = None
+    for j in range(page.getCount()):
+        s = page.getByIndex(j)
+        kind = _shape_kind(s)
+        if kind == "other":
+            continue
+        if title is None and (kind == "title" or (draw and kind == "text")):
+            title = s
+        elif body is None and kind == "body" or (draw and kind == "text" and title is not None):
+            body = s
+    return title, body
+
+
+def _shape_index_in_page(page, shape):
+    for j in range(page.getCount()):
+        if page.getByIndex(j) == shape:
+            return j
+    return None
+
+
+def _add_frame(doc, page, service, pos, size, text):
+    shape = doc.createInstance(service)
+    page.add(shape)
+    shape.setPosition(uno.createUnoStruct("com.sun.star.awt.Point", pos[0], pos[1]))
+    shape.setSize(uno.createUnoStruct("com.sun.star.awt.Size", size[0], size[1]))
+    shape.getText().setString(text)
+    return shape
+
+
+def _fill_new_slide(doc, page, title, body_text):
+    """Create the title + body frames on a freshly inserted page, with the
+    cloned default geometry (rules 24, 29). Draw: one plain text frame."""
+    if _module_of(doc) == "draw":
+        text = title if not body_text else title + "\n" + body_text
+        _add_frame(doc, page, "com.sun.star.drawing.TextShape",
+                   SLIDE_TITLE_POS, SLIDE_TITLE_SIZE, text)
+        return
+    _add_frame(doc, page, "com.sun.star.presentation.TitleTextShape",
+               SLIDE_TITLE_POS, SLIDE_TITLE_SIZE, title)
+    _add_frame(doc, page, "com.sun.star.presentation.OutlinerShape",
+               SLIDE_BODY_POS, SLIDE_BODY_SIZE, body_text)
+
+
+def _journal_append(doc, entry):
+    key = _doc_key(doc)
+    _SLIDES_JOURNAL.setdefault(key, []).append(entry)
+    # Keep the journal bounded; oldest entries are the least likely to be
+    # reverted anyway.
+    if len(_SLIDES_JOURNAL[key]) > 100:
+        del _SLIDES_JOURNAL[key][:50]
+
+
+def _dispatch_delete_page(doc):
+    """Delete the CURRENT page via the UI route (rule 30: the only
+    working page removal; steered with setCurrentPage by callers)."""
+    ctx = _context()
+    dispatcher = ctx.ServiceManager.createInstanceWithContext(
+        "com.sun.star.frame.DispatchHelper", ctx)
+    dispatcher.executeDispatch(
+        doc.getCurrentController().getFrame(), ".uno:DeletePage", "", 0, ())
+
+
+def _parse_slide_text_args(payload, need_body=False):
+    """Common validation of the text arguments of the slide edit modes."""
+    title = payload.get("title")
+    if not isinstance(title, str):
+        raise RuntimeError("title is required (a string, may be empty)")
+    body = payload.get("body")
+    if body is None:
+        if need_body:
+            raise RuntimeError("body is required (a list of paragraph strings)")
+        body = []
+    if (not isinstance(body, list) or not all(isinstance(b, str) for b in body)):
+        raise RuntimeError("body must be a list of paragraph strings")
+    return title, body
+
+
+def _edit_slides(desktop, payload):
+    mode = payload.get("mode")
+    doc = _require_slides(desktop)
+    draw = _module_of(doc) == "draw"
+
+    # ---- rewrite-frame: one shape's text (slide + shape are 0-based
+    # payload indices, mirroring /document)
+    if mode == "rewrite-frame":
+        paragraphs = payload.get("paragraphs")
+        if (not isinstance(paragraphs, list) or not paragraphs
+                or not all(isinstance(p, str) for p in paragraphs)):
+            raise RuntimeError(
+                "mode 'rewrite-frame' requires paragraphs (list of strings)")
+        shape = _get_frame(doc, payload.get("slide"), payload.get("shape"))
+        before = shape.getText().getString()
+        um = doc.getUndoManager()
+        um.lock()
+        try:
+            shape.getText().setString("\n".join(paragraphs))
+        finally:
+            um.unlock()
+        _journal_append(doc, {"texts": [[payload["slide"], payload["shape"],
+                                         before]], "deletePage": None})
+        _record_event("document-edited")
+        return {"applied": True, "title": doc.getTitle(), "mode": mode,
+                "slide": payload["slide"], "shape": payload["shape"]}
+
+    # ---- rewrite-slide: title (+ optionally body) of one slide
+    if mode == "rewrite-slide":
+        if draw:
+            raise RuntimeError(
+                "Draw has no title/body frames; select a frame and use rewrite")
+        title, body = _parse_slide_text_args(payload)
+        page = _get_slide(doc, payload.get("slide"))
+        title_shape, body_shape = _find_title_body(page)
+        if title_shape is None:
+            raise RuntimeError(
+                f"slide [s{payload['slide'] + 1}] has no title frame")
+        if body and body_shape is None:
+            raise RuntimeError(
+                f"slide [s{payload['slide'] + 1}] has no body frame "
+                "(cannot write body text)")
+        snap = []
+        ti = _shape_index_in_page(page, title_shape)
+        snap.append([payload["slide"], ti, title_shape.getText().getString()])
+        if body:
+            bi = _shape_index_in_page(page, body_shape)
+            snap.append([payload["slide"], bi, body_shape.getText().getString()])
+        um = doc.getUndoManager()
+        um.lock()
+        try:
+            title_shape.getText().setString(title)
+            if body:
+                body_shape.getText().setString("\n".join(body))
+        finally:
+            um.unlock()
+        _journal_append(doc, {"texts": snap, "deletePage": None})
+        _record_event("document-edited")
+        return {"applied": True, "title": doc.getTitle(), "mode": mode,
+                "slide": payload["slide"]}
+
+    # ---- insert-slide-after: slide is the agent's anchor — 0 = insert at
+    # the very start, N >= 1 = after 1-based slide N
+    if mode == "insert-slide-after":
+        title, body = _parse_slide_text_args(payload)
+        body_text = "\n".join(body)
+        anchor = payload.get("slide")
+        if not isinstance(anchor, int) or anchor < 0:
+            raise RuntimeError(
+                "mode 'insert-slide-after' requires a slide anchor (0 = start)")
+        pages = doc.getDrawPages()
+        count = pages.getCount()
+        if anchor == 0:
+            # Rule 31: no page can be created at index 0 — swap slide 1's
+            # content into a page inserted at index 1 instead.
+            page1 = pages.getByIndex(0)
+            title_shape, body_shape = _find_title_body(page1, draw=draw)
+            if title_shape is None:
+                raise RuntimeError(
+                    "cannot insert at the start: slide [s1] has no title frame")
+            if body and body_shape is None:
+                raise RuntimeError(
+                    "cannot insert at the start: slide [s1] has no body frame "
+                    "(cannot move its content)")
+            snap = [[0, _shape_index_in_page(page1, title_shape),
+                     title_shape.getText().getString()]]
+            if body_shape is not None:
+                snap.append([0, _shape_index_in_page(page1, body_shape),
+                             body_shape.getText().getString()])
+            old_body = body_shape.getText().getString() if body_shape else ""
+            um = doc.getUndoManager()
+            um.lock()
+            try:
+                pages.insertNewByIndex(0)  # lands at index 1 (rule 29)
+                new_page = pages.getByIndex(1)
+                _fill_new_slide(doc, new_page,
+                                title_shape.getText().getString(), old_body)
+                title_shape.getText().setString(title)
+                if body_shape is not None:
+                    body_shape.getText().setString(body_text)
+            finally:
+                um.unlock()
+            _journal_append(doc, {"texts": snap, "deletePage": 1})
+        else:
+            if anchor > count:
+                raise RuntimeError(
+                    f"slide [s{anchor}] does not exist (deck has {count} slides)")
+            um = doc.getUndoManager()
+            um.lock()
+            try:
+                pages.insertNewByIndex(anchor - 1)  # lands at index `anchor`
+                new_page = pages.getByIndex(anchor)
+                if new_page.getCount() != 0:
+                    raise RuntimeError(
+                        "internal error: the new slide landed at the wrong index")
+                _fill_new_slide(doc, new_page, title, body_text)
+            finally:
+                um.unlock()
+            _journal_append(doc, {"texts": [], "deletePage": anchor})
+        _record_event("document-edited")
+        return {"applied": True, "title": doc.getTitle(), "mode": mode,
+                "slide": anchor}
+
+    raise RuntimeError(f"unknown edit mode {mode!r}")
+
+
+def _undo_slides(doc):
+    """Impress/Draw undo: pop the bridge journal (rule 27)."""
+    journal = _SLIDES_JOURNAL.get(_doc_key(doc)) or []
+    if journal:
+        entry = journal.pop()
+        um = doc.getUndoManager()
+        um.lock()
+        try:
+            dp = entry.get("deletePage")
+            pages = doc.getDrawPages()
+            if dp is not None and 0 <= dp < pages.getCount():
+                ctrl = doc.getCurrentController()
+                ctrl.setCurrentPage(pages.getByIndex(dp))
+                _dispatch_delete_page(doc)
+            for slide, shape, before in entry.get("texts") or []:
+                try:
+                    pages.getByIndex(slide).getByIndex(shape).getText().setString(before)
+                except Exception:
+                    pass  # shape gone (user edits): best-effort restore
+        finally:
+            um.unlock()
+        _record_event("document-edited")
+        return {"undone": True}
+    um = doc.getUndoManager()
+    if um.isUndoPossible():
+        um.undo()
+        _record_event("document-edited")
+        return {"undone": True}
+    return {"undone": False, "reason": "nothing to undo"}
 
 
 # ------------------------------------------------ main-thread operations
@@ -412,6 +805,12 @@ def _read_document(desktop):
     if base["module"] == "calc":
         base["calc"] = _read_calc(doc)
         return base
+    if base["module"] in ("impress", "draw"):
+        out = _read_slides(doc)
+        base["slides"] = out["slides"]
+        base["selection"] = out["selection"]
+        base["truncated"] = out["truncated"]
+        return base
     if base["module"] != "writer":
         return base
 
@@ -444,6 +843,14 @@ def _read_paragraph(desktop, index):
             return {"i": i, "text": p.getString().replace("\r\n", "\n"),
                     "style": str(p.getPropertyValue("ParaStyleName"))}
     raise RuntimeError(f"paragraph [p{index + 1}] does not exist")
+
+
+def _read_slide_lazy(desktop, index):
+    """Lazy fetch of one slide's full shape list (mirrors /document/p/:i)."""
+    doc = _active_doc(desktop)
+    if doc is None or _module_of(doc) not in ("impress", "draw"):
+        raise RuntimeError("no active Impress/Draw document")
+    return {"slide": _slide_payload(doc, index)}
 
 
 def _activate_document(desktop, url_or_title):
@@ -645,6 +1052,7 @@ def _edit_calc(desktop, payload):
 WRITER_MODES = ("insert", "insert-top", "insert-after",
                 "rewrite", "rewrite-at", "delete-at")
 CALC_MODES = ("write-cells", "insert-rows", "insert-cols")
+IMPRESS_MODES = ("rewrite-frame", "rewrite-slide", "insert-slide-after")
 
 
 def _edit(desktop, payload):
@@ -653,6 +1061,8 @@ def _edit(desktop, payload):
         return _edit_writer(desktop, payload)
     if mode in CALC_MODES:
         return _edit_calc(desktop, payload)
+    if mode in IMPRESS_MODES:
+        return _edit_slides(desktop, payload)
     raise RuntimeError(f"unknown edit mode {mode!r}")
 
 
@@ -755,6 +1165,8 @@ def _undo(desktop):
     doc = _active_doc(desktop)
     if doc is None:
         raise RuntimeError("no active document")
+    if _module_of(doc) in ("impress", "draw"):
+        return _undo_slides(doc)
     um = doc.getUndoManager()
     if not um.isUndoPossible():
         return {"undone": False, "reason": "nothing to undo"}
@@ -801,6 +1213,11 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
         if m is not None:
             index = int(m.group(1))
             out = self._main(lambda: _read_paragraph(_desktop(), index))
+            if out is not None:
+                self._json(200, out)
+        elif re.match(r"^/document/s/(\d+)$", self.path):
+            index = int(re.match(r"^/document/s/(\d+)$", self.path).group(1))
+            out = self._main(lambda: _read_slide_lazy(_desktop(), index))
             if out is not None:
                 self._json(200, out)
         elif self.path == "/status":
