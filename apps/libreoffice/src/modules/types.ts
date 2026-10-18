@@ -5,9 +5,9 @@
  * new adapters, not new architectures.
  */
 
-import type { BridgeClient, BridgeDocument, BlockParagraph, CalcInfo } from '../bridge/client.js';
+import type { BridgeClient, BridgeDocument, BlockParagraph, CalcInfo, SlidesSelectionShape } from '../bridge/client.js';
 
-/** Action vocabulary (Writer tags first, then Calc; see the adapters). */
+/** Action vocabulary (Writer tags first, then Calc, then Impress). */
 export type AgentAction =
   | 'none'
   | 'continue'
@@ -21,7 +21,11 @@ export type AgentAction =
   // Calc
   | 'write-cells'
   | 'insert-rows'
-  | 'insert-cols';
+  | 'insert-cols'
+  // Impress / Draw
+  | 'rewrite-slide'
+  | 'insert-after'
+  | 'rewrite-frame';
 
 /** A parsed agent action tag plus its content block. */
 export interface ActionOutcome {
@@ -30,7 +34,8 @@ export interface ActionOutcome {
   block: BlockParagraph[] | null;
   /** Calc: parsed TSV rows; null for actions without content. */
   grid: string[][] | null;
-  /** Writer: 1-based paragraph address for insert-after/rewrite-at/delete-at. */
+  /** Writer: 1-based paragraph address for insert-after/rewrite-at/delete-at.
+   * Impress: the [sN] slide number (rewrite-slide, insert-after; s0 = start). */
   target: number | null;
   /** Calc: A1 anchor address (e.g. "B2"), when the tag carries one. */
   address: string | null;
@@ -45,6 +50,8 @@ export interface SelectionInfo {
   cursorStyle: string | null;
   /** Calc only: sheets, selection grid, active-sheet data. */
   calc: CalcInfo | null;
+  /** Impress/Draw only: the selected frames with (slide, shape) indices. */
+  slidesSelection: SlidesSelectionShape[] | null;
 }
 
 /** Result of applying one action. */
@@ -77,6 +84,7 @@ export interface ModuleAdapter {
   applyAction(bridge: BridgeClient, doc: BridgeDocument, sel: SelectionInfo, outcome: ActionOutcome): Promise<AppliedAction>;
 }
 
-/** The built-in adapters: Writer (Phase 1), Calc (Phase 2). */
+/** The built-in adapters: Writer (Phase 1), Calc (Phase 2), Impress (Phase 3). */
 export { writerAdapter } from './writer.js';
 export { calcAdapter } from './calc.js';
+export { impressAdapter } from './impress.js';

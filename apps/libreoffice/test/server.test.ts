@@ -273,7 +273,7 @@ describe('server message loop (fake agent + fake bridge)', () => {
     });
     const frames = sseFrames(await res.text());
     const applied = frames.filter((f) => 'applied' in f);
-    expect(applied).toEqual([{ applied: 'write-cells', target: null, address: 'C1' }]);
+    expect(applied).toEqual([{ applied: 'write-cells', target: null, address: 'C1', module: 'calc' }]);
     expect(edits).toMatchObject([
       { mode: 'write-cells', anchor: 'C1', rows: [['Total', '=SUM(B2:B3)']], tracked: true },
     ]);
@@ -283,6 +283,85 @@ describe('server message loop (fake agent + fake bridge)', () => {
     };
     const meta = info.conversation.find((t) => t.meta)?.meta;
     expect(meta).toMatchObject({ action: 'write-cells', address: 'C1', result: 'applied' });
+    srv.close();
+  });
+
+  it('runs an Impress insert-after + rewrite-slide loop through the impress adapter', async () => {
+    const edits: EditPayload[] = [];
+    const impressBridge = new (class extends BridgeClient {
+      constructor() {
+        super({ app: 'test', protocol: 1, pid: process.pid, port: 0, token: 't', startedAt: '' });
+      }
+      override status(): Promise<BridgeStatus> {
+        return Promise.resolve({
+          active: true, module: 'impress', title: 'Deck', url: 'file:///fake/deck.odp',
+          pid: process.pid, port: 0, startedAt: '',
+        });
+      }
+      override document(): Promise<BridgeDocument> {
+        return Promise.resolve({
+          active: true, module: 'impress', title: 'Deck', url: 'file:///fake/deck.odp',
+          slides: [
+            { i: 0, name: 'page1', current: true, shapes: [{ i: 0, kind: 'title', text: 'Q3 Results' }, { i: 1, kind: 'body', text: 'Revenue up' }] },
+            { i: 1, name: 'page2', current: false, shapes: [{ i: 0, kind: 'title', text: 'Agenda' }, { i: 1, kind: 'body', text: 'Item one\nItem two' }] },
+          ],
+          selection: null,
+          cursorStyle: null,
+        });
+      }
+      override edit(payload: EditPayload) {
+        edits.push(payload);
+        return Promise.resolve({
+          applied: true, title: 'Deck', mode: payload.mode,
+          slide: payload.slide ?? 0,
+        });
+      }
+    })();
+    const app = createServer({
+      publicDir,
+      historyDir,
+      agentFactory: fakeAgent([
+        'Adding the slide.\n```impress\nConclusions\nShip it\nRest is history\n```\n[ACTION: insert-after s2]',
+        'Rewording the opener.\n```impress\nQ3 Results — final\nRevenue up\nCosts flat\n```\n[ACTION: rewrite-slide s1]',
+        'Done.\n[ACTION: none]',
+      ]),
+      bridgeFactory: () => impressBridge,
+    });
+    const srv = app.listen(0, '127.0.0.1');
+    await new Promise<void>((r) => srv.on('listening', r));
+    const addr = srv.address() as { port: number };
+    const url = `http://127.0.0.1:${addr.port}`;
+    const session = (await (await fetch(`${url}/api/session`, { method: 'POST' })).json()) as {
+      sessionId: string;
+      outline: string;
+    };
+    expect(session.outline).toContain('[s1] * Q3 Results');
+
+    const res = await fetch(`${url}/api/session/${session.sessionId}/message/stream`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'Add a Conclusions slide after slide 2, then reword slide 1 informally.' }),
+    });
+    const frames = sseFrames(await res.text());
+    const applied = frames.filter((f) => 'applied' in f);
+    expect(applied).toEqual([
+      { applied: 'insert-after', target: 2, address: null, module: 'impress' },
+      { applied: 'rewrite-slide', target: 1, address: null, module: 'impress', step: 2 },
+    ]);
+    expect(edits).toMatchObject([
+      { mode: 'insert-slide-after', slide: 2, title: 'Conclusions', body: ['Ship it', 'Rest is history'] },
+      { mode: 'rewrite-slide', slide: 0, title: 'Q3 Results — final', body: ['Revenue up', 'Costs flat'] },
+    ]);
+
+    const info = (await (await fetch(`${url}/api/session/${session.sessionId}`)).json()) as {
+      conversation: Array<{ meta?: { action: string; target: number | null; module: string; result: string; step?: number } }>;
+    };
+    const metas = info.conversation.filter((t) => t.meta).map((t) => t.meta);
+    expect(metas).toEqual([
+      { action: 'insert-after', target: 2, address: null, module: 'impress', result: 'applied' },
+      { action: 'rewrite-slide', target: 1, address: null, module: 'impress', result: 'applied', step: 2 },
+      { action: 'none', target: null, address: null, module: 'impress', result: 'applied', step: 3 },
+    ]);
     srv.close();
   });
 
@@ -315,11 +394,11 @@ describe('server message loop (fake agent + fake bridge)', () => {
       bridgeFactory: () => {
         const b = new FakeBridge();
         b.status = () => Promise.resolve({
-          active: true, module: 'impress', title: 'Deck', url: 'file:///fake/deck.odp',
+          active: true, module: 'math', title: 'Formula', url: 'file:///fake/formula.odf',
           recordChanges: false, pid: process.pid, port: 0, startedAt: '',
         });
         b.document = () => Promise.resolve({
-          active: true, module: 'impress', title: 'Deck', url: 'file:///fake/deck.odp',
+          active: true, module: 'math', title: 'Formula', url: 'file:///fake/formula.odf',
           cursorStyle: null,
         });
         return b;

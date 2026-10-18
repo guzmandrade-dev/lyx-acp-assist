@@ -13,10 +13,11 @@ truth, all edits go through the application's own machinery, and the agent
 expresses intent through a small vocabulary of action tags that the app
 executes mechanically.
 
-> **Status: Phase 1 (Writer MVP) complete and live-tested; Phase 2 (Calc)
-> implemented and bridge-validated** — the in-process bridge, undo
-> transactions, tracked changes, formatted inserts, live selection events,
-> and Calc cell reads/writes all pass their validation suites on LibreOffice
+> **Status: Phase 1 (Writer) and Phase 2 (Calc) complete and live-tested;
+> Phase 3 (Impress/Draw) implemented and bridge-validated** — the
+> in-process bridge, undo transactions, tracked changes, formatted inserts,
+> live selection events, Calc cell reads/writes, and the Impress slide
+> outline/frame actions all pass their validation suites on LibreOffice
 > 26.8.1.1 / Windows. Developer-facing notes, decisions, and verified
 > technical facts live in [AGENTS.md](AGENTS.md).
 
@@ -120,13 +121,17 @@ formulas, cells addressed as `A1`):
 
 ### Pending changes, accept or reject
 
-Agent edits are applied with change tracking on by default, so every
-insertion, rewrite, and deletion appears as a tracked change. You accept or
-reject each one in LibreOffice's own *Edit > Track Changes > Manage* — the
-code-assistant review workflow, with zero Git dependency. Each edit is also
-a single labeled undo transaction, so a quick Ctrl+Z also reverts it as a
-whole. A per-document toggle is planned for users who prefer silent
-application.
+In **Writer and Calc**, agent edits are applied with change tracking on by
+default, so every insertion, rewrite, and deletion appears as a tracked
+change. You accept or reject each one in LibreOffice's own *Edit > Track
+Changes > Manage* — the code-assistant review workflow, with zero Git
+dependency. Each edit is also a single labeled undo transaction, so a quick
+Ctrl+Z also reverts it as a whole.
+
+In **Impress and Draw** these modules have no change tracking, so edits
+land directly: each edit is one entry in the bridge's undo journal, and the
+panel's Undo button reverts it as a whole (one click per edit). A
+per-document toggle is planned for users who prefer silent application.
 
 ## Multi-module support
 
@@ -162,11 +167,15 @@ implements the replacement: a live in-process HTTP bridge in `spike/oxt/`.
   [AGENTS.md](AGENTS.md) for the findings).
 - **Phase 1 — Writer MVP: done.** Chat + action loop ported and live-tested
   against the bridge; parity with LyX ACP Assist for text documents.
-- **Phase 2 — Calc: implemented.** Sheet/selection context (TSV values +
+- **Phase 2 — Calc: done.** Sheet/selection context (TSV values +
   formulas) and cell actions (write-cells, rewrite, insert-rows/cols),
-  bridge-validated end-to-end (25/25 checks). A live-agent regression
-  pass is still pending.
-- **Phase 3 — Impress/Draw:** slide outline context, slide/frame actions.
+  bridge-validated end-to-end and live-tested with an ACP agent
+  (multi-action run, one undo per edit).
+- **Phase 3 — Impress/Draw: implemented and bridge-validated.** Slide
+  outline context and slide/frame actions (rewrite, rewrite-slide,
+  insert-after with s0 = insert at the very start), undo-journal based
+  one-click undo (42/42 e2e checks); a live-agent regression pass is
+  still pending.
 - **Phase 4 — polish:** sidebar deck in LibreOffice (connection status,
   launch/focus companion, restart bridge, refresh agent), multi-document
   tabs, attachment flow, packaging (Electron installers + `.oxt`), CI.

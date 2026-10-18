@@ -369,3 +369,206 @@ describe('calcAdapter applyAction', () => {
     await expect(calcAdapter.applyAction(bridge, calcDoc(), calcSel(null), out)).rejects.toThrow('no selection');
   });
 });
+
+// --- Impress adapter --------------------------------------------------------------
+
+import { impressAdapter, parseImpressAction } from '../src/modules/impress.js';
+import type { SlideInfo, SlidesSelectionShape } from '../src/bridge/client.js';
+
+const slide = (i: number, extra: Partial<SlideInfo> = {}): SlideInfo => ({
+  i,
+  name: `page${i + 1}`,
+  current: false,
+  shapes: [
+    { i: 0, kind: 'title', text: `Title ${i + 1}` },
+    { i: 1, kind: 'body', text: `Body A ${i + 1}\nBody B ${i + 1}` },
+    { i: 2, kind: 'other', text: null },
+  ],
+  ...extra,
+});
+
+const impressDoc = (extra: Partial<BridgeDocument> = {}): BridgeDocument => ({
+  active: true,
+  module: 'impress',
+  title: 'Deck',
+  url: 'file:///C:/docs/deck.odp',
+  slides: [slide(0, { current: true }), slide(1)],
+  selection: null,
+  cursorStyle: null,
+  ...extra,
+});
+
+const impressSel = (frames: SlidesSelectionShape[] | null = null) => ({
+  hasSelection: Boolean(frames?.length),
+  text: null,
+  cursorStyle: null,
+  calc: null,
+  slidesSelection: frames,
+});
+
+describe('parseImpressAction', () => {
+  it('parses a plain prose reply as none', () => {
+    expect(parseImpressAction('Just an answer.')).toEqual({
+      action: 'none',
+      target: null,
+      address: null,
+      block: null,
+      grid: null,
+    });
+  });
+
+  it('parses rewrite-slide sN with a title-first impress block', () => {
+    const reply = 'Here.\n```impress\nNew Title\nFirst point\nSecond point\n```\n[ACTION: rewrite-slide s2]';
+    const out = parseImpressAction(reply);
+    expect(out.action).toBe('rewrite-slide');
+    expect(out.target).toBe(2);
+    expect(out.block?.map((p) => p.runs.map((r) => r.text).join('')))
+      .toEqual(['New Title', 'First point', 'Second point']);
+  });
+
+  it('parses insert-after with s0 and drops action tags from the block', () => {
+    const reply = '```impress\nCover\n\n[ACTION: none]\nCovers the deck\n```\n[ACTION: insert-after s0]';
+    const out = parseImpressAction(reply);
+    expect(out.action).toBe('insert-after');
+    expect(out.target).toBe(0);
+    expect(out.block?.map((p) => p.runs.map((r) => r.text).join('')))
+      .toEqual(['Cover', 'Covers the deck']);
+  });
+
+  it('defaults the target to null and takes the last tag', () => {
+    const out = parseImpressAction('[ACTION: insert-after s2]\nmore\n[ACTION: none]');
+    expect(out.action).toBe('none');
+    expect(out.target).toBeNull();
+  });
+
+  it('content action without a block yields null block (apply refuses)', () => {
+    const out = parseImpressAction('I will insert a slide. [ACTION: insert-after s1]');
+    expect(out.action).toBe('insert-after');
+    expect(out.target).toBe(1);
+    expect(out.block).toBeNull();
+  });
+
+  it('writer/calc tags do not parse in the impress grammar', () => {
+    expect(parseImpressAction('[ACTION: insert-after p3]').action).toBe('none');
+    expect(parseImpressAction('[ACTION: rewrite-at p2]').action).toBe('none');
+    expect(parseImpressAction('[ACTION: write-cells]').action).toBe('none');
+    expect(parseImpressAction('[ACTION: insert]').action).toBe('none');
+  });
+});
+
+describe('impressAdapter context', () => {
+  it('renders the [sN] outline with titles, body counts, and the current slide', () => {
+    const ctx = impressAdapter.buildContextBlock(impressDoc(), 'file:///C:/docs/deck.odp');
+    expect(ctx).toContain('[s1] (current) "Title 1" | body: 2 paragraph(s), 1 other shape(s)');
+    expect(ctx).toContain('[s2] "Title 2"');
+    expect(ctx).toContain('Body A 1');
+    expect(ctx).toContain('Slides: 2');
+  });
+
+  it('renders the selection block with frame indices and text', () => {
+    const block = impressAdapter.buildSelectionBlock(
+      impressSel([{ slide: 1, shape: 0, kind: 'title', text: 'Title 2' }]),
+    );
+    expect(block).toContain('[s2] frame 0 (title):');
+    expect(block).toContain('Title 2');
+    expect(impressAdapter.buildSelectionBlock(impressSel(null))).toBe('');
+  });
+
+  it('refuses rewrite-slide on a slide without a title frame (context shows it)', () => {
+    const doc = impressDoc({
+      slides: [{ i: 0, name: 'page1', current: true, shapes: [{ i: 0, kind: 'other', text: null }] }],
+    });
+    const ctx = impressAdapter.buildContextBlock(doc, null);
+    expect(ctx).toContain('(no title frame)');
+  });
+});
+
+describe('impressAdapter applyAction', () => {
+  const edits: EditPayload[] = [];
+  const bridge = {
+    edit: async (payload: EditPayload) => {
+      edits.push(payload);
+      return {
+        applied: true,
+        title: 'Deck',
+        mode: payload.mode,
+        slide: payload.mode === 'insert-slide-after' ? payload.slide : payload.slide ?? 0,
+      };
+    },
+  } as unknown as BridgeClient;
+
+  it('insert-after s1 sends the anchor and the title/body block', async () => {
+    const out = parseImpressAction('```impress\nAgenda\nFirst point\nSecond point\n```\n[ACTION: insert-after s1]');
+    const r = await impressAdapter.applyAction(bridge, impressDoc(), impressSel(), out);
+    expect(edits[edits.length - 1]).toMatchObject({
+      mode: 'insert-slide-after',
+      slide: 1,
+      title: 'Agenda',
+      body: ['First point', 'Second point'],
+    });
+    expect(r.description).toBe('[ACTION: insert-after — new slide after s1]');
+  });
+
+  it('insert-after s0 anchors at the very start', async () => {
+    const out = parseImpressAction('```impress\nCover\n```\n[ACTION: insert-after s0]');
+    const r = await impressAdapter.applyAction(bridge, impressDoc(), impressSel(), out);
+    expect(edits[edits.length - 1]).toMatchObject({ mode: 'insert-slide-after', slide: 0, title: 'Cover', body: [] });
+    expect(r.description).toBe('[ACTION: insert-after — new slide at the very start]');
+  });
+
+  it('rewrite-slide sN sends the 0-based slide index', async () => {
+    const out = parseImpressAction('```impress\nNew Title\nPoint\n```\n[ACTION: rewrite-slide s2]');
+    await impressAdapter.applyAction(bridge, impressDoc(), impressSel(), out);
+    expect(edits[edits.length - 1]).toMatchObject({
+      mode: 'rewrite-slide',
+      slide: 1,
+      title: 'New Title',
+      body: ['Point'],
+    });
+  });
+
+  it('rewrite sends the first selected frame with plain paragraph lines', async () => {
+    const out = parseImpressAction('```impress\nReplacement\nMore text\n```\n[ACTION: rewrite]');
+    const sel = impressSel([{ slide: 0, shape: 1, kind: 'body', text: 'Body A 1\nBody B 1' }]);
+    const r = await impressAdapter.applyAction(bridge, impressDoc(), sel, out);
+    expect(edits[edits.length - 1]).toMatchObject({
+      mode: 'rewrite-frame',
+      slide: 0,
+      shape: 1,
+      paragraphs: ['Replacement', 'More text'],
+    });
+    expect(r.description).toBe('[ACTION: rewrite frame on s1]');
+  });
+
+  it('rewrite without a selected text frame is refused with nothing sent', async () => {
+    const out = parseImpressAction('```impress\nX\n```\n[ACTION: rewrite]');
+    const before = edits.length;
+    await expect(impressAdapter.applyAction(bridge, impressDoc(), impressSel(null), out)).rejects.toThrow('selected');
+    expect(edits.length).toBe(before);
+  });
+
+  it('rewrite-slide without a target or with an out-of-range target is refused', async () => {
+    const before = edits.length;
+    await expect(
+      impressAdapter.applyAction(bridge, impressDoc(), impressSel(), parseImpressAction('```impress\nT\n```\n[ACTION: rewrite-slide]')),
+    ).rejects.toThrow('slide number');
+    await expect(
+      impressAdapter.applyAction(bridge, impressDoc(), impressSel(), parseImpressAction('```impress\nT\n```\n[ACTION: rewrite-slide s9]')),
+    ).rejects.toThrow('does not exist');
+    await expect(
+      impressAdapter.applyAction(bridge, impressDoc(), impressSel(), parseImpressAction('```impress\nT\n```\n[ACTION: insert-after s9]')),
+    ).rejects.toThrow('does not exist');
+    expect(edits.length).toBe(before);
+  });
+
+  it('content actions without a block are refused with nothing sent', async () => {
+    const before = edits.length;
+    await expect(
+      impressAdapter.applyAction(bridge, impressDoc(), impressSel(), parseImpressAction('Sure. [ACTION: insert-after s1]')),
+    ).rejects.toThrow('impress');
+    await expect(
+      impressAdapter.applyAction(bridge, impressDoc(), impressSel(), parseImpressAction('Sure. [ACTION: rewrite]')),
+    ).rejects.toThrow('impress');
+    expect(edits.length).toBe(before);
+  });
+});

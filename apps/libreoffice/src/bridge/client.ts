@@ -154,6 +154,30 @@ export interface CalcInfo {
   data: CalcSheetData | null;
 }
 
+/** One text-bearing shape on a slide, classified by the bridge. */
+export interface SlideShapeInfo {
+  i: number;
+  kind: 'title' | 'body' | 'text' | 'other';
+  /** Null for 'other' shapes (counted, not read). */
+  text: string | null;
+}
+
+/** One slide in an Impress/Draw document (0-based `i`). */
+export interface SlideInfo {
+  i: number;
+  name: string;
+  current: boolean;
+  shapes: SlideShapeInfo[];
+}
+
+/** One selected frame, located by (slide, shape) indices (both 0-based). */
+export interface SlidesSelectionShape {
+  slide: number;
+  shape: number;
+  kind: 'title' | 'body' | 'text' | 'other';
+  text: string | null;
+}
+
 export interface BridgeDocument {
   active: boolean;
   module: string;
@@ -163,10 +187,15 @@ export interface BridgeDocument {
   paragraphs?: WriterParagraph[];
   /** Writer only: whole-document plain text (\n separated). */
   text?: string;
-  /** Writer only: selected text ranges, null when nothing is selected. */
-  selection?: string[] | null;
+  /**
+   * Writer: selected text ranges. Impress/Draw: selected frames as
+   * {slide, shape, kind, text} objects (the bridge reuses the key).
+   */
+  selection?: string[] | SlidesSelectionShape[] | null;
   /** Calc only: sheets, selection data, active-sheet data. */
   calc?: CalcInfo;
+  /** Impress/Draw only: the slide outline (capped; truncated flag below). */
+  slides?: SlideInfo[];
   /** Style name of the paragraph containing the cursor. */
   cursorStyle?: string | null;
   /** True when the paragraph list is preview-truncated (lazy fetch). */
@@ -191,7 +220,9 @@ export interface BlockParagraph {
 export type EditMode =
   | 'insert' | 'insert-top' | 'insert-after' | 'rewrite' | 'rewrite-at' | 'delete-at'
   // Calc
-  | 'write-cells' | 'insert-rows' | 'insert-cols';
+  | 'write-cells' | 'insert-rows' | 'insert-cols'
+  // Impress / Draw
+  | 'rewrite-frame' | 'rewrite-slide' | 'insert-slide-after';
 
 export interface EditPayload {
   mode: EditMode;
@@ -203,10 +234,19 @@ export interface EditPayload {
   count?: number;
   /** Record the edit as a tracked change (default true). */
   tracked?: boolean;
-  /** Writer: content paragraphs; required for every mode except delete-at. */
-  paragraphs?: BlockParagraph[];
+  /** Writer: content paragraphs; required for every mode except delete-at.
+   * Impress rewrite-frame sends plain strings instead of run structures. */
+  paragraphs?: BlockParagraph[] | string[];
   /** Calc: TSV rows of cells for write-cells (strings; '=' prefix = formula). */
   rows?: string[][];
+  /** Impress/Draw: 0-based slide index (rewrite-frame, rewrite-slide). */
+  slide?: number;
+  /** Impress/Draw: 0-based shape index on the slide (rewrite-frame). */
+  shape?: number;
+  /** Impress/Draw: new slide title (rewrite-slide, insert-slide-after). */
+  title?: string;
+  /** Impress/Draw: body paragraph lines (rewrite-slide, insert-slide-after). */
+  body?: string[];
 }
 
 export interface EditResult {
@@ -217,6 +257,11 @@ export interface EditResult {
   /** Calc: sheet name and resolved A1 anchor. */
   sheet?: string;
   anchor?: string;
+  /** Impress/Draw: the slide index the edit touched (0-based; the anchor
+   * for insert-slide-after, 0 = inserted at the very start). */
+  slide?: number;
+  /** Impress/Draw rewrite-frame: the shape index that was rewritten. */
+  shape?: number;
 }
 
 // --- client ----------------------------------------------------------------

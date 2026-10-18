@@ -23,6 +23,7 @@ import {
 } from './bridge/client.js';
 import { writerAdapter } from './modules/writer.js';
 import { calcAdapter, parseCalcAction } from './modules/calc.js';
+import { impressAdapter, parseImpressAction } from './modules/impress.js';
 import { genericAdapter } from './modules/generic.js';
 import type { ModuleAdapter, AgentAction, ActionOutcome, SelectionInfo } from './modules/types.js';
 import { extractContentBlock, parseContentBlock } from './modules/markdown.js';
@@ -47,6 +48,8 @@ export interface TurnMeta {
   target?: number | null;
   /** Calc: A1 anchor address, when the tag carried one. */
   address?: string | null;
+  /** Active bridge module (writer/calc/impress/draw) for UI labels. */
+  module?: string;
   result: 'applied' | 'error' | 'cancelled';
   error?: string;
   step?: number;
@@ -175,12 +178,15 @@ export function createServer(options: ServerOptions & {
   function adapterFor(module: string): ModuleAdapter {
     if (module === 'writer') return writerAdapter;
     if (module === 'calc') return calcAdapter;
+    if (module === 'impress' || module === 'draw') return impressAdapter;
     return genericAdapter;
   }
 
   /** Parse one agent reply with the active adapter's action grammar. */
   function parseOutcome(adapter: ModuleAdapter, reply: string): ActionOutcome {
-    return adapter.id === 'calc' ? parseCalcAction(reply) : parseAction(reply);
+    if (adapter.id === 'calc') return parseCalcAction(reply);
+    if (adapter.id === 'impress') return parseImpressAction(reply);
+    return parseAction(reply);
   }
 
   // --- status / settings ---------------------------------------------------
@@ -522,6 +528,7 @@ export function createServer(options: ServerOptions & {
             action: outcome.action,
             target: outcome.target,
             address: outcome.address,
+            module: adapter.id === 'generic' ? 'other' : adapter.id,
             result,
             ...(error ? { error } : {}),
             ...(step > 1 ? { step } : {}),
@@ -544,7 +551,13 @@ export function createServer(options: ServerOptions & {
         try {
           const freshDoc = step === 1 ? doc : await session.bridge.document();
           const applied = await adapter.applyAction(session.bridge, freshDoc, await readSelection(session), outcome);
-          send({ applied: outcome.action, target: outcome.target, address: outcome.address, ...(step > 1 ? { step } : {}) });
+          send({
+            applied: outcome.action,
+            target: outcome.target,
+            address: outcome.address,
+            module: adapter.id === 'generic' ? 'other' : adapter.id,
+            ...(step > 1 ? { step } : {}),
+          });
           await noteMeta('applied');
           completed.push(applied.description);
           send({ appliedStep: step, action: outcome.action, target: outcome.target });
@@ -701,12 +714,21 @@ export function createServer(options: ServerOptions & {
   async function readSelection(session: Session): Promise<SelectionInfo> {
     const doc = await session.bridge.document();
     const texts = doc.selection ?? null;
-    const text = texts && texts.length > 0 ? texts.join('\n') : null;
+    const text = texts && texts.length > 0 && typeof texts[0] === 'string'
+      ? (texts as string[]).join('\n')
+      : null;
+    // Impress/Draw reuse the bridge's "selection" key with a different
+    // payload shape: selected frames as {slide, shape, kind, text}.
+    const slidesSelection =
+      doc.module === 'impress' || doc.module === 'draw'
+        ? ((doc.selection ?? null) as SelectionInfo['slidesSelection'])
+        : null;
     return {
-      hasSelection: Boolean(doc.calc?.selection || (text && text.length > 0)),
+      hasSelection: Boolean(doc.calc?.selection || slidesSelection?.length || (text && text.length > 0)),
       text,
       cursorStyle: doc.cursorStyle ?? null,
       calc: doc.calc ?? null,
+      slidesSelection,
     };
   }
 
@@ -752,6 +774,20 @@ const CHAT_KNOWLEDGE = [
   '  instructions above name its language (```writer or ```calc).',
 ].join('\n');
 
+/** Impress/Draw have no change tracking: edits are undo-only. */
+const SLIDES_CHAT_KNOWLEDGE = [
+  'ADDRESSING AND EDITS',
+  '- Edits are applied to the LIVE document. These modules have no change',
+  '  tracking: each edit is a single undo step the user can revert with the',
+  '  app\u2019s Undo button.',
+  '- Content for actions goes in ONE fenced content block; the action',
+  '  instructions above name its language (```impress).',
+].join('\n');
+
+function chatKnowledge(adapter: ModuleAdapter): string {
+  return adapter.id === 'impress' ? SLIDES_CHAT_KNOWLEDGE : CHAT_KNOWLEDGE;
+}
+
 export function buildAutoPrompt(
   contextText: string,
   adapter: ModuleAdapter,
@@ -767,7 +803,7 @@ export function buildAutoPrompt(
     '',
     adapter.buildActionInstructions(),
     '',
-    CHAT_KNOWLEDGE,
+    chatKnowledge(adapter),
     '',
     contextText,
   ];
@@ -833,7 +869,7 @@ export function buildContinuationPrompt(
     '',
     adapter.buildActionInstructions(),
     '',
-    CHAT_KNOWLEDGE,
+    chatKnowledge(adapter),
     '',
     contextText,
   ];
@@ -852,7 +888,7 @@ export function formatHistoryReplay(turns: Turn[], unseen: number): string {
   for (const turn of turns.slice(0, count)) {
     const label = turn.role === 'user' ? 'User' : 'You';
     let text = (turn.content ?? '')
-      .replace(/```(?:writer|calc)[\s\S]*?```/g, '')
+      .replace(/```(?:writer|calc|impress)[\s\S]*?```/g, '')
       .replace(/\[ACTION:\s*[^\]]*\]/gi, '')
       .replace(/\s+/g, ' ')
       .trim();
