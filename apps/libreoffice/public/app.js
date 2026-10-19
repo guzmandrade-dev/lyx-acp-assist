@@ -24,6 +24,7 @@ const stopBtn = document.getElementById('stop');
 const undoBtn = document.getElementById('undo');
 const pinBtn = document.getElementById('pin');
 const reconnectBtn = document.getElementById('reconnect');
+const installBtn = document.getElementById('install-btn');
 const cmdEl = document.getElementById('agent-cmd');
 const argsEl = document.getElementById('agent-args');
 const attachBtn = document.getElementById('attach');
@@ -484,8 +485,10 @@ async function refreshStatus() {
     if (bridgeAvailable) {
       setbridgeBusyState(false);
       setStatusText('LibreOffice connected');
+      hideInstallButton();
     } else {
       setStatusText('Bridge not found — open LibreOffice and use menu ACP Assist > Start bridge');
+      await refreshInstallable();
     }
     updateStatusClass();
   } catch {
@@ -495,6 +498,52 @@ async function refreshStatus() {
     updateStatusClass();
     setStatusText('server unreachable — restart the app');
   }
+}
+
+// --- one-click bridge extension install --------------------------------
+
+let installBusy = false;
+
+/** Show the install button only when the server can actually run it. */
+async function refreshInstallable() {
+  if (!installBtn) return;
+  try {
+    const pre = await api('/api/bridge/install/preflight');
+    installBtn.hidden = !pre.canInstall;
+  } catch {
+    installBtn.hidden = true;
+  }
+}
+
+function hideInstallButton() {
+  if (installBtn) installBtn.hidden = true;
+}
+
+async function installBridgeExtension() {
+  if (installBusy || !installBtn) return;
+  // This touches the user's REAL LibreOffice profile — confirm first.
+  const okToRun = window.confirm(
+    'Install the ACP Assist bridge extension into your LibreOffice?\n' +
+    'This modifies your LibreOffice profile. Close LibreOffice first if it is running.',
+  );
+  if (!okToRun) return;
+  installBusy = true;
+  installBtn.disabled = true;
+  setStatusText('Installing bridge extension…');
+  try {
+    const r = await api('/api/bridge/install', { method: 'POST' });
+    setStatusText(r.message || 'Extension installed. Restart LibreOffice, then use menu ACP Assist > Start bridge.');
+    hideInstallButton();
+  } catch (e) {
+    setStatusText(`Install failed: ${e.message ?? e}`);
+  } finally {
+    installBusy = false;
+    installBtn.disabled = false;
+  }
+}
+
+if (installBtn) {
+  installBtn.addEventListener('click', installBridgeExtension);
 }
 
 async function refreshSelection() {

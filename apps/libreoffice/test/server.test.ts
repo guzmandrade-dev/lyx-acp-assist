@@ -422,3 +422,121 @@ describe('server message loop (fake agent + fake bridge)', () => {
     srv.close();
   });
 });
+describe('bridge extension install routes', () => {
+  const publicDir = path.join(os.tmpdir(), 'lo-acp-test-public');
+
+  async function makeApp(opts: Partial<Parameters<typeof createServer>[0]> = {}) {
+    const app = createServer({
+      publicDir,
+      agentFactory: () => ({ start: async () => undefined, stop: () => undefined, createSession: async () => undefined, cancel: () => undefined, prompt: async () => '' }),
+      bridgeFactory: () => new FakeBridge(),
+      ...opts,
+    });
+    const srv = app.listen(0, '127.0.0.1');
+    await new Promise<void>((r) => srv.on('listening', r));
+    const addr = srv.address() as { port: number };
+    return { srv, url: `http://127.0.0.1:${addr.port}` };
+  }
+
+  it('preflight reports not configured without an oxt path', async () => {
+    const { srv, url } = await makeApp();
+    const pre = (await (await fetch(`${url}/api/bridge/install/preflight`)).json()) as { canInstall: boolean; reason: string };
+    expect(pre.canInstall).toBe(false);
+    expect(pre.reason).toContain('not configured');
+    srv.close();
+  });
+
+  it('preflight reports a missing oxt file', async () => {
+    const { srv, url } = await makeApp({
+      oxtPath: path.join(os.tmpdir(), 'lo-acp-test', 'missing.oxt'),
+      unopkgPath: 'C:/fake/unopkg.exe',
+    });
+    const pre = (await (await fetch(`${url}/api/bridge/install/preflight`)).json()) as { canInstall: boolean; reason: string };
+    expect(pre.canInstall).toBe(false);
+    expect(pre.reason).toContain('not found');
+    srv.close();
+  });
+
+  it('preflight reports installable when oxt + unopkg are present', async () => {
+    const oxtPath = path.join(os.tmpdir(), 'lo-acp-test.oxt');
+    await fs.writeFile(oxtPath, 'fake oxt', 'utf8');
+    const { srv, url } = await makeApp({
+      oxtPath,
+      unopkgPath: 'C:/fake/unopkg.exe',
+      sofficeProbe: async () => false,
+    });
+    const pre = (await (await fetch(`${url}/api/bridge/install/preflight`)).json()) as {
+      canInstall: boolean; unopkg: string; sofficeRunning: boolean;
+    };
+    expect(pre.canInstall).toBe(true);
+    expect(pre.unopkg).toBe('C:/fake/unopkg.exe');
+    expect(pre.sofficeRunning).toBe(false);
+    await fs.rm(oxtPath, { force: true });
+    srv.close();
+  });
+
+  it('preflight reports not installable when unopkg is missing', async () => {
+    const oxtPath = path.join(os.tmpdir(), 'lo-acp-test.oxt');
+    await fs.writeFile(oxtPath, 'fake oxt', 'utf8');
+    const { srv, url } = await makeApp({ oxtPath, unopkgPath: null });
+    const pre = (await (await fetch(`${url}/api/bridge/install/preflight`)).json()) as { canInstall: boolean; reason: string };
+    expect(pre.canInstall).toBe(false);
+    expect(pre.reason).toContain('unopkg not found');
+    await fs.rm(oxtPath, { force: true });
+    srv.close();
+  });
+
+  it('install runs remove-then-add and reports success', async () => {
+    const calls: Array<{ unopkg: string; oxt: string }> = [];
+    const { srv, url } = await makeApp({
+      oxtPath: 'C:/fake/bridge.oxt',
+      unopkgPath: 'C:/fake/unopkg.exe',
+      sofficeProbe: async () => false,
+      installBridge: async (unopkg, oxt) => {
+        calls.push({ unopkg, oxt });
+        return { ok: true, steps: [], message: 'Extension installed.' };
+      },
+    });
+    const res = await fetch(`${url}/api/bridge/install`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; message: string };
+    expect(body.ok).toBe(true);
+    expect(body.message).toBe('Extension installed.');
+    expect(calls).toEqual([{ unopkg: 'C:/fake/unopkg.exe', oxt: 'C:/fake/bridge.oxt' }]);
+    srv.close();
+  });
+
+  it('install refuses while LibreOffice is running (409)', async () => {
+    const { srv, url } = await makeApp({
+      oxtPath: 'C:/fake/bridge.oxt',
+      unopkgPath: 'C:/fake/unopkg.exe',
+      sofficeProbe: async () => true,
+      installBridge: async () => {
+        throw new Error('must not be called');
+      },
+    });
+    const res = await fetch(`${url}/api/bridge/install`, { method: 'POST' });
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain('Close it first');
+    srv.close();
+  });
+
+  it('install surfaces a failed unopkg add as 500', async () => {
+    const { srv, url } = await makeApp({
+      oxtPath: 'C:/fake/bridge.oxt',
+      unopkgPath: 'C:/fake/unopkg.exe',
+      sofficeProbe: async () => false,
+      installBridge: async () => ({
+        ok: false,
+        steps: [],
+        message: 'unopkg add failed (exit 1): boom',
+      }),
+    });
+    const res = await fetch(`${url}/api/bridge/install`, { method: 'POST' });
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain('unopkg add failed');
+    srv.close();
+  });
+});

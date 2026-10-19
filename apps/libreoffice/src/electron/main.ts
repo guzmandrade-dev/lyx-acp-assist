@@ -86,6 +86,10 @@ async function startApp(): Promise<void> {
     attachmentsDir,
     logDir,
     settingsDir: app.getPath('userData'),
+    // Packaged app: the oxt rides in extraResources; dev: repo spike/.
+    oxtPath: app.isPackaged
+      ? path.join(process.resourcesPath, 'acp-bridge-spike.oxt')
+      : path.join(__dirname, '..', '..', 'spike', 'acp-bridge-spike.oxt'),
   });
 
   // Dynamic port (discovery-first rule; multiple companion instances are

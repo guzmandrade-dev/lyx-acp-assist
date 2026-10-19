@@ -247,6 +247,32 @@ body {
   50% { opacity: 1; }
 }
 
+/* One-click bridge install: shown in the status line only when no bridge
+   is found AND the server can run the installer (unopkg + oxt located). */
+.install-btn {
+  font-size: var(--text-xs);
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-secondary);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.install-btn:hover {
+  background: var(--surface-tertiary);
+}
+
+.install-btn:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.install-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 /* "talking to LibreOffice" indicator: shown while a pipe request is in flight. */
 .bridge-spinner {
   width: 10px;

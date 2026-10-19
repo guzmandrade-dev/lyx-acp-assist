@@ -21,6 +21,12 @@ import {
   BridgeError,
   discoverBridges,
 } from './bridge/client.js';
+import {
+  findUnopkg,
+  installBridge,
+  sofficeRunning,
+  type InstallResult,
+} from './bridge/install.js';
 import { writerAdapter } from './modules/writer.js';
 import { calcAdapter, parseCalcAction } from './modules/calc.js';
 import { impressAdapter, parseImpressAction } from './modules/impress.js';
@@ -101,6 +107,14 @@ export interface ServerOptions {
   attachmentsDir?: string;
   logDir?: string;
   settingsDir?: string;
+  /** Bridge .oxt for one-click install (absent = the flow is disabled). */
+  oxtPath?: string;
+  /** Test hook: override the unopkg probe (null = not found). */
+  unopkgPath?: string | null;
+  /** Test hook: override the running-LibreOffice probe. */
+  sofficeProbe?: () => Promise<boolean>;
+  /** Test hook: replace the real unopkg run. */
+  installBridge?: (unopkgPath: string, oxtPath: string) => Promise<InstallResult>;
 }
 
 /** A file the user attached to the next message. */
@@ -205,6 +219,60 @@ export function createServer(options: ServerOptions & {
       res.json({ bridgeAvailable: false });
     }
   });
+
+  // --- bridge extension install (one-click; touches the REAL profile) ----
+
+  app.get(
+    '/api/bridge/install/preflight',
+    wrap(async (_req, res) => {
+      if (!options.oxtPath) {
+        res.json({ canInstall: false, reason: 'extension package not configured' });
+        return;
+      }
+      let oxtFound = false;
+      try {
+        await fs.access(options.oxtPath);
+        oxtFound = true;
+      } catch {
+        oxtFound = false;
+      }
+      if (!oxtFound) {
+        res.json({ canInstall: false, reason: `extension package not found at ${options.oxtPath}` });
+        return;
+      }
+      const unopkg = options.unopkgPath !== undefined ? options.unopkgPath : findUnopkg();
+      if (!unopkg) {
+        res.json({ canInstall: false, reason: 'unopkg not found — is LibreOffice installed?' });
+        return;
+      }
+      res.json({
+        canInstall: true,
+        unopkg,
+        sofficeRunning: options.sofficeProbe ? await options.sofficeProbe() : await sofficeRunning(),
+      });
+    }),
+  );
+
+  app.post(
+    '/api/bridge/install',
+    wrap(async (_req, res) => {
+      if (!options.oxtPath) throw new Error('Extension install is not configured (missing oxt path).');
+      const unopkg = options.unopkgPath !== undefined ? options.unopkgPath : findUnopkg();
+      if (!unopkg) throw new Error('unopkg not found — install LibreOffice first.');
+      const running = options.sofficeProbe ? await options.sofficeProbe() : await sofficeRunning();
+      if (running) {
+        res.status(409).json({ error: 'LibreOffice is running. Close it first, then retry.' });
+        return;
+      }
+      const run = options.installBridge ?? installBridge;
+      const result = await run(unopkg, options.oxtPath);
+      if (!result.ok) {
+        res.status(500).json({ error: result.message, steps: result.steps });
+        return;
+      }
+      res.json(result);
+    }),
+  );
 
   const settingsFile = options.settingsDir
     ? path.join(options.settingsDir, 'agent-settings.json')

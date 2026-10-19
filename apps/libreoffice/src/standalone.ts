@@ -23,6 +23,8 @@ const server = createServer({
   attachmentsDir: path.join(dataDir, 'attachments'),
   logDir: path.join(dataDir, 'logs'),
   settingsDir: dataDir,
+  // Dev run: the packaged extension from the repo (spike/).
+  oxtPath: path.join(__dirname, '..', 'spike', 'acp-bridge-spike.oxt'),
 });
 
 const port = process.env.PORT ? Number.parseInt(process.env.PORT, 10) : 0;

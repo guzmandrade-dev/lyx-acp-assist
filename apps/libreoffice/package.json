@@ -46,6 +46,12 @@
       "!test/**",
       "!spikes/**"
     ],
+    "extraResources": [
+      {
+        "from": "spike/acp-bridge-spike.oxt",
+        "to": "acp-bridge-spike.oxt"
+      }
+    ],
     "icon": "build/icon.ico",
     "win": {
       "target": [
