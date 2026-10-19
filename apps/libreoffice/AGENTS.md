@@ -408,7 +408,8 @@ Next: Phase 4 (polish) — panel UI smoke test DONE (2026-10-18, see
 below); multi-instance discovery test DONE (2026-10-18, rule 35);
 companion auto-install of the .oxt DONE (2026-10-18, see "Bridge
 auto-install" below); packaging + CI DONE (2026-10-18, see "Packaging
-and CI" below); remaining: sidebar deck, optional small UI bits.
+and CI" below); remaining: sidebar deck. The optional small UI bits are
+DONE (2026-10-19, see "Panel UI bits test" below).
 Roadmap and scope live in README.md.
 
 ## Bridge auto-install (done 2026-10-18)
@@ -424,8 +425,13 @@ the status line only when preflight says canInstall. oxtPath: dev =
 `spike/acp-bridge-spike.oxt`, packaged app = electron-builder
 extraResources (`process.resourcesPath`). 7 route tests with injected
 fakes; npm test 61/61. Verified live: preflight returns canInstall
-on this box; the REAL-profile POST install has NOT been exercised
-end-to-end (needs explicit user consent — do it via the panel).
+on this box, and the REAL-profile install flow is now exercised
+END-TO-END (2026-10-19, user consent): extension removed from the real
+profile, the panel showed the failure state + "Install bridge…" button,
+the click + confirm ran the real unopkg install, `unopkg list` confirmed
+it, a real-profile LibreOffice relaunch + bridge start connected the
+panel again. Note: the panel evaluates canInstall at CONNECT time —
+after installing, click Reconnect (or relaunch) to proceed.
 
 ## Panel UI smoke test (done 2026-10-18)
 
@@ -440,6 +446,29 @@ persistence, pin toggle, zero console errors. Two bugs found and fixed
 (the persisted action is now passed to the renderer, matching live), and
 a lowercase "the" in the welcome hint from the LyX rename. The Electron
 shell (`npm start`) is still only typechecked — never launched.
+
+## Panel UI bits test (done 2026-10-19)
+
+The three controls the first smoke test did not cover, exercised live in
+the browser against the dev server + a live bridge + real vibe-acp turns:
+
+- **Attach flow**: "+" → file picker → chip renders → consumed by the next
+  message (chip cleared after send) → the agent answered a question only
+  answerable from the attached .md (91.7% backup-supplier score). Zero
+  console errors.
+- **Stop button**: BUG FOUND AND FIXED (commit 37fbade): Stop aborts the
+  fetch client-side (two abort paths — awaiting response headers and
+  mid-stream); both previously left a silent empty bubble with no
+  feedback. Both now render "(no response)" + "Stopped before applying".
+  Server-side fact: vibe-acp IGNORES the ACP session/cancel notification
+  (the generation runs to completion in the background, recorded in
+  history with a cancelled outcome); the client abort is what the user
+  actually sees. Also: vibe-acp prepends MCP-connection noise ("The
+  following MCP servers failed to connect: markitdown") to its replies —
+  agent quirk, not an app bug.
+- **Reconnect button**: tears down and recreates the session; the
+  per-document conversation history reloads correctly. Also observed:
+  reconnect is what re-evaluates the install button's preflight.
 ## Packaging and CI (done 2026-10-18)
 
 - **Icons**: `scripts/generate-icon.ps1` ported from lyx-acp-assist with a
