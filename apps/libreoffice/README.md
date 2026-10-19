@@ -87,6 +87,15 @@ most recently started LibreOffice instance it finds. All live instances are
 visible in the panel; switching to another one is a reconnect, not a
 simultaneous link.
 
+### Installing the bridge
+
+If no bridge is found and LibreOffice is installed, the panel's status line
+shows an **Install bridge…** button. It installs the bundled `.oxt` into your
+LibreOffice profile in one click (after a confirmation): close LibreOffice
+first, click the button, restart LibreOffice, then start the bridge from the
+menu (**ACP Assist > Start bridge**). Manual install works too — LibreOffice's
+Extension Manager, or `unopkg add` from LibreOffice's `program` directory.
+
 ## One input box, agent-decided intent
 
 You type a single message; the agent decides whether to reply in chat or edit

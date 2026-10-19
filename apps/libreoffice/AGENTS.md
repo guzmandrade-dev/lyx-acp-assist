@@ -405,9 +405,26 @@ vibe-acp (2026-10-18):
   `live_drive.mjs` (drives the panel's HTTP API from plain node).
 
 Next: Phase 4 (polish) — panel UI smoke test DONE (2026-10-18, see
-below); multi-instance discovery test DONE (2026-10-18, rule 35); remaining:
-companion auto-install of the .oxt, packaging + CI, sidebar deck.
+below); multi-instance discovery test DONE (2026-10-18, rule 35);
+companion auto-install of the .oxt DONE (2026-10-18, see "Bridge
+auto-install" below); remaining: packaging + CI, sidebar deck.
 Roadmap and scope live in README.md.
+
+## Bridge auto-install (done 2026-10-18)
+
+One-click .oxt install from the panel: `src/bridge/install.ts`
+(findUnopkg with LO_UNOPKG env override; sofficeRunning probe;
+rule-6 remove-then-add via spawned unopkg), server routes
+`GET /api/bridge/install/preflight` (read-only: oxt found, unopkg
+found, soffice running) and `POST /api/bridge/install` (409 while
+LibreOffice runs; runs against the user's REAL profile, so the panel
+confirms before calling). Panel shows an "Install bridge…" button in
+the status line only when preflight says canInstall. oxtPath: dev =
+`spike/acp-bridge-spike.oxt`, packaged app = electron-builder
+extraResources (`process.resourcesPath`). 7 route tests with injected
+fakes; npm test 61/61. Verified live: preflight returns canInstall
+on this box; the REAL-profile POST install has NOT been exercised
+end-to-end (needs explicit user consent — do it via the panel).
 
 ## Panel UI smoke test (done 2026-10-18)
 
