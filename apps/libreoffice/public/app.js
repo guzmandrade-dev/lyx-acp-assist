@@ -123,7 +123,13 @@ function renderConversation(turns) {
   }
   hideEmpty();
   for (const turn of turns) {
-    const { div } = addMessage(turn.role, turn.content);
+    // Applied write actions strip their content block in the render (the
+    // live stream does the same); pass the persisted outcome through.
+    const appliedAction =
+      turn.role === 'assistant' && turn.meta?.result === 'applied' && turn.meta.action !== 'none'
+        ? turn.meta.action
+        : undefined;
+    const { div } = addMessage(turn.role, turn.content, { applied: appliedAction });
     // Restore a persisted action outcome (applied/error/cancelled) from a
     // previous app run, so failures are visible after a restart.
     if (turn.role === 'assistant' && turn.meta) {
@@ -164,7 +170,7 @@ function showEmpty() {
     name.textContent = 'LibreOffice ACP Assist';
     const hint = document.createElement('div');
     hint.textContent =
-      'Select text in LibreOffice or type a request. the agent will reply here or write directly into the document.';
+      'Select text in LibreOffice or type a request. The agent will reply here or write directly into the document.';
     emptyEl.append(logo, name, hint);
   }
   // Re-append so the empty state is the LAST child: with flex:1 + margin
