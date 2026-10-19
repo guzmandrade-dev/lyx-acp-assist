@@ -343,7 +343,7 @@ Phase 2 (Calc) is complete and live-tested end-to-end with opencode
 (2026-10-17, re-verified independently):
 - Bridge: Calc read (sheets, selection values+formulas, active-sheet
   used-range data, all capped/trimmed) + write-cells / insert-rows /
-  insert-cols inside one undo transaction; e2e 25/25, mechanics 13/13.
+  insert-cols inside one undo transaction; mechanics 13/13.
 - Companion: `src/modules/calc.ts` adapter (A1 addressing, ```calc TSV
   blocks, write-cells/rewrite/insert-rows/insert-cols action tags),
   Calc-aware context/selection building, UI feedback labels.
@@ -352,5 +352,29 @@ Phase 2 (Calc) is complete and live-tested end-to-end with opencode
   =Qty*Price formulas) and stopped cleanly; both edits reverted with
   one undo each.
 
-Next: Phase 3 (Impress/Draw) — slide outline context, slide/frame actions
-on the same adapter pattern. Roadmap and scope live in README.md.
+Phase 3 (Impress/Draw) is complete and live-tested end-to-end with
+vibe-acp (2026-10-18):
+- Bridge: Impress/Draw read (slide outline with shape kinds, current
+  slide, selection with (slide, shape) indices, capped/truncated) +
+  rewrite-frame / rewrite-slide / insert-slide-after (s0 = insert at
+  the very start via the rule-31 text swap) + `/document/s/:i` lazy
+  fetch; edits run inside `um.lock()` and revert through the undo
+  journal (rule 27); e2e 42/42 (16 Writer/general + 7 Calc + 14 Impress +
+  3 Draw + activate/stop), mechanics 13/13.
+- Companion: `src/modules/impress.ts` adapter (serves draw too;
+  ```impress blocks: first line = title, following lines = body;
+  rewrite / rewrite-slide / insert-after tags), deck-outline context,
+  frame selection block, module-aware UI feedback labels + TurnMeta
+  module field; npm test 54/54.
+- Live regression (vibe-acp, `C:\Users\guzma\.local\bin\vibe-acp.exe` —
+  verified as a third ACP agent alongside opencode): the agent ran a
+  two-action run (insert-after s2 "Conclusions" with two bullets, then
+  rewrite-slide s1 to an informal title-only reword) and stopped with
+  `none`; deck verified via UNO (4 slides, right indices, body
+  untouched), and two /undo clicks restored the exact original deck.
+  Helpers: `spike/validate/seed_deck.py`, `verify_deck.py`,
+  `live_drive.mjs` (drives the panel's HTTP API from plain node).
+
+Next: Phase 4 (polish) — panel UI smoke test (never run; backlog item
+1), multi-instance discovery test, companion auto-install of the .oxt,
+packaging + CI, sidebar deck. Roadmap and scope live in README.md.

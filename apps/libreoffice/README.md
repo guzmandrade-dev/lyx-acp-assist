@@ -13,13 +13,13 @@ truth, all edits go through the application's own machinery, and the agent
 expresses intent through a small vocabulary of action tags that the app
 executes mechanically.
 
-> **Status: Phase 1 (Writer) and Phase 2 (Calc) complete and live-tested;
-> Phase 3 (Impress/Draw) implemented and bridge-validated** — the
-> in-process bridge, undo transactions, tracked changes, formatted inserts,
-> live selection events, Calc cell reads/writes, and the Impress slide
-> outline/frame actions all pass their validation suites on LibreOffice
-> 26.8.1.1 / Windows. Developer-facing notes, decisions, and verified
-> technical facts live in [AGENTS.md](AGENTS.md).
+> **Status: Phases 1–3 complete and live-tested** — the in-process bridge,
+> undo transactions, tracked changes, formatted inserts, live selection
+> events, Calc cell reads/writes, and the Impress/Draw slide actions all
+> pass their validation suites on LibreOffice 26.8.1.1 / Windows, and each
+> module's multi-action flow was verified live with an ACP agent (opencode,
+> and vibe-acp for Impress). Developer-facing notes, decisions, and
+> verified technical facts live in [AGENTS.md](AGENTS.md).
 
 ## Why this is *easier* than the LyX version
 
@@ -171,11 +171,12 @@ implements the replacement: a live in-process HTTP bridge in `spike/oxt/`.
   formulas) and cell actions (write-cells, rewrite, insert-rows/cols),
   bridge-validated end-to-end and live-tested with an ACP agent
   (multi-action run, one undo per edit).
-- **Phase 3 — Impress/Draw: implemented and bridge-validated.** Slide
-  outline context and slide/frame actions (rewrite, rewrite-slide,
-  insert-after with s0 = insert at the very start), undo-journal based
-  one-click undo (42/42 e2e checks); a live-agent regression pass is
-  still pending.
+- **Phase 3 — Impress/Draw: done.** Slide outline context and slide/frame
+  actions (rewrite, rewrite-slide, insert-after with s0 = insert at the
+  very start). These modules have no change tracking, so each edit is one
+  entry in the bridge's undo journal — one click on Undo reverts it
+  (42/42 e2e checks); live-tested with an ACP agent (two-action run,
+  both edits reverted one undo each).
 - **Phase 4 — polish:** sidebar deck in LibreOffice (connection status,
   launch/focus companion, restart bridge, refresh agent), multi-document
   tabs, attachment flow, packaging (Electron installers + `.oxt`), CI.
