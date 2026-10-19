@@ -1,9 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="LyX ACP Assist logo">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="LibreOffice ACP Assist logo">
   <!-- Paper card, tilted: the document the agent works on -->
   <g transform="rotate(-6 128 128)">
     <rect x="56" y="44" width="144" height="168" rx="18" fill="#faf8f2" stroke="#d8d2c4" stroke-width="3"/>
-    <!-- Title bar in LyX blue -->
-    <rect x="76" y="72" width="80" height="14" rx="7" fill="#3b6ea5"/>
+    <!-- Title bar in LibreOffice green -->
+    <rect x="76" y="72" width="80" height="14" rx="7" fill="#18a303"/>
     <!-- Muted body-text lines -->
     <rect x="76" y="100" width="104" height="8" rx="4" fill="#8a8578"/>
     <rect x="76" y="116" width="88" height="8" rx="4" fill="#8a8578"/>

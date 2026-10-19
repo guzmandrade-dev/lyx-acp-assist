@@ -3,6 +3,8 @@ node_modules/
 dist/
 release/
 dist-release/
+build/
+release-out/
 *.log
 
 # Packaged extension artifacts — rebuilt from spike/oxt/ sources
