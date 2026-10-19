@@ -407,7 +407,8 @@ vibe-acp (2026-10-18):
 Next: Phase 4 (polish) — panel UI smoke test DONE (2026-10-18, see
 below); multi-instance discovery test DONE (2026-10-18, rule 35);
 companion auto-install of the .oxt DONE (2026-10-18, see "Bridge
-auto-install" below); remaining: packaging + CI, sidebar deck.
+auto-install" below); packaging + CI DONE (2026-10-18, see "Packaging
+and CI" below); remaining: sidebar deck, optional small UI bits.
 Roadmap and scope live in README.md.
 
 ## Bridge auto-install (done 2026-10-18)
@@ -439,3 +440,35 @@ persistence, pin toggle, zero console errors. Two bugs found and fixed
 (the persisted action is now passed to the renderer, matching live), and
 a lowercase "the" in the welcome hint from the LyX rename. The Electron
 shell (`npm start`) is still only typechecked — never launched.
+## Packaging and CI (done 2026-10-18)
+
+- **Icons**: `scripts/generate-icon.ps1` ported from lyx-acp-assist with a
+  LibreOffice-green palette matching the new `public/logo.svg` (replacing
+  the LyX-logo one). Generates `build/icon.ico` + `icon-256/512.png`
+  (gitignored; regenerate on Windows with
+  `powershell -File scripts/generate-icon.ps1`).
+- **`npm run package` verified working** (first run ever): NSIS setup,
+  portable .exe, and zip all build; `acp-bridge-spike.oxt` lands in the
+  app's `resources/` via electron-builder `extraResources`. The script
+  now passes `--publish never` (v26's implicit CI-detection publish
+  tries to publish with no GH_TOKEN otherwise).
+- **AGENT-SESSION PITFALL**: under this agent harness, packaging into a
+  repo-local output dir fails (`EPERM` renaming the freshly extracted
+  `win-unpacked.tmp` — something in the harness watches the repo tree
+  and holds new dirs; the lock even survives minutes and
+  `Restart Manager` reports no holder). Building with
+  `--config.directories.output` OUTSIDE the repo (e.g. %TEMP%) works
+  fine. In a normal user shell `npm run package` should just work.
+- **Electron shell first launch verified** (`npm start`, 2026-10-18):
+  dynamic-port server, panel served, install preflight works, soffice
+  focus watcher (PowerShell) starts, clean exit. AGENT-SESSION
+  PITFALL: the harness exports `ELECTRON_RUN_AS_NODE=1`, which
+  electron.exe inherits and then runs main.js as plain Node
+  (`SyntaxError: ... does not provide an export named 'BrowserWindow'`)
+  — launch with the variable cleared. The pin/floating behavior was NOT
+  visually verified (no computer-use tooling that session).
+- **CI**: `.github/workflows/build.yml` ported from lyx-acp-assist —
+  test (npm test + typecheck) → assets (Windows runner: icons +
+  rebuilds the gitignored .oxt from spike/oxt/ with Python zipfile) →
+  per-OS electron-builder builds → draft release on v* tags, artifacts
+  include the .oxt. Never pushed; untested against GitHub.

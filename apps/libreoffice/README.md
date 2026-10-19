@@ -17,8 +17,8 @@ executes mechanically.
 > undo transactions, tracked changes, formatted inserts, live selection
 > events, Calc cell reads/writes, and the Impress/Draw slide actions all
 > pass their validation suites on LibreOffice 26.8.1.1 / Windows, and each
-> module's multi-action flow was verified live with an ACP agent (opencode,
-> and vibe-acp for Impress). Developer-facing notes, decisions, and
+> module's multi-action flow was verified live with an ACP agent
+> (vibe-acp). Developer-facing notes, decisions, and
 > verified technical facts live in [AGENTS.md](AGENTS.md).
 
 ## Why this is *easier* than the LyX version
@@ -191,9 +191,11 @@ implements the replacement: a live in-process HTTP bridge in `spike/oxt/`.
   entry in the bridge's undo journal — one click on Undo reverts it
   (42/42 e2e checks); live-tested with an ACP agent (two-action run,
   both edits reverted one undo each).
-- **Phase 4 — polish:** sidebar deck in LibreOffice (connection status,
-  launch/focus companion, restart bridge, refresh agent), multi-document
-  tabs, attachment flow, packaging (Electron installers + `.oxt`), CI.
+- **Phase 4 — polish:** one-click `.oxt` install from the panel, packaging
+  (Electron installers + `.oxt`), CI, and multi-instance discovery are
+  done; remaining: sidebar deck in LibreOffice (connection status,
+  launch/focus companion, restart bridge, refresh agent) and
+  multi-document tabs.
 
 ## Inspirations and differences
 
