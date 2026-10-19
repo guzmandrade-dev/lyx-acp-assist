@@ -807,6 +807,20 @@ async function streamMessage(message) {
       }),
     );
   } catch (e) {
+    if (e.name === 'AbortError') {
+      // The user pressed Stop before the stream even started (the fetch
+      // was still waiting for response headers). Give the turn its
+      // "Stopped before applying" feedback instead of a silent bubble.
+      hideTyping();
+      generationStart = 0;
+      textDiv.innerHTML = '<p>(no response)</p>';
+      renderFeedback(div, {
+        applied: null, target: null, target2: null, address: null,
+        module: null, cancelled: true, error: null,
+      });
+      setBusy(false);
+      return { full: '', applied: null, cancelled: true, error: null };
+    }
     maybeSetBusyFromError(e);
     hideTyping();
     generationStart = 0;
@@ -931,11 +945,18 @@ async function streamMessage(message) {
       }
     }
   } catch (e) {
-    maybeSetBusyFromError(e);
-    hideTyping();
-    generationStart = 0;
-    setBusy(false);
-    throw e;
+    if (e.name === 'AbortError') {
+      // The user pressed Stop: the fetch was aborted client-side. Fall
+      // through to the final render so the turn gets its "Stopped before
+      // applying" feedback instead of a silent empty bubble.
+      cancelled = true;
+    } else {
+      maybeSetBusyFromError(e);
+      hideTyping();
+      generationStart = 0;
+      setBusy(false);
+      throw e;
+    }
   }
 
   hideTyping();
