@@ -288,6 +288,21 @@ companion outside.**
     no presentation shapes — inserted pages get a plain `TextShape`
     carrying the whole content, and `rewrite-slide` is refused (no
     title/body frames; use rewrite on a selected frame).
+35. **Multi-instance discovery verified (2026-10-18)**: two soffice
+    processes, separate scratch profiles + accept sockets (2002/2003),
+    the oxt installed into BOTH profiles — both bridges run
+    simultaneously, each writing its own `<pid>.json` record with a
+    distinct OS-assigned port AND token. `discoverBridges()` returns
+    both, newest-started first; each record reaches only its own bridge
+    with its own token. Killing one soffice (real `taskkill` by PID)
+    makes the next scan drop its record AND unlink the file — same for
+    a synthetic dead-PID record. `bridge_ctl.py` takes `[host] [port]`,
+    so instance B is `bridge_ctl.py start localhost 2003`. Companion
+    side is dynamic by construction (both `standalone.ts` and
+    `electron/main.ts` bind `:0`, PORT overrides). UX fact: the server
+    attaches to `bridges[0]` (newest, `src/server.ts` `pickBridge`) —
+    one session ↔ one bridge; switching instances = reconnect.
+    Check script: `spike/validate/multi_instance_check.mjs` (7/7).
 
 ## Spike artifacts (Phase 0, all 26 checks passed, 2026-10-16)
 
@@ -304,11 +319,18 @@ companion outside.**
   `META-INF/manifest.xml`.
 - `spike/validate/client_validate.py` — UNO-mechanics suite (13 checks), run
   against a socket-connected LibreOffice with a scratch profile.
-- `spike/validate/bridge_e2e.py` — end-to-end bridge suite (25 checks:
-  18 Writer + 7 Calc), reads the discovery record, exercises every
-  endpoint over HTTP. Needs a FRESH soffice (its initial checks assume
+- `spike/validate/bridge_e2e.py` — end-to-end bridge suite (42 checks:
+  16 Writer/general + 7 Calc + 14 Impress + 3 Draw + activate/stop),
+  reads the discovery record, exercises every endpoint over HTTP.
+  Needs a FRESH soffice (its initial checks assume
   no open documents; run it after a restart, not right after
   client_validate.py which leaves documents open).
+- `spike/validate/multi_instance_check.mjs` — companion-side discovery
+  check (run with node, needs `npm run build`): requires TWO live bridge
+  instances (separate profiles + accept sockets, oxt in both), asserts
+  both records found newest-first, each reachable with its own token,
+  distinct ports, dead-PID records dropped + unlinked. 7 checks
+  (rule 35).
 - `spike/validate/bridge_ctl.py` — start/stop the bridge over the UNO
   socket (test helper).
 - `spike/validate/cursor_probe*.py` — the empirical UNO cursor-semantics
@@ -383,9 +405,9 @@ vibe-acp (2026-10-18):
   `live_drive.mjs` (drives the panel's HTTP API from plain node).
 
 Next: Phase 4 (polish) — panel UI smoke test DONE (2026-10-18, see
-below); remaining: multi-instance discovery test, companion auto-install
-of the .oxt, packaging + CI, sidebar deck. Roadmap and scope live in
-README.md.
+below); multi-instance discovery test DONE (2026-10-18, rule 35); remaining:
+companion auto-install of the .oxt, packaging + CI, sidebar deck.
+Roadmap and scope live in README.md.
 
 ## Panel UI smoke test (done 2026-10-18)
 

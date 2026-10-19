@@ -82,6 +82,11 @@ the companion scans it, drops stale records, and shows every running
 LibreOffice instance. Multiple LibreOffice instances (separate profiles) and
 multiple companion instances side by side just work.
 
+One companion session talks to **one** bridge at a time — it attaches to the
+most recently started LibreOffice instance it finds. All live instances are
+visible in the panel; switching to another one is a reconnect, not a
+simultaneous link.
+
 ## One input box, agent-decided intent
 
 You type a single message; the agent decides whether to reply in chat or edit
