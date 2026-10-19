@@ -46,7 +46,7 @@ clipboard. UNO also gives us things LyX could never offer:
 ```
 ┌──────────────┐   ACP (stdio JSON-RPC)   ┌─────────────────┐
 │  ACP agent   │◄────────────────────────►│  Electron       │
-│ (opencode,   │                          │  companion       │
+│ (vibe-acp,   │                          │  companion       │
 │  copilot,    │                          │  (chat panel)    │
 │  goose, …)   │                          └───────┬─────────┘
 └──────────────┘                                  │ HTTP (localhost)
@@ -64,7 +64,7 @@ clipboard. UNO also gives us things LyX could never offer:
 
 - **Electron companion** (reused from the LyX app): floating chat panel,
   Express API, streaming responses, file attachments, per-document history.
-- **ACP client** (reused verbatim): agent-agnostic — `opencode acp`,
+- **ACP client** (reused verbatim): agent-agnostic — `vibe-acp`,
   `copilot --acp`, `goose acp`, or any ACP-speaking CLI.
 - **UNO bridge** (new): a small Python `.oxt` extension that runs inside
   LibreOffice and exposes read/write/event operations on the active document

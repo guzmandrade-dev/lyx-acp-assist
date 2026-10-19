@@ -14,4 +14,5 @@ lo-acp-spike/
 # OS / editor noise
 .DS_Store
 Thumbs.db
-*.swp
+*.swpspike/validate/live_drive.log
+next-steps.md

@@ -268,8 +268,8 @@ export function createServer(options: ServerOptions & {
       const persisted = await readAgentSettingsFile();
       const requested = req.body?.agent as Partial<AgentSettings> | undefined;
       const settings: AgentSettings = {
-        command: requested?.command ?? persisted.command ?? 'opencode',
-        args: requested?.args ?? persisted.args ?? ['acp'],
+        command: requested?.command ?? persisted.command ?? 'vibe-acp',
+        args: requested?.args ?? persisted.args ?? [],
         env: requested?.env ?? persisted.env ?? {},
       };
 

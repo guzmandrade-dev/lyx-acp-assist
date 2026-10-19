@@ -9,7 +9,7 @@ Calc and Impress): a floating companion panel that reads the document, chats,
 and writes **directly into the live document** — not a diff/code-review tool.
 Companion architecture: LibreOffice stays the editor; our app is a chat
 surface plus context provider; all reasoning is delegated to an external
-**ACP agent over stdio** (agent-agnostic — `opencode acp`, `copilot --acp`,
+**ACP agent over stdio** (agent-agnostic — `vibe-acp`, `copilot --acp`,
 `goose acp`). No LLM, no API keys inside this app.
 
 The design deliberately mirrors the sibling project **LyX ACP Assist**
@@ -326,9 +326,16 @@ run the relevant suite before declaring the work done.
 ## House rules (user instructions)
 
 - **Do not commit or open PRs without explicit approval.** Finish tasks with
-  the changes ready to commit.
+  the changes ready to commit. (Standing exception, approved 2026-10-17:
+  small structured commits as work progresses — but never commit
+  `next-steps.md`, the cross-session handoff file; it stays untracked.)
 - **Do not create worktrees**; work on the local branch unless explicitly
   approved.
+- **opencode is RETIRED (2026-10-18, user request — security breach).**
+  The default agent everywhere (code defaults, docs, live regressions) is
+  `vibe-acp` (no args; `C:\Users\guzma\.local\bin\vibe-acp.exe`, also on
+  PATH). Historical mentions of opencode in live-test records stay as
+  facts, but never run it for new work.
 - Keep this file (AGENTS.md) for decisions, verified facts, pitfalls, and
   house rules; keep README.md user-facing. Mirror the lyx-acp-assist
   conventions.

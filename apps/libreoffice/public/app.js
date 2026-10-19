@@ -576,7 +576,7 @@ async function refreshDocuments() {
 async function connect() {
   await refreshStatus();
   saveSettings();
-  const cmd = cmdEl.value.trim() || 'opencode';
+  const cmd = cmdEl.value.trim() || 'vibe-acp';
   const rawArgs = argsEl.value.trim();
   const args = rawArgs ? rawArgs.split(/\s+/) : [];
   const info = await api('/api/session', {
