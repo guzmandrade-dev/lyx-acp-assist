@@ -382,6 +382,21 @@ vibe-acp (2026-10-18):
   Helpers: `spike/validate/seed_deck.py`, `verify_deck.py`,
   `live_drive.mjs` (drives the panel's HTTP API from plain node).
 
-Next: Phase 4 (polish) — panel UI smoke test (never run; backlog item
-1), multi-instance discovery test, companion auto-install of the .oxt,
-packaging + CI, sidebar deck. Roadmap and scope live in README.md.
+Next: Phase 4 (polish) — panel UI smoke test DONE (2026-10-18, see
+below); remaining: multi-instance discovery test, companion auto-install
+of the .oxt, packaging + CI, sidebar deck. Roadmap and scope live in
+README.md.
+
+## Panel UI smoke test (done 2026-10-18)
+
+First full walk of the actual chat panel (`public/`) — driven in a browser
+against the standalone dev server + a live bridge, with a real vibe-acp
+session. Verified: status indicator, document selector, agent settings
+(vibe-acp default), streaming message render, applied-edit feedback line
+("✓ Inserted after [p3] in LibreOffice") with inline undo, the undo button
+round-trip (paragraph re-verified gone via the bridge), reload history
+persistence, pin toggle, zero console errors. Two bugs found and fixed
+(commit 7045b2a): history replay leaked the raw ```writer content block
+(the persisted action is now passed to the renderer, matching live), and
+a lowercase "the" in the welcome hint from the LyX rename. The Electron
+shell (`npm start`) is still only typechecked — never launched.
