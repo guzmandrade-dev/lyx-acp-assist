@@ -546,6 +546,81 @@ def main():
           and dframe.getText().getString() == "Draw frame one\nsecond para",
           f"text={dframe.getText().getString()!r}")
 
+    # --- sidebar panel: config registration + factory instantiation
+    from com.sun.star.beans import PropertyValue as _PV
+    provider = smgr.createInstanceWithContext(
+        "com.sun.star.configuration.ConfigurationProvider", ctx)
+    def _open(path):
+        p = _PV(); p.Name = "nodepath"; p.Value = path
+        return provider.createInstanceWithArguments(
+            "com.sun.star.configuration.ConfigurationAccess", (p,))
+    decks = _open("org.openoffice.Office.UI.Sidebar/Content/DeckList")
+    panels = _open("org.openoffice.Office.UI.Sidebar/Content/PanelList")
+    factories = _open("org.openoffice.Office.UI.Factories/Registered/UIElementFactories")
+    deck = decks.getByName("ACPDeck") if "ACPDeck" in decks.getElementNames() else None
+    check("sidebar: ACPDeck registered",
+          deck is not None and deck.getPropertyValue("Title") == "ACP Assist",
+          f"decks={decks.getElementNames()[:3]}…")
+    # The ContextList MUST merge as ONE clean "any, any, visible" item: a
+    # plain string value gets whitespace-split into garbage items the
+    # context parser rejects, and the deck silently never shows (live UI
+    # debugging, 2026-10-21). oor:separator=";" in the xcu is required.
+    cl = deck.getPropertyValue("ContextList") if deck is not None else ()
+    cl_items = [str(s).strip() for s in cl if str(s).strip()]
+    check("sidebar: ACPDeck ContextList is one clean context item",
+          cl_items == ["any, any, visible"],
+          f"items={cl_items!r}")
+    panel = panels.getByName("ACPStatusPanel") if "ACPStatusPanel" in panels.getElementNames() else None
+    check("sidebar: ACPStatusPanel registered with our ImplementationURL",
+          panel is not None
+          and panel.getPropertyValue("ImplementationURL")
+          == "private:resource/toolpanel/ACPPanelFactory/ACPStatusPanel"
+          and bool(panel.getPropertyValue("WantsAWT")),
+          f"impl={panel.getPropertyValue('ImplementationURL') if panel else None!r}")
+    fac = factories.getByName("ACPPanelFactory") if "ACPPanelFactory" in factories.getElementNames() else None
+    check("sidebar: panel factory registered (toolpanel/ACPPanelFactory)",
+          fac is not None
+          and fac.getPropertyValue("Type") == "toolpanel"
+          and fac.getPropertyValue("FactoryImplementation")
+          == "org.libreofficeacp.PanelFactory",
+          f"factory impl={fac.getPropertyValue('FactoryImplementation') if fac else None!r}")
+
+    # Instantiate the factory through the service manager and build one
+    # panel against a synthetic (invisible) parent window.
+    from com.sun.star.awt import WindowDescriptor as _WD, Rectangle as _Rect
+    from com.sun.star.awt.WindowClass import TOP as _TOP
+    tk = smgr.createInstanceWithContext("com.sun.star.awt.Toolkit", ctx)
+    wd = _WD()
+    wd.Type = _TOP
+    wd.WindowServiceName = "window"
+    wd.Bounds = _Rect(0, 0, 260, 140)
+    wd.WindowAttributes = 0  # invisible
+    fake_parent = tk.createWindow(wd)
+    args = (_PV(),)
+    pv = _PV(); pv.Name = "ParentWindow"; pv.Value = fake_parent
+    factory_obj = smgr.createInstanceWithContext(
+        "org.libreofficeacp.PanelFactory", ctx)
+    element = factory_obj.createUIElement(
+        "private:resource/toolpanel/ACPPanelFactory/ACPStatusPanel", (pv,))
+    real = element.getRealInterface()
+    # Over the socket the panel proxy arrives typed as XInterface; query the
+    # type contracts explicitly (probe 12kb): pyuno needs uno.getTypeByName
+    # (the imported class is not a UNO type), and the readonly Window
+    # attribute is a python property on our panel.
+    import uno as _uno
+    xtp = real.queryInterface(_uno.getTypeByName("com.sun.star.ui.XToolPanel"))
+    xsp = real.queryInterface(_uno.getTypeByName("com.sun.star.ui.XSidebarPanel"))
+    layout = xsp.getHeightForWidth(260) if xsp is not None else None
+    check("sidebar: factory creates a panel (XUIElement/XToolPanel)",
+          element is not None and real is not None
+          and xtp is not None and xtp.Window == fake_parent
+          and xsp is not None and xsp.getMinimalWidth() > 0
+          and layout is not None and layout.Preferred > 0,
+          f"minimalWidth={xsp.getMinimalWidth() if xsp else None}, "
+          f"layout={layout}")
+    real.dispose()
+    fake_parent.dispose()
+
     # --- activate (second document)
     doc2 = desktop.loadComponentFromURL("private:factory/swriter", "_blank", 0, ())
     doc2.Text.getEnd().setString("Second document body.")
