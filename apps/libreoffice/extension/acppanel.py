@@ -194,9 +194,15 @@ class AcpPanel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent
             self._children.append(win)
             return win
 
-        self.lbl_bridge = make("fixedtext", 8, 8, 244, 18)
+        # Labels need an explicit FontHeight: the VCL default clips
+        # vertically inside an 18px fixedtext on LO 26.8 (live UI
+        # feedback 2026-10-21 — the "Companion:" line lost its bottom
+        # half). 22px line pitch leaves breathing room.
+        self.lbl_bridge = make("fixedtext", 8, 8, 244, 16)
+        self.lbl_bridge.setPropertyValue("FontHeight", 9)
         self.lbl_bridge.setText("Bridge: checking…")
-        self.lbl_companion = make("fixedtext", 8, 30, 244, 18)
+        self.lbl_companion = make("fixedtext", 8, 30, 244, 16)
+        self.lbl_companion.setPropertyValue("FontHeight", 9)
         self.lbl_companion.setText("Companion: checking…")
 
         # 30px-tall buttons: 24px clips the label with the default UI
@@ -237,7 +243,8 @@ class AcpPanel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent
     # ---- XSidebarPanel
     def getHeightForWidth(self, width):
         # LayoutSize struct, NOT a bare long (probe 12kb): preferred
-        # height matches the widget layout (buttons end at y=154).
+        # height matches the widget layout (buttons end at y=154; the
+        # status lines now carry FontHeight 9 inside 16px boxes).
         return LayoutSize(162, 162, 162)
 
     def getMinimalWidth(self):
