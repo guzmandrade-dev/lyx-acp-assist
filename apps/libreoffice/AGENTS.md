@@ -396,6 +396,30 @@ run the relevant suite before declaring the work done.
     worker runs HTTP on a daemon thread and marshals label updates back
     via com.sun.star.awt.AsyncCallback (same pattern as the bridge's
     MainThreadCall — rule 2 applies to panel code too).
+45. **Raw VCL toolkit windows do NOT implement XPropertySet** (probe
+    2026-10-21, visible AND invisible fixedtext windows):
+    `queryInterface(XPropertySet)` is None and `setPropertyValue` raises
+    AttributeError — in-process and over the socket alike. Commit 03b821c
+    ("set explicit FontHeight on sidebar status labels") therefore broke
+    panel INSTANTIATION everywhere (deck renders empty: no labels, no
+    buttons). Its "verified live" claim ran against a stale cached oxt
+    (the AX verification quoted 244x18 bounds — the OLD geometry the
+    commit changed away from). Reverted 2026-10-21; the e2e factory check
+    is the regression guard (it failed 46/47 with the crash). If a label
+    font ever really needs setting, use a control + model
+    (UnoControlFixedTextModel), not property sets on the raw window.
+46. **Extension .xcu config layers MUST use the `oor:component-data`
+    format** (verified live 2026-10-21 with a ConfigurationProvider probe
+    against a scratch-profile socket): the `oor:items`
+    registrymodifications format does NOT register set members —
+    Deck['ACPDeck'] / Panel['ACPStatusPanel'] silently vanish from the
+    merged config (only a parent-path NODE fuse on UIElementFactories
+    merged, which is how the broken build still registered the factory).
+    A session mid-flight converted Sidebar.xcu/Factories.xcu to item
+    format to chase the empty-deck symptom; that was the wrong turn (the
+    empty deck was the rule-45 FontHeight crash) and was reverted.
+    Quick format probe helper pattern: `acp_probe_sidebar.py`-style
+    ConfigurationProvider reads over the accept socket.
 
 ## Sidebar deck (done 2026-10-21)
 
