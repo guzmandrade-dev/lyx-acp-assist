@@ -13,7 +13,8 @@
     "dev": "tsc --watch",
     "typecheck": "tsc --noEmit",
     "start": "npm run build && electron ./dist/electron/main.js",
-    "package": "npm run build && electron-builder --publish never",
+    "package": "npm run build && npm run package:oxt && electron-builder --publish never",
+    "package:oxt": "python scripts/package-oxt.py",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -44,12 +45,14 @@
       "dist/**/*",
       "public/**/*",
       "!test/**",
-      "!spikes/**"
+      "!test-bridge/**",
+      "!extension/**",
+      "!scripts/**"
     ],
     "extraResources": [
       {
-        "from": "spike/acp-bridge-spike.oxt",
-        "to": "acp-bridge-spike.oxt"
+        "from": "acp-bridge.oxt",
+        "to": "acp-bridge.oxt"
       }
     ],
     "icon": "build/icon.ico",

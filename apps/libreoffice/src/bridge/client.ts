@@ -2,7 +2,7 @@
  * HTTP client for the in-LibreOffice bridge (.oxt), plus discovery of
  * live bridge instances via the per-user `bridges/` directory.
  *
- * Contract (see spike/oxt/acpbridge.py): every request carries
+ * Contract (see extension/acpbridge.py): every request carries
  * `Authorization: Bearer <token>`; the bridge binds 127.0.0.1 only and
  * writes a `<pid>.json` discovery record when it starts.
  */

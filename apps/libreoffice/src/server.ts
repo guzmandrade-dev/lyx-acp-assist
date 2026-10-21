@@ -4,7 +4,7 @@
  * One session = one bridge (one LibreOffice instance) + one ACP agent.
  * Documents are tracked dynamically: every request re-reads the bridge's
  * active document; conversations are keyed per document URL. All reads
- * and writes go through the in-LibreOffice bridge (spike/oxt) — the
+ * and writes go through the in-LibreOffice bridge (extension/) — the
  * bridge is the only thing that touches UNO, and LibreOffice remains the
  * single writer of truth.
  */

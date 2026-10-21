@@ -7,14 +7,15 @@ build/
 release-out/
 *.log
 
-# Packaged extension artifacts — rebuilt from spike/oxt/ sources
-*.oxt
+# Packaged extension artifact — rebuilt from extension/ via scripts/package-oxt.py
+acp-bridge.oxt
 
 # Scratch LibreOffice profile used for testing
-lo-acp-spike/
+lo-acp-bridge/
 
 # OS / editor noise
 .DS_Store
 Thumbs.db
-*.swpspike/validate/live_drive.log
+*.swp
+test-bridge/live_drive.log
 next-steps.md
