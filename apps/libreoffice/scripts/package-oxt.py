@@ -48,6 +48,9 @@ def main() -> int:
             z.write(os.path.join(args.src, f), f)  # forward-slash entry name
     size = os.path.getsize(args.out)
     print(f"packaged {args.out} ({size} bytes, {len(FILES)} entries)")
+    with zipfile.ZipFile(args.out) as z:
+        for name in z.namelist():
+            print(f"  {name}")
     return 0
 
 
