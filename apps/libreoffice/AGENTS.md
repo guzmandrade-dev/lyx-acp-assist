@@ -73,7 +73,7 @@ companion outside.**
   (`http.server`, `json`, `secrets`, …) and pyuno (`program\uno.py`) —
   the same interpreter runs in-process via the Python-UNO component loader.
 - Scratch profile for all testing (never touch the user's real profile):
-  `-env:UserInstallation=file:///C:/Users/guzma/AppData/Local/Temp/lo-acp-spike`
+  `-env:UserInstallation=file:///C:/Users/guzma/AppData/Local/Temp/lo-acp-bridge`
 - For validation suites, LibreOffice runs with a UNO socket:
   `--accept=socket,host=localhost,port=2002;urp; --nodefault --norestore`,
   and the client connects via the bundled python to
@@ -81,7 +81,7 @@ companion outside.**
 - Windows box; LibreOffice windows are reachable for UI-level checks via the
   computer-use tools (menubar items appear in the accessibility tree).
 
-## Bridge implementation rules (verified by the Phase 0 spike)
+## Bridge implementation rules (verified by the Phase 0 feasibility probes)
 
 1. **Ship a Python UNO component, NOT ScriptProvider scripts.** Script URLs
    for extension-hosted Python embed the package's transient unpack path
@@ -302,11 +302,12 @@ companion outside.**
     `electron/main.ts` bind `:0`, PORT overrides). UX fact: the server
     attaches to `bridges[0]` (newest, `src/server.ts` `pickBridge`) —
     one session ↔ one bridge; switching instances = reconnect.
-    Check script: `spike/validate/multi_instance_check.mjs` (7/7).
+    Check script: `test-bridge/multi_instance_check.mjs` (7/7).
 
-## Spike artifacts (Phase 0, all 26 checks passed, 2026-10-16)
+## Repository layout (reorganized 2026-10-21)
 
-- `spike/oxt/` — the bridge `.oxt` sources: `acpbridge.py` (HTTP server,
+- `extension/` — the shippable bridge `.oxt` sources (was `spike/oxt/`):
+  `acpbridge.py` (HTTP server,
   discovery records, token auth, `/status`, `/document` (Writer: paragraphs +
   styles + selection + cursorStyle + lazy preview mode; Calc: sheet
   inventory + capped selection/used-range values+formulas grids),
@@ -316,33 +317,35 @@ companion outside.**
   cells become formulas), insert-rows, insert-cols; tracked-changes + one
   undo transaction per edit), `/activate`, `/undo`, `/events?since&timeout`
   long-poll), `Addons.xcu` (ACP Assist menu), `description.xml`,
-  `META-INF/manifest.xml`.
-- `spike/validate/client_validate.py` — UNO-mechanics suite (13 checks), run
-  against a socket-connected LibreOffice with a scratch profile.
-- `spike/validate/bridge_e2e.py` — end-to-end bridge suite (42 checks:
-  16 Writer/general + 7 Calc + 14 Impress + 3 Draw + activate/stop),
-  reads the discovery record, exercises every endpoint over HTTP.
-  Needs a FRESH soffice (its initial checks assume
-  no open documents; run it after a restart, not right after
-  client_validate.py which leaves documents open).
-- `spike/validate/multi_instance_check.mjs` — companion-side discovery
-  check (run with node, needs `npm run build`): requires TWO live bridge
-  instances (separate profiles + accept sockets, oxt in both), asserts
-  both records found newest-first, each reachable with its own token,
-  distinct ports, dead-PID records dropped + unlinked. 7 checks
-  (rule 35).
-- `spike/validate/bridge_ctl.py` — start/stop the bridge over the UNO
-  socket (test helper).
-- `spike/validate/cursor_probe*.py` — the empirical UNO cursor-semantics
-  probes that produced rules 10–14 above (kept for reference; not part of
-  the pass/fail suites). `cursor_probe12*.py` (12, 12b–12i) did the same
-  for Impress/Draw and produced rules 22–34.
-- Re-run cycle: repackage (zip `spike/oxt` contents with the bundled python's
-  `zipfile` — forward-slash entries matter), `unopkg remove` + `add` with the
+  `META-INF/manifest.xml`. Packaged into `acp-bridge.oxt` by
+  `scripts/package-oxt.py` (`npm run package:oxt`; gitignored).
+- `test-bridge/` — the bridge validation suites and probes (was
+  `spike/validate/`):
+  - `client_validate.py` — UNO-mechanics suite (13 checks), run
+    against a socket-connected LibreOffice with a scratch profile.
+  - `bridge_e2e.py` — end-to-end bridge suite (47 checks:
+    16 Writer/general + 7 Calc + 14 Impress + 3 Draw + 4 sidebar +
+    activate/stop), reads the discovery record, exercises every endpoint
+    over HTTP. Needs a FRESH soffice (its initial checks assume
+    no open documents; run it after a restart, not right after
+    client_validate.py which leaves documents open).
+  - `multi_instance_check.mjs` — companion-side discovery
+    check (run with node, needs `npm run build`): requires TWO live bridge
+    instances (separate profiles + accept sockets, oxt in both), asserts
+    both records found newest-first, each reachable with its own token,
+    distinct ports, dead-PID records dropped + unlinked. 7 checks
+    (rule 35).
+  - `bridge_ctl.py` — start/stop the bridge over the UNO
+    socket (test helper).
+  - `cursor_probe*.py` — the empirical UNO cursor-semantics
+    probes that produced rules 10–14 above (kept for reference; not part of
+    the pass/fail suites). `cursor_probe12*.py` (12, 12b–12l) did the same
+    for Impress/Draw and the sidebar deck and produced rules 22–44.
+- Re-run cycle: `npm run package:oxt`, `unopkg remove` + `add` with the
   scratch profile env, relaunch soffice with `--accept`, dispatch
   `service:org.libreofficeacp.bridge?start`, run the suites.
 
-When touching bridge behavior, add/extend a check in `spike/validate/` and
+When touching bridge behavior, add/extend a check in `test-bridge/` and
 run the relevant suite before declaring the work done.
 
 ## Sidebar deck rules (verified 2026-10-21, Phase 4)
@@ -399,7 +402,7 @@ run the relevant suite before declaring the work done.
 Phase 4's in-LibreOffice presence, complete and verified live in the UI
 (computer-use AX tree; every control exercised):
 
-- `spike/oxt/acppanel.py`: AcpPanelFactory (XUIElementFactory,
+- `extension/acppanel.py`: AcpPanelFactory (XUIElementFactory,
   implementation name org.libreofficeacp.PanelFactory) + AcpPanel
   (XUIElement/XToolPanel/XSidebarPanel/XComponent) — two status labels
   (bridge: newest live discovery record + /status probe; companion:
@@ -409,7 +412,7 @@ Phase 4's in-LibreOffice presence, complete and verified live in the UI
   "running on port N (writer document)"), Open companion
   (SystemShellExecute on the record's exe, or the URL in dev mode —
   verified: the panel URL opened in the default browser).
-- `spike/oxt/Sidebar.xcu` + `Factories.xcu` + `icon.png` (+ manifest
+- `extension/Sidebar.xcu` + `Factories.xcu` + `icon.png` (+ manifest
   entries; Addons.xcu gains "Show status panel" (Ctrl+F5) menu item).
 - Companion side writes its discovery record
   (`%APPDATA%/LibreOffice ACP Assist/companion.json`, pid/port/url/exe):
@@ -474,7 +477,7 @@ vibe-acp (2026-10-18):
   rewrite-slide s1 to an informal title-only reword) and stopped with
   `none`; deck verified via UNO (4 slides, right indices, body
   untouched), and two /undo clicks restored the exact original deck.
-  Helpers: `spike/validate/seed_deck.py`, `verify_deck.py`,
+  Helpers: `test-bridge/seed_deck.py`, `verify_deck.py`,
   `live_drive.mjs` (drives the panel's HTTP API from plain node).
 
 Next: Phase 4 (polish) — panel UI smoke test DONE (2026-10-18, see
@@ -495,7 +498,7 @@ found, soffice running) and `POST /api/bridge/install` (409 while
 LibreOffice runs; runs against the user's REAL profile, so the panel
 confirms before calling). Panel shows an "Install bridge…" button in
 the status line only when preflight says canInstall. oxtPath: dev =
-`spike/acp-bridge-spike.oxt`, packaged app = electron-builder
+`acp-bridge.oxt` (repo root, `npm run package:oxt`), packaged app = electron-builder
 extraResources (`process.resourcesPath`). 7 route tests with injected
 fakes; npm test 61/61. Verified live: preflight returns canInstall
 on this box, and the REAL-profile install flow is now exercised
@@ -550,7 +553,7 @@ the browser against the dev server + a live bridge + real vibe-acp turns:
   (gitignored; regenerate on Windows with
   `powershell -File scripts/generate-icon.ps1`).
 - **`npm run package` verified working** (first run ever): NSIS setup,
-  portable .exe, and zip all build; `acp-bridge-spike.oxt` lands in the
+  portable .exe, and zip all build; `acp-bridge.oxt` lands in the
   app's `resources/` via electron-builder `extraResources`. The script
   now passes `--publish never` (v26's implicit CI-detection publish
   tries to publish with no GH_TOKEN otherwise).
@@ -571,6 +574,6 @@ the browser against the dev server + a live bridge + real vibe-acp turns:
   visually verified (no computer-use tooling that session).
 - **CI**: `.github/workflows/build.yml` ported from lyx-acp-assist —
   test (npm test + typecheck) → assets (Windows runner: icons +
-  rebuilds the gitignored .oxt from spike/oxt/ with Python zipfile) →
+  rebuilds the gitignored .oxt from extension/ via scripts/package-oxt.py) →
   per-OS electron-builder builds → draft release on v* tags, artifacts
   include the .oxt. Never pushed; untested against GitHub.

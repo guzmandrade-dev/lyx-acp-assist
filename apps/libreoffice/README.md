@@ -172,12 +172,12 @@ out of scope for now.
 
 Replaced: everything LyX-specific — the `.lyx` parser, the LyXServer pipe
 client, and the native clipboard adapters (the biggest platform-specific
-liability of the LyX app disappears entirely). The spike bridge already
-implements the replacement: a live in-process HTTP bridge in `spike/oxt/`.
+liability of the LyX app disappears entirely). The bridge already
+implements the replacement: a live in-process HTTP bridge in `extension/`.
 
 ## Roadmap
 
-- **Phase 0 — spike: done.** All feasibility risks validated (see
+- **Phase 0 — feasibility spike: done.** All risks validated (see
   [AGENTS.md](AGENTS.md) for the findings).
 - **Phase 1 — Writer MVP: done.** Chat + action loop ported and live-tested
   against the bridge; parity with LyX ACP Assist for text documents.
