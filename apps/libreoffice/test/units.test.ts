@@ -176,16 +176,20 @@ describe('companion discovery record', () => {
 });
 
 describe('bridge install: package cache clearing', () => {
-  it('clearPackageCache removes uno_packages/cache from a profile', async () => {
+  it('clearPackageCache removes uno_packages/cache AND uno_packages.pmap', async () => {
     const { clearPackageCache } = await import('../src/bridge/install.js');
     const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'lo-acp-profile-'));
     try {
       const cacheDir = path.join(tmp, 'uno_packages', 'cache', 'registry');
       await fs.mkdir(cacheDir, { recursive: true });
       await fs.writeFile(path.join(cacheDir, 'backenddb.xml'), '<xml/>');
+      const pmap = path.join(tmp, 'uno_packages', 'uno_packages.pmap');
+      await fs.writeFile(pmap, 'Pmp1 stub');
       await fs.access(path.join(tmp, 'uno_packages', 'cache')); // exists before
+      await fs.access(pmap); // exists before
       expect(clearPackageCache(tmp)).toBe(true);
       await expect(fs.access(path.join(tmp, 'uno_packages', 'cache'))).rejects.toThrow();
+      await expect(fs.access(pmap)).rejects.toThrow();
     } finally {
       await fs.rm(tmp, { recursive: true, force: true });
     }
@@ -214,14 +218,18 @@ describe('bridge install: package cache clearing', () => {
     }
   });
 
-  it('installBridge clears the package cache after a successful add', async () => {
+  it('installBridge clears cache+pmap BETWEEN remove and add (unopkg add retry fix)', async () => {
     const install = await import('../src/bridge/install.js');
     const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'lo-acp-install-'));
     const oxtPath = path.join(tmp, 'bridge.oxt');
     await fs.writeFile(oxtPath, 'fake');
-    // Fake profile with a stale cache.
+    // Fake profile with a stale cache AND stale pmap (simulating a
+    // previous install that unopkg remove cleaned in the backend DBs
+    // but left on disk).
     const profile = path.join(tmp, 'profile');
     await fs.mkdir(path.join(profile, 'uno_packages', 'cache'), { recursive: true });
+    const pmap = path.join(profile, 'uno_packages', 'uno_packages.pmap');
+    await fs.writeFile(pmap, 'Pmp1 stale');
     const calls: string[][] = [];
     install.setRunUnopkgForTesting(async (cmd) => {
       calls.push(cmd);
@@ -231,11 +239,23 @@ describe('bridge install: package cache clearing', () => {
     try {
       const result = await install.installBridge('fake-unopkg', oxtPath);
       expect(result.ok).toBe(true);
-      expect(calls.map((c) => c.slice(1))).toEqual([['remove', 'org.libreofficeacp.bridge'], ['add', oxtPath]]);
-      expect(result.message).toContain('Package cache cleared');
+      // Order matters: remove, then add. The cache clear happens between.
+      expect(calls.map((c) => c.slice(1))).toEqual([
+        ['remove', 'org.libreofficeacp.bridge'],
+        ['add', oxtPath],
+      ]);
+      // The stale pmap (which would make unopkg add fail with
+      // VersionException) is gone before the add ran.
+      await expect(fs.access(pmap)).rejects.toThrow();
       await expect(fs.access(path.join(profile, 'uno_packages', 'cache'))).rejects.toThrow();
       const cacheStep = result.steps.find((s) => s.command.includes('clear package cache'));
       expect(cacheStep?.ok).toBe(true);
+      // The cache-clear step must come BEFORE the add step.
+      const stepOrder = result.steps.map((s) => s.command);
+      const clearIdx = stepOrder.findIndex((c) => c.includes('clear package cache'));
+      const addIdx = stepOrder.findIndex((c) => c.startsWith('unopkg add'));
+      expect(clearIdx).toBeGreaterThanOrEqual(0);
+      expect(addIdx).toBeGreaterThan(clearIdx);
     } finally {
       install.setRunUnopkgForTesting(null);
       install.setLoUserProfileForTesting(null);

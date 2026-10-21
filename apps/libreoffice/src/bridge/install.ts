@@ -92,24 +92,41 @@ export function findLoUserProfile(): string | null {
 }
 
 /**
- * Delete LibreOffice's extension package-registry cache
- * (`<profile>/user/uno_packages/cache`). LibreOffice builds this cache on
- * first launch and does NOT rebuild it when unopkg adds an extension
- * later — the configuration PackageRegistryBackend (backenddb.xml) keeps
- * pointing at the old set of .xcu layers, so the sidebar deck/panel/
- * factory registrations never reach the runtime config. Deleting the
- * cache forces the next LibreOffice start to re-read every extension's
- * .xcu files from scratch. Only safe when LibreOffice is not running
- * (the installer route already enforces that with a 409).
+ * Delete LibreOffice's extension package state under
+ * `<profile>/user/uno_packages/`: the `cache/` directory (package-registry
+ * backend DBs + unpacked oxt copies) AND the `uno_packages.pmap` package
+ * map. Two reasons:
+ *
+ * 1. `unopkg remove` cleans the backend DBs but NOT the pmap or the
+ *    unpacked cache dirs — a following `unopkg add` then fails with
+ *    VersionException "Extension has already been added" because the
+ *    pmap still names the identifier (verified live 2026-10-21).
+ * 2. LibreOffice builds `cache/` on first launch and does NOT rebuild
+ *    it when unopkg adds an extension later — the configuration
+ *    PackageRegistryBackend (backenddb.xml) keeps pointing at the old
+ *    set of .xcu layers, so the sidebar deck/panel/factory
+ *    registrations never reach the runtime config. Deleting the cache
+ *    forces the next LibreOffice start to re-read every extension's
+ *    .xcu files from scratch.
+ *
+ * Only safe when LibreOffice is not running (the installer route
+ * enforces that with a 409).
  */
 export function clearPackageCache(userProfile: string): boolean {
-  const cacheDir = path.join(userProfile, 'uno_packages', 'cache');
+  const unoDir = path.join(userProfile, 'uno_packages');
+  let ok = true;
   try {
-    fs.rmSync(cacheDir, { recursive: true, force: true });
-    return !fs.existsSync(cacheDir);
+    fs.rmSync(path.join(unoDir, 'cache'), { recursive: true, force: true });
+    ok = ok && !fs.existsSync(path.join(unoDir, 'cache'));
   } catch {
-    return false;
+    ok = false;
   }
+  try {
+    fs.rmSync(path.join(unoDir, 'uno_packages.pmap'), { force: true });
+  } catch {
+    /* pmap may not exist — that's fine */
+  }
+  return ok;
 }
 
 /** Test hook: override unopkg runner (installBridge reads it per call). */
@@ -129,6 +146,26 @@ export async function installBridge(unopkgPath: string, oxtPath: string): Promis
     ok: true, // absence of the extension is the normal first-run case
     output: remove.output.trim(),
   });
+  // unopkg remove cleans the backend DBs but NOT the package map
+  // (uno_packages/uno_packages.pmap) nor the unpacked cache dirs
+  // (uno_packages/cache/uno_packages/lu*.tmp*). The next `unopkg add`
+  // then fails with VersionException "Extension has already been added"
+  // because the pmap still names our identifier (verified live
+  // 2026-10-21: install removed the old extension but add refused,
+  // leaving the profile with NO extension). Wipe both so add starts
+  // from a truly clean slate. Also clears the package-registry cache
+  // so the next LibreOffice launch re-reads the extension's .xcu
+  // config layers (without this the sidebar deck renders empty).
+  let cacheCleared = false;
+  const profile = getLoUserProfile();
+  if (profile) {
+    cacheCleared = clearPackageCache(profile);
+    steps.push({
+      command: `clear package cache + map (${path.join('uno_packages', 'cache')}, uno_packages.pmap)`,
+      ok: true,
+      output: cacheCleared ? 'removed' : 'nothing to remove',
+    });
+  }
   const add = await doRun([unopkgPath, 'add', oxtPath], 120_000);
   steps.push({
     command: `unopkg add ${quoted(path.basename(oxtPath))}`,
@@ -141,22 +178,6 @@ export async function installBridge(unopkgPath: string, oxtPath: string): Promis
       steps,
       message: `unopkg add failed (exit ${add.code}): ${add.output.trim().slice(0, 400)}`,
     };
-  }
-  // Force LibreOffice to re-read the extension's .xcu config layers on
-  // next launch. Without this, a stale package-registry cache hides the
-  // sidebar deck/panel/factory registrations and the deck renders empty
-  // (verified live 2026-10-21: the deck button appears but the panel is
-  // blank because Sidebar.xcu / Factories.xcu never reach the runtime
-  // configuration backend).
-  let cacheCleared = false;
-  const profile = getLoUserProfile();
-  if (profile) {
-    cacheCleared = clearPackageCache(profile);
-    steps.push({
-      command: `clear package cache (${path.join('uno_packages', 'cache')})`,
-      ok: true,
-      output: cacheCleared ? 'removed' : 'nothing to remove',
-    });
   }
   return {
     ok: true,

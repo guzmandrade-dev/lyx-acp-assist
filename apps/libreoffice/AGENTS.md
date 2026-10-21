@@ -533,6 +533,26 @@ it from scratch and picks up Sidebar.xcu + Factories.xcu as config
 overlay layers. The success message tells the user the cache was
 cleared. 4 unit tests; npm test 66/66.
 
+### unopkg retry: clear pmap between remove and add (2026-10-21)
+
+Second live failure, same flow: the user clicked **Install bridge**,
+`unopkg remove` succeeded (old extension gone) but `unopkg add`
+FAILED with `VersionException "Extension has already been added"` —
+leaving the profile with NO extension at all. Root cause: `unopkg
+remove` cleans the backend DBs (`cache/registry/*/backenddb.xml`)
+but NOT the package map (`uno_packages/uno_packages.pmap`) nor the
+unpacked cache dirs (`cache/uno_packages/lu*.tmp*`). The next
+`unopkg add` reads the stale pmap, sees our identifier, and refuses.
+
+Fix: `clearPackageCache` now deletes BOTH `uno_packages/cache/`
+AND `uno_packages/uno_packages.pmap`, and `installBridge` runs it
+BETWEEN `unopkg remove` and `unopkg add` (not after). Verified live:
+the remove→clear→add sequence installs cleanly (6 components
+registered: 3 configuration-data + 2 Python UNO components + 1
+bundle), and a fresh Writer launch shows the ACP Assist menu + sidebar
+deck button. Test asserts the step ordering (cache clear before add)
+and that the stale pmap is gone before add runs.
+
 ## Panel UI smoke test (done 2026-10-18)
 
 First full walk of the actual chat panel (`public/`) — driven in a browser
