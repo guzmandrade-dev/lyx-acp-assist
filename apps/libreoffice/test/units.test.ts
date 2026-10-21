@@ -175,6 +175,75 @@ describe('companion discovery record', () => {
   });
 });
 
+describe('bridge install: package cache clearing', () => {
+  it('clearPackageCache removes uno_packages/cache from a profile', async () => {
+    const { clearPackageCache } = await import('../src/bridge/install.js');
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'lo-acp-profile-'));
+    try {
+      const cacheDir = path.join(tmp, 'uno_packages', 'cache', 'registry');
+      await fs.mkdir(cacheDir, { recursive: true });
+      await fs.writeFile(path.join(cacheDir, 'backenddb.xml'), '<xml/>');
+      await fs.access(path.join(tmp, 'uno_packages', 'cache')); // exists before
+      expect(clearPackageCache(tmp)).toBe(true);
+      await expect(fs.access(path.join(tmp, 'uno_packages', 'cache'))).rejects.toThrow();
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('clearPackageCache is a no-op when the cache does not exist', async () => {
+    const { clearPackageCache } = await import('../src/bridge/install.js');
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'lo-acp-profile-'));
+    try {
+      expect(clearPackageCache(tmp)).toBe(true);
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('findLoUserProfile follows LO_USER_PROFILE override', async () => {
+    const { findLoUserProfile } = await import('../src/bridge/install.js');
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'lo-acp-profile-'));
+    const prev = process.env.LO_USER_PROFILE;
+    process.env.LO_USER_PROFILE = tmp;
+    try {
+      expect(findLoUserProfile()).toBe(tmp);
+    } finally {
+      process.env.LO_USER_PROFILE = prev;
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('installBridge clears the package cache after a successful add', async () => {
+    const install = await import('../src/bridge/install.js');
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'lo-acp-install-'));
+    const oxtPath = path.join(tmp, 'bridge.oxt');
+    await fs.writeFile(oxtPath, 'fake');
+    // Fake profile with a stale cache.
+    const profile = path.join(tmp, 'profile');
+    await fs.mkdir(path.join(profile, 'uno_packages', 'cache'), { recursive: true });
+    const calls: string[][] = [];
+    install.setRunUnopkgForTesting(async (cmd) => {
+      calls.push(cmd);
+      return { ok: true, code: 0, output: 'ok' };
+    });
+    install.setLoUserProfileForTesting(profile);
+    try {
+      const result = await install.installBridge('fake-unopkg', oxtPath);
+      expect(result.ok).toBe(true);
+      expect(calls.map((c) => c.slice(1))).toEqual([['remove', 'org.libreofficeacp.bridge'], ['add', oxtPath]]);
+      expect(result.message).toContain('Package cache cleared');
+      await expect(fs.access(path.join(profile, 'uno_packages', 'cache'))).rejects.toThrow();
+      const cacheStep = result.steps.find((s) => s.command.includes('clear package cache'));
+      expect(cacheStep?.ok).toBe(true);
+    } finally {
+      install.setRunUnopkgForTesting(null);
+      install.setLoUserProfileForTesting(null);
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('writerAdapter context', () => {
   it('renders [pN] outline with styles and previews', () => {
     const doc = writerDoc([

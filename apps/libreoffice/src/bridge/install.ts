@@ -62,17 +62,74 @@ export async function sofficeRunning(): Promise<boolean> {
   }
 }
 
+/**
+ * Locate the LibreOffice user profile directory (the `user/` dir inside
+ * the versioned profile root). Returns null when no profile exists yet.
+ * LO_USER_PROFILE env override wins (tests, custom installs).
+ */
+export function findLoUserProfile(): string | null {
+  if (process.env.LO_USER_PROFILE) return process.env.LO_USER_PROFILE;
+  const home = process.env.HOME ?? process.env.USERPROFILE ?? '';
+  const roots: string[] = [];
+  if (process.platform === 'win32') {
+    roots.push(path.join(process.env.APPDATA ?? path.join(home, 'AppData', 'Roaming'), 'LibreOffice'));
+  } else if (process.platform === 'darwin') {
+    roots.push(path.join(home, 'Library', 'Application Support', 'LibreOffice'));
+  } else {
+    roots.push(path.join(process.env.XDG_CONFIG_HOME ?? path.join(home, '.config'), 'libreoffice'));
+  }
+  for (const root of roots) {
+    try {
+      for (const entry of fs.readdirSync(root)) {
+        const userDir = path.join(root, entry, 'user');
+        if (fs.statSync(userDir).isDirectory()) return userDir;
+      }
+    } catch {
+      /* profile root not present — try next */
+    }
+  }
+  return null;
+}
+
+/**
+ * Delete LibreOffice's extension package-registry cache
+ * (`<profile>/user/uno_packages/cache`). LibreOffice builds this cache on
+ * first launch and does NOT rebuild it when unopkg adds an extension
+ * later — the configuration PackageRegistryBackend (backenddb.xml) keeps
+ * pointing at the old set of .xcu layers, so the sidebar deck/panel/
+ * factory registrations never reach the runtime config. Deleting the
+ * cache forces the next LibreOffice start to re-read every extension's
+ * .xcu files from scratch. Only safe when LibreOffice is not running
+ * (the installer route already enforces that with a 409).
+ */
+export function clearPackageCache(userProfile: string): boolean {
+  const cacheDir = path.join(userProfile, 'uno_packages', 'cache');
+  try {
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+    return !fs.existsSync(cacheDir);
+  } catch {
+    return false;
+  }
+}
+
+/** Test hook: override unopkg runner (installBridge reads it per call). */
+export let runUnopkgForTesting: ((cmd: string[], timeoutMs: number) => Promise<RunResult>) | null = null;
+export function setRunUnopkgForTesting(fn: ((cmd: string[], timeoutMs: number) => Promise<RunResult>) | null): void {
+  runUnopkgForTesting = fn;
+}
+
 /** Remove-then-add (rule 6). A failing remove of an absent extension is OK. */
 export async function installBridge(unopkgPath: string, oxtPath: string): Promise<InstallResult> {
   const steps: InstallStep[] = [];
   const quoted = (s: string) => (s.includes(' ') ? `"${s}"` : s);
-  const remove = await run([unopkgPath, 'remove', BRIDGE_EXT_ID], 120_000);
+  const doRun = runUnopkgForTesting ?? run;
+  const remove = await doRun([unopkgPath, 'remove', BRIDGE_EXT_ID], 120_000);
   steps.push({
     command: `unopkg remove ${BRIDGE_EXT_ID}`,
     ok: true, // absence of the extension is the normal first-run case
     output: remove.output.trim(),
   });
-  const add = await run([unopkgPath, 'add', oxtPath], 120_000);
+  const add = await doRun([unopkgPath, 'add', oxtPath], 120_000);
   steps.push({
     command: `unopkg add ${quoted(path.basename(oxtPath))}`,
     ok: add.ok,
@@ -85,11 +142,39 @@ export async function installBridge(unopkgPath: string, oxtPath: string): Promis
       message: `unopkg add failed (exit ${add.code}): ${add.output.trim().slice(0, 400)}`,
     };
   }
+  // Force LibreOffice to re-read the extension's .xcu config layers on
+  // next launch. Without this, a stale package-registry cache hides the
+  // sidebar deck/panel/factory registrations and the deck renders empty
+  // (verified live 2026-10-21: the deck button appears but the panel is
+  // blank because Sidebar.xcu / Factories.xcu never reach the runtime
+  // configuration backend).
+  let cacheCleared = false;
+  const profile = getLoUserProfile();
+  if (profile) {
+    cacheCleared = clearPackageCache(profile);
+    steps.push({
+      command: `clear package cache (${path.join('uno_packages', 'cache')})`,
+      ok: true,
+      output: cacheCleared ? 'removed' : 'nothing to remove',
+    });
+  }
   return {
     ok: true,
     steps,
-    message: 'Extension installed. Restart LibreOffice, then use menu ACP Assist > Start bridge.',
+    message:
+      'Extension installed. Restart LibreOffice, then use menu ACP Assist > Start bridge.' +
+      (cacheCleared ? ' (Package cache cleared so the sidebar deck registers cleanly.)' : ''),
   };
+}
+
+/** Test hook: override the profile lookup (installBridge reads it per call). */
+let loUserProfileOverride: string | null | undefined;
+export function setLoUserProfileForTesting(profile: string | null): void {
+  loUserProfileOverride = profile;
+}
+function getLoUserProfile(): string | null {
+  if (loUserProfileOverride !== undefined) return loUserProfileOverride;
+  return findLoUserProfile();
 }
 
 interface RunResult {

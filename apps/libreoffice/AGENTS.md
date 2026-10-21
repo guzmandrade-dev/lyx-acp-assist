@@ -509,6 +509,30 @@ it, a real-profile LibreOffice relaunch + bridge start connected the
 panel again. Note: the panel evaluates canInstall at CONNECT time —
 after installing, click Reconnect (or relaunch) to proceed.
 
+### Package-cache clearing (added 2026-10-21)
+
+**LibreOffice does NOT rebuild its extension package-registry cache
+(`user/uno_packages/cache/`) when `unopkg add` runs later.** The cache
+holds `backenddb.xml` files for the bundle / component /
+configuration PackageRegistryBackends. If the cache was built before
+the extension (or from an older oxt without Sidebar.xcu/Factories.xcu),
+the next LibreOffice launch reads the STALE cache and the sidebar
+deck's config layers never reach the runtime — the deck button appears
+in the deck bar but the deck renders EMPTY (no panel, no labels).
+This is the failure the user hit on 2026-10-21 with the
+`npm start → install bridge → open LibreOffice → open ACP sidebar`
+flow.
+
+Fix (in `src/bridge/install.ts`): after a successful `unopkg add`,
+`installBridge` calls `clearPackageCache(profile)` which deletes
+`user/uno_packages/cache/` (found via `findLoUserProfile()` —
+LO_USER_PROFILE env override wins, then the per-OS profile roots).
+The 409-while-soffice-runs guard makes this safe: the cache is only
+deleted when LibreOffice is fully closed, so the next launch rebuilds
+it from scratch and picks up Sidebar.xcu + Factories.xcu as config
+overlay layers. The success message tells the user the cache was
+cleared. 4 unit tests; npm test 66/66.
+
 ## Panel UI smoke test (done 2026-10-18)
 
 First full walk of the actual chat panel (`public/`) — driven in a browser

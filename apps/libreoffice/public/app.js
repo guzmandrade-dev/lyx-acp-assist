@@ -524,7 +524,8 @@ async function installBridgeExtension() {
   // This touches the user's REAL LibreOffice profile — confirm first.
   const okToRun = window.confirm(
     'Install the ACP Assist bridge extension into your LibreOffice?\n' +
-    'This modifies your LibreOffice profile. Close LibreOffice first if it is running.',
+    'This modifies your LibreOffice profile and clears its extension cache ' +
+    '(so the sidebar deck registers cleanly). Close LibreOffice first if it is running.',
   );
   if (!okToRun) return;
   installBusy = true;

@@ -93,8 +93,11 @@ If no bridge is found and LibreOffice is installed, the panel's status line
 shows an **Install bridge…** button. It installs the bundled `.oxt` into your
 LibreOffice profile in one click (after a confirmation): close LibreOffice
 first, click the button, restart LibreOffice, then start the bridge from the
-menu (**ACP Assist > Start bridge**). Manual install works too — LibreOffice's
-Extension Manager, or `unopkg add` from LibreOffice's `program` directory.
+menu (**ACP Assist > Start bridge**). The install also clears LibreOffice's
+extension cache so the sidebar deck registers cleanly on the next launch.
+Manual install works too — LibreOffice's Extension Manager, or `unopkg add`
+from LibreOffice's `program` directory (delete `user/uno_packages/cache/`
+afterwards if the sidebar deck shows up empty).
 
 ## One input box, agent-decided intent
 
