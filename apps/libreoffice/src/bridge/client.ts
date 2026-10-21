@@ -45,6 +45,31 @@ export function bridgesDir(): string {
   return path.join(process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), '.config'), app, 'bridges');
 }
 
+/** The per-user app directory (parent of bridges/, holds companion.json). */
+export function assistDir(): string {
+  return path.join(bridgesDir(), '..');
+}
+
+export interface CompanionRecord {
+  pid: number;
+  port: number;
+  url: string;
+  /** Executable to launch for "open companion" (null in dev/browser mode). */
+  exe: string | null;
+}
+
+/** Write this companion's discovery record (the in-LO status panel reads it). */
+export async function writeCompanionRecord(record: CompanionRecord): Promise<void> {
+  const file = path.join(assistDir(), 'companion.json');
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  await fs.writeFile(file, JSON.stringify(record, null, 2), 'utf8');
+}
+
+/** Remove this companion's discovery record (best-effort, for shutdown). */
+export async function removeCompanionRecord(): Promise<void> {
+  await fs.rm(path.join(assistDir(), 'companion.json'), { force: true }).catch(() => undefined);
+}
+
 /** True when a process with this PID exists (best-effort liveness probe). */
 function pidAlive(pid: number): boolean {
   try {

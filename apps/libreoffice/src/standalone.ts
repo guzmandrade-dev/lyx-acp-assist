@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createServer } from './server.js';
+import { writeCompanionRecord, removeCompanionRecord } from './bridge/client.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -32,4 +33,20 @@ const httpServer = server.listen(port, '127.0.0.1', () => {
   const address = httpServer.address();
   const actual = typeof address === 'object' && address ? address.port : port;
   console.log(`LibreOffice ACP Assist dev server at http://127.0.0.1:${actual}`);
+  // Discovery record for the in-LibreOffice status panel (dev mode: no
+  // packaged exe, so "open companion" resolves to this URL in a browser).
+  writeCompanionRecord({
+    pid: process.pid,
+    port: actual,
+    url: `http://127.0.0.1:${actual}`,
+    exe: null,
+  }).catch(() => undefined);
 });
+
+/** Best-effort record removal on Ctrl+C / SIGTERM. */
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.on(signal, () => {
+    httpServer.close();
+    removeCompanionRecord().finally(() => process.exit(0));
+  });
+}

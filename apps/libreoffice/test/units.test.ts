@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { parseAction } from '../src/server.js';
 import { calcAdapter, parseCalcAction } from '../src/modules/calc.js';
 import { extractContentBlock, parseContentBlock, parseInline, parseTsvBlock } from '../src/modules/markdown.js';
@@ -149,6 +152,26 @@ describe('extractContentBlock', () => {
   it('takes the LAST writer fence when the block is echoed', () => {
     const reply = '```writer\nfirst\n```\nExplanation.\n```writer\nsecond\n```';
     expect(extractContentBlock(reply)).toBe('second\n');
+  });
+});
+
+describe('companion discovery record', () => {
+  it('writes and removes companion.json in the assist dir', async () => {
+    const { writeCompanionRecord, removeCompanionRecord, assistDir } = await import('../src/bridge/client.js');
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'lo-acp-record-'));
+    const prev = process.env.APPDATA;
+    process.env.APPDATA = tmp;
+    try {
+      const file = path.join(assistDir(), 'companion.json');
+      await writeCompanionRecord({ pid: 1234, port: 9999, url: 'http://127.0.0.1:9999', exe: null });
+      const saved = JSON.parse(await fs.readFile(file, 'utf8'));
+      expect(saved).toEqual({ pid: 1234, port: 9999, url: 'http://127.0.0.1:9999', exe: null });
+      await removeCompanionRecord();
+      await expect(fs.access(file)).rejects.toThrow();
+    } finally {
+      process.env.APPDATA = prev;
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
   });
 });
 

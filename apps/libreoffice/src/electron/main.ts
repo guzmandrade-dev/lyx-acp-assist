@@ -4,6 +4,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createServer } from '../server.js';
+import { writeCompanionRecord, removeCompanionRecord } from '../bridge/client.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -70,6 +71,7 @@ function startSofficeFocusWatcher(): void {
 
 app.on('before-quit', () => {
   focusWatcher?.kill();
+  removeCompanionRecord().catch(() => undefined);
 });
 
 async function startApp(): Promise<void> {
@@ -102,6 +104,16 @@ async function startApp(): Promise<void> {
   if (typeof address !== 'object' || address === null) throw new Error('server address missing');
   const url = `http://127.0.0.1:${address.port}`;
   console.log(`LibreOffice ACP Assist server at ${url}`);
+
+  // Discovery record for the in-LibreOffice status panel. Packaged:
+  // relaunch the app exe; dev: null → the panel opens the URL in a
+  // browser instead.
+  writeCompanionRecord({
+    pid: process.pid,
+    port: address.port,
+    url,
+    exe: app.isPackaged ? process.execPath : null,
+  }).catch(() => undefined);
 
   await app.whenReady();
 
