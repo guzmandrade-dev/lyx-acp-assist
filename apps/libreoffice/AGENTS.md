@@ -345,7 +345,80 @@ companion outside.**
 When touching bridge behavior, add/extend a check in `spike/validate/` and
 run the relevant suite before declaring the work done.
 
-## House rules (user instructions)
+## Sidebar deck rules (verified 2026-10-21, Phase 4)
+
+36. **Sidebar `ContextList` is a STRING-LIST, not a string**: the .xcu
+    value MUST carry `oor:separator=";"` with items like
+    `any, any, visible ;` (exactly LO's own Sidebar.xcu syntax). A plain
+    string value gets whitespace-split by the config layer into garbage
+    items (`'any,'` etc.) that ReadContextList silently rejects — the deck
+    registers in config but never matches any context and the deck button
+    never appears. This was the entire "missing deck button" debugging
+    session; the e2e now asserts the merged ContextList shape.
+37. **Toolkit.createWindow: WindowServiceName is "pushbutton"**, NOT
+    "button" — the raw VCL toolkit returns None for "button" in 26.8
+    (probe 12k). "fixedtext" works as expected.
+38. **XSidebarPanel.getHeightForWidth returns a LayoutSize STRUCT**
+    (`com.sun.star.ui.LayoutSize(min, max, preferred)`), not a bare long
+    — returning an int raises a type-coercion RuntimeException over the
+    socket.
+39. **pyuno proxy contract for panel objects over the UNO socket**: the
+    panel arrives typed as XInterface. queryInterface needs an explicit
+    `uno.getTypeByName("com.sun.star.ui.XToolPanel")` — the *imported
+    interface class* is NOT a UNO type. Readonly interface attributes
+    (`XToolPanel.Window`) dispatch via getattr on the Python object —
+    expose them as a `@property`, not only via the getter method.
+40. **frame.getContainerWindow() does not expose XAccessible over the
+    socket** — LO-side a11y-tree walking from Python failed. Use the
+    Windows accessibility tree (computer-use tools) to drive/verify the
+    LibreOffice UI; the deck bar buttons appear there as AXButtons.
+41. **Extension icon URLs**: `vnd.sun.star.extension:<id>/icon.png`
+    (single colon) works for deck IconURL; the PNG needs a plain
+    manifest file-entry. A 32px PNG renders at native size (41×43 button
+    vs 57×59 for LO's own SVG icons) — acceptable for the deck bar.
+42. **Deck registration flow (verified live)**: Sidebar.xcu deck+panel
+    merge into org.openoffice.Office.UI.Sidebar (ConfigurationProvider
+    confirms), Factories.xcu registers the factory under
+    org.openoffice.Office.UI.Factories/Registered/UIElementFactories
+    (Type=toolpanel, Name=ACPPanelFactory), the framework instantiates
+    the factory by implementation name through the service manager when
+    the deck opens (createUIElement receives Frame/ParentWindow/Sidebar
+    args), and the panel populates the framework-provided parent window
+    with toolkit widgets. Buttons must be created with SHOW attribute;
+    click handlers run on the main thread.
+43. **SAL_WARN capture**: launch `soffice.bin` directly (not the
+    soffice.exe shim) with stderr redirected — the sidebar context
+    parser logs every rejected ContextList entry under sfx.sidebar.
+44. **Status reads must not block the UI thread**: the panel's status
+    worker runs HTTP on a daemon thread and marshals label updates back
+    via com.sun.star.awt.AsyncCallback (same pattern as the bridge's
+    MainThreadCall — rule 2 applies to panel code too).
+
+## Sidebar deck (done 2026-10-21)
+
+Phase 4's in-LibreOffice presence, complete and verified live in the UI
+(computer-use AX tree; every control exercised):
+
+- `spike/oxt/acppanel.py`: AcpPanelFactory (XUIElementFactory,
+  implementation name org.libreofficeacp.PanelFactory) + AcpPanel
+  (XUIElement/XToolPanel/XSidebarPanel/XComponent) — two status labels
+  (bridge: newest live discovery record + /status probe; companion:
+  companion.json record + /api/status probe) and three buttons: Refresh
+  status, Restart bridge (dispatches service:...?stop+?start — verified:
+  bridge came up on a fresh dynamic port and the label updated to
+  "running on port N (writer document)"), Open companion
+  (SystemShellExecute on the record's exe, or the URL in dev mode —
+  verified: the panel URL opened in the default browser).
+- `spike/oxt/Sidebar.xcu` + `Factories.xcu` + `icon.png` (+ manifest
+  entries; Addons.xcu gains "Show status panel" (Ctrl+F5) menu item).
+- Companion side writes its discovery record
+  (`%APPDATA%/LibreOffice ACP Assist/companion.json`, pid/port/url/exe):
+  `src/bridge/client.ts` helpers, written by `standalone.ts` (exe: null
+  → dev URL) and `electron/main.ts` (exe: process.execPath when
+  packaged), removed on shutdown.
+- e2e: 4 sidebar checks (config registration incl. the ContextList
+  regression guard, factory instantiation with interface queries) —
+  bridge_e2e now **47/47**. Probes 12j–12l document the discovery.
 
 - **Do not commit or open PRs without explicit approval.** Finish tasks with
   the changes ready to commit. (Standing exception, approved 2026-10-17:
