@@ -35,6 +35,7 @@ import {
   formatHistoryReplay as coreFormatHistoryReplay,
   listKnownDocuments as coreListKnownDocuments,
   registerAttachmentRoutes,
+  registerSessionRoutes,
   loadHistory,
   saveHistory,
   sleep,
@@ -263,36 +264,12 @@ export function createServer(options: ServerOptions & {
 
   // --- context ---------------------------------------------------------
 
-  app.get(
-    '/api/session/:id',
-    wrap(async (req, res) => {
-      const session = getSession(req.params['id']);
-      res.json(await sessionInfo(session));
-    }),
-  );
-
-  /** Tear down a session: stop the agent process and pipe client. */
-  app.delete(
-    '/api/session/:id',
-    wrap(async (req, res) => {
-      const session = getSession(req.params['id']);
-      sessions.delete(session.id);
-      session.agent.stop();
-      session.lyx.stop();
-      res.json({ ok: true });
-    }),
-  );
-
-  /** Stop the current generation without tearing the session down. */
-  app.post(
-    '/api/session/:id/cancel',
-    wrap(async (req, res) => {
-      const session = getSession(req.params['id']);
-      session.cancelRequested = true;
-      session.agent.cancel(session.id);
-      res.json({ ok: true });
-    }),
-  );
+  registerSessionRoutes(app, wrap, {
+    getSession,
+    sessions,
+    sessionInfo,
+    teardown: (s) => s.lyx.stop(),
+  });
 
   // --- attachments -------------------------------------------------------
 

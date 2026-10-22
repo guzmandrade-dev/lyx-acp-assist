@@ -38,6 +38,7 @@ import {
   formatHistoryReplay as coreFormatHistoryReplay,
   listKnownDocuments,
   registerAttachmentRoutes,
+  registerSessionRoutes,
   loadHistory,
   saveHistory,
   sleep,
@@ -307,33 +308,11 @@ export function createServer(options: ServerOptions & {
     return new BridgeClient(bridges[0]!);
   }
 
-  app.get(
-    '/api/session/:id',
-    wrap(async (req, res) => {
-      const session = getSession(req.params['id']);
-      res.json(await sessionInfo(session));
-    }),
-  );
-
-  app.delete(
-    '/api/session/:id',
-    wrap(async (req, res) => {
-      const session = getSession(req.params['id']);
-      sessions.delete(session.id);
-      session.agent.stop();
-      res.json({ ok: true });
-    }),
-  );
-
-  app.post(
-    '/api/session/:id/cancel',
-    wrap(async (req, res) => {
-      const session = getSession(req.params['id']);
-      session.cancelRequested = true;
-      session.agent.cancel(session.id);
-      res.json({ ok: true });
-    }),
-  );
+  registerSessionRoutes(app, wrap, {
+    getSession,
+    sessions,
+    sessionInfo,
+  });
 
   // --- attachments -----------------------------------------------------------
 

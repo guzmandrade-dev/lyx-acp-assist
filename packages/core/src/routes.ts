@@ -8,8 +8,63 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type express from 'express';
-import type { Attachment } from './types.js';
+import type { AgentRunner, Attachment } from './types.js';
 import type { WrapFn } from './settings.js';
+
+/** Minimal session surface the shared lifecycle routes need. */
+export interface SessionLike {
+  id: string;
+  agent: AgentRunner;
+  cancelRequested: boolean;
+}
+
+export interface SessionRoutesOptions<T extends SessionLike> {
+  /** The app's session lookup (throws for unknown ids). */
+  getSession: (id: string) => T;
+  /** The app's session map (entries are removed on teardown). */
+  sessions: Map<string, T>;
+  /** App-specific GET response body for the session info. */
+  sessionInfo: (session: T) => Promise<unknown>;
+  /** Extra teardown before the agent process is stopped (e.g. pipe stop). */
+  teardown?: (session: T) => void;
+}
+
+export function registerSessionRoutes<T extends SessionLike>(
+  app: express.Express,
+  wrap: WrapFn,
+  options: SessionRoutesOptions<T>,
+): void {
+  app.get(
+    '/api/session/:id',
+    wrap(async (req, res) => {
+      const session = options.getSession(String(req.params['id']));
+      res.json(await options.sessionInfo(session));
+    }),
+  );
+
+  /** Tear down a session: stop the agent process (+ optional extras). */
+  app.delete(
+    '/api/session/:id',
+    wrap(async (req, res) => {
+      const session = options.getSession(String(req.params['id']));
+      options.sessions.delete(session.id);
+      options.teardown?.(session);
+      session.agent.stop();
+      res.json({ ok: true });
+    }),
+  );
+
+  /** Stop the current generation without tearing the session down. */
+  app.post(
+    '/api/session/:id/cancel',
+    wrap(async (req, res) => {
+      const session = options.getSession(String(req.params['id']));
+      session.cancelRequested = true;
+      session.agent.cancel(session.id);
+      res.json({ ok: true });
+    }),
+  );
+}
 
 export interface AttachmentRoutesOptions {
   /** Directory where uploaded attachment files are stored. */
