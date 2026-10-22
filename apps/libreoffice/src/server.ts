@@ -34,14 +34,18 @@ import {
   AcpClient,
   UNSAVED_KEY,
   createAgentSettings,
+  createConversationStore,
+  createLogError,
   extractAttachmentText as coreExtractAttachmentText,
   formatHistoryReplay as coreFormatHistoryReplay,
   listKnownDocuments,
   registerAttachmentRoutes,
   registerSessionRoutes,
-  loadHistory,
-  saveHistory,
+  startSse,
+  sseFail,
+  MAX_ACTIONS_PER_MESSAGE,
   sleep,
+  type ConversationStore,
 } from '@acp-assist/core';
 import type {
   AgentRunner,
@@ -59,9 +63,6 @@ export type {
   Attachment,
 } from '@acp-assist/core';
 export { listKnownDocuments } from '@acp-assist/core';
-
-/** Max document edits per user message (app-level safety stop). */
-const MAX_ACTIONS_PER_MESSAGE = 10;
 
 export interface Session {
   id: string;
@@ -106,14 +107,7 @@ export function createServer(options: ServerOptions & {
 
   const sessions = new Map<string, Session>();
 
-  function logError(scope: string, err: unknown): void {
-    const message = err instanceof Error ? err.message : String(err);
-    const line = `[${new Date().toISOString()}] ${scope}: ${message}\n`;
-    console.error(line.trim());
-    if (options.logDir) {
-      fs.appendFile(path.join(options.logDir, 'errors.log'), line, 'utf8').catch(() => undefined);
-    }
-  }
+  const logError = createLogError(options.logDir);
 
   const wrap = (handler: (req: express.Request, res: express.Response) => Promise<unknown>) =>
     async (req: express.Request, res: express.Response) => {
@@ -126,35 +120,6 @@ export function createServer(options: ServerOptions & {
         res.status(status).json({ error: message });
       }
     };
-
-  const startSse = (res: express.Response) => {
-    res.writeHead(200, {
-      'content-type': 'text/event-stream',
-      'cache-control': 'no-cache',
-      connection: 'keep-alive',
-    });
-    return (obj: unknown) => {
-      res.write(`data: ${JSON.stringify(obj)}\n\n`);
-    };
-  };
-
-  const sseFail = (res: express.Response, err: unknown) => {
-    const message = err instanceof Error ? err.message : String(err);
-    res.write(`data: ${JSON.stringify({ error: message })}\n\n`);
-    res.write('data: {"done":true}\n\n');
-    res.end();
-  };
-
-  async function recordTurnMeta(session: Session, meta: TurnMeta): Promise<void> {
-    const key = conversationKey(session);
-    const turns = await ensureConversation(session, key);
-    const last = turns[turns.length - 1];
-    if (!last || last.role !== 'assistant') return;
-    last.meta = meta;
-    if (options.historyDir) {
-      saveHistory(options.historyDir, key, turns).catch((e) => logError('[history] save failed', e));
-    }
-  }
 
   // --- adapter selection ---------------------------------------------------
 
@@ -580,48 +545,45 @@ export function createServer(options: ServerOptions & {
     return doc.url || doc.title || UNSAVED_KEY;
   }
 
-  async function ensureConversation(session: Session, key: string): Promise<Turn[]> {
-    let turns = session.conversations.get(key);
-    if (!turns) {
-      turns = [];
-      session.conversations.set(key, turns);
-      if (options.historyDir) {
-        try {
-          const loaded = await loadHistory(options.historyDir, key);
-          turns.push(...loaded);
-          session.historyHandoff.set(key, loaded.length);
-        } catch {
-          /* unreadable history — start empty */
-        }
-      }
+  const storeBySession = new WeakMap<Session, ConversationStore>();
+  function storeFor(session: Session): ConversationStore {
+    let store = storeBySession.get(session);
+    if (!store) {
+      store = createConversationStore({
+        historyDir: options.historyDir,
+        logError,
+        conversations: session.conversations,
+        historyHandoff: session.historyHandoff,
+        keyOf: () => conversationKey(session),
+        replayOptions: LO_REPLAY_OPTIONS,
+      });
+      storeBySession.set(session, store);
     }
-    return turns;
+    return store;
+  }
+
+  async function ensureConversation(session: Session, key: string): Promise<Turn[]> {
+    return storeFor(session).ensure(key);
   }
 
   function buildHistoryPrefix(session: Session, key: string): string {
-    const turns = session.conversations.get(key) ?? [];
-    return formatHistoryReplay(turns, session.historyHandoff.get(key) ?? 0);
+    return storeFor(session).buildHistoryPrefix(key);
   }
 
   async function recordTurn(session: Session, user: string, assistant: string) {
-    const key = conversationKey(session);
-    const turns = await ensureConversation(session, key);
-    turns.push(
-      { role: 'user', content: user, timestamp: new Date().toISOString() },
-      { role: 'assistant', content: assistant, timestamp: new Date().toISOString() },
-    );
-    if (options.historyDir) {
-      saveHistory(options.historyDir, key, turns).catch((e) => logError('[history] save failed', e));
-    }
+    return storeFor(session).recordTurn(user, assistant);
   }
 
   async function recordActionStep(session: Session, assistant: string, _step: number) {
-    const key = conversationKey(session);
-    const turns = await ensureConversation(session, key);
-    turns.push({ role: 'assistant', content: assistant, timestamp: new Date().toISOString() });
-    if (options.historyDir) {
-      saveHistory(options.historyDir, key, turns).catch((e) => logError('[history] save failed', e));
-    }
+    return storeFor(session).recordActionStep(assistant, _step);
+  }
+
+  /**
+   * Record the outcome of the action the assistant proposed in the LAST
+   * turn, so a failed or successful document action survives a restart.
+   */
+  async function recordTurnMeta(session: Session, meta: TurnMeta): Promise<void> {
+    return storeFor(session).recordTurnMeta(meta);
   }
 
   async function sessionInfo(session: Session) {
@@ -815,12 +777,15 @@ export function buildContinuationPrompt(
   return parts.join('\n');
 }
 
+/** Replay rendering shared by the history wrapper and the conversation store. */
+const LO_REPLAY_OPTIONS = {
+  blockPattern: /```(?:writer|calc|impress)[\s\S]*?```/g,
+  describeTarget: (m: TurnMeta) =>
+    m.target ? ` p${m.target}` : m.address ? ` ${m.address}` : '',
+};
+
 export function formatHistoryReplay(turns: Turn[], unseen: number): string {
-  return coreFormatHistoryReplay(turns, unseen, {
-    blockPattern: /```(?:writer|calc|impress)[\s\S]*?```/g,
-    describeTarget: (m) =>
-      m.target ? ` p${m.target}` : m.address ? ` ${m.address}` : '',
-  });
+  return coreFormatHistoryReplay(turns, unseen, LO_REPLAY_OPTIONS);
 }
 
 // --- attachments -----------------------------------------------------------------

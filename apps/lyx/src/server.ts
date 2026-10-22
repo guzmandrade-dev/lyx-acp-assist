@@ -31,14 +31,18 @@ import {
   AcpClient,
   UNSAVED_KEY,
   createAgentSettings,
+  createConversationStore,
+  createLogError,
   extractAttachmentText as coreExtractAttachmentText,
   formatHistoryReplay as coreFormatHistoryReplay,
   listKnownDocuments as coreListKnownDocuments,
   registerAttachmentRoutes,
   registerSessionRoutes,
-  loadHistory,
-  saveHistory,
+  startSse,
+  sseFail,
+  MAX_ACTIONS_PER_MESSAGE,
   sleep,
+  type ConversationStore,
 } from '@acp-assist/core';
 import type {
   AgentRunner,
@@ -71,7 +75,6 @@ const OUTLINE_ONLY_BODY_LIMIT = 16_000;
  * a single response finished; continuing with the next edit is an app-level
  * loop, so it needs a hard stop even if the agent keeps proposing actions.
  */
-const MAX_ACTIONS_PER_MESSAGE = 10;
 
 
 export interface Session {
@@ -126,17 +129,7 @@ export function createServer(options: ServerOptions & {
 
   const sessions = new Map<string, Session>();
 
-  /** Append a timestamped line to the persistent error log (best-effort). */
-  function logError(scope: string, err: unknown): void {
-    const message = err instanceof Error ? err.message : String(err);
-    const line = `[${new Date().toISOString()}] ${scope}: ${message}\n`;
-    console.error(line.trim());
-    if (options.logDir) {
-      fs.appendFile(path.join(options.logDir, 'errors.log'), line, 'utf8').catch(() => {
-        /* logging must never break the request path */
-      });
-    }
-  }
+  const logError = createLogError(options.logDir);
 
   const wrap = (handler: (req: express.Request, res: express.Response) => Promise<unknown>) =>
     async (req: express.Request, res: express.Response) => {
@@ -149,45 +142,6 @@ export function createServer(options: ServerOptions & {
         res.status(status).json({ error: message });
       }
     };
-
-  /** Start an SSE response; returns the frame sender. */
-  const startSse = (res: express.Response) => {
-    res.writeHead(200, {
-      'content-type': 'text/event-stream',
-      'cache-control': 'no-cache',
-      connection: 'keep-alive',
-    });
-    return (obj: unknown) => {
-      res.write(`data: ${JSON.stringify(obj)}\n\n`);
-    };
-  };
-
-  /** End an already-started SSE response with an error frame. */
-  const sseFail = (res: express.Response, err: unknown) => {
-    const message = err instanceof Error ? err.message : String(err);
-    res.write(`data: ${JSON.stringify({ error: message })}\n\n`);
-    res.write('data: {"done":true}\n\n');
-    res.end();
-  };
-
-  /**
-   * Record the outcome of the action the assistant proposed in the LAST
-   * turn of the conversation (the one just recorded by recordTurn), so a
-   * failed or successful document action survives an app restart and is
-   * visible when the history is reloaded.
-   */
-  async function recordTurnMeta(session: Session, meta: TurnMeta): Promise<void> {
-    const key = conversationKey(session);
-    const turns = await ensureConversation(session, key);
-    const last = turns[turns.length - 1];
-    if (!last || last.role !== 'assistant') return;
-    last.meta = meta;
-    if (options.historyDir) {
-      saveHistory(options.historyDir, key, turns).catch((e) =>
-        logError('[history] save failed', e),
-      );
-    }
-  }
 
   // --- status ----------------------------------------------------------
 
@@ -748,59 +702,38 @@ export function createServer(options: ServerOptions & {
    * (sessionInfo) never observe a half-loaded turn list — the
    * fire-and-forget version raced and returned empty history.
    */
+  const storeBySession = new WeakMap<Session, ConversationStore>();
+  function storeFor(session: Session): ConversationStore {
+    let store = storeBySession.get(session);
+    if (!store) {
+      store = createConversationStore({
+        historyDir: options.historyDir,
+        logError,
+        conversations: session.conversations,
+        historyHandoff: session.historyHandoff,
+        keyOf: () => session.documentPath ?? UNSAVED_KEY,
+        replayOptions: LYX_REPLAY_OPTIONS,
+      });
+      storeBySession.set(session, store);
+    }
+    return store;
+  }
+
   async function ensureConversation(session: Session, key: string): Promise<Turn[]> {
-      let turns = session.conversations.get(key);
-      if (!turns) {
-        turns = [];
-        session.conversations.set(key, turns);
-        // Load persisted history if available.
-        if (options.historyDir) {
-          try {
-            const loaded = await loadHistory(options.historyDir, key);
-            turns.push(...loaded);
-            // These turns predate this process: the agent cannot see them
-            // unless we replay them (it has no memory across restarts).
-            session.historyHandoff.set(key, loaded.length);
-          } catch {
-            /* unreadable history — start empty */
-          }
-        }
-      }
-      return turns;
-    }
+    return storeFor(session).ensure(key);
+  }
 
-    /**
-     * Number of LEADING turns in the conversation the current agent process
-     * has NOT seen: they were loaded from the persisted history file (app
-     * restart / reconnect) and must be replayed into the next prompt.
-     * Zero once replayed or when every turn was produced live by this agent.
-     */
-    function unseenCount(session: Session, key: string): number {
-      return session.historyHandoff.get(key) ?? 0;
-    }
-
-    /**
-     * Render the turns the agent has not seen (pre-restart history) as a
-     * compact context block. Empty string when the agent already knows the
-     * whole conversation.
-     */
-    function buildHistoryPrefix(session: Session, key: string): string {
-      const turns = session.conversations.get(key) ?? [];
-      return formatHistoryReplay(turns, unseenCount(session, key));
-    }
+  /**
+   * Render the turns the agent has not seen (pre-restart history) as a
+   * compact context block. Empty string when the agent already knows the
+   * whole conversation.
+   */
+  function buildHistoryPrefix(session: Session, key: string): string {
+    return storeFor(session).buildHistoryPrefix(key);
+  }
 
   async function recordTurn(session: Session, user: string, assistant: string) {
-    const key = conversationKey(session);
-    const turns = await ensureConversation(session, key);
-    turns.push(
-      { role: 'user', content: user, timestamp: new Date().toISOString() },
-      { role: 'assistant', content: assistant, timestamp: new Date().toISOString() },
-    );
-    if (options.historyDir) {
-      saveHistory(options.historyDir, key, turns).catch((e) =>
-        logError('[history] save failed', e),
-      );
-    }
+    return storeFor(session).recordTurn(user, assistant);
   }
 
   /**
@@ -810,20 +743,17 @@ export function createServer(options: ServerOptions & {
    * request as the user turn.
    */
   async function recordActionStep(session: Session, assistant: string, step: number) {
-    const key = conversationKey(session);
-    const turns = await ensureConversation(session, key);
-    const stepTurn: Turn = {
-      role: 'assistant',
-    content: assistant,
-      timestamp: new Date().toISOString(),
-    };
-    turns.push(stepTurn);
-    if (options.historyDir) {
-      saveHistory(options.historyDir, key, turns).catch((e) =>
-        logError('[history] save failed', e),
-      );
-    }
-    return stepTurn;
+    return storeFor(session).recordActionStep(assistant, step);
+  }
+
+  /**
+   * Record the outcome of the action the assistant proposed in the LAST
+   * turn of the conversation (the one just recorded by recordTurn), so a
+   * failed or successful document action survives an app restart and is
+   * visible when the history is reloaded.
+   */
+  async function recordTurnMeta(session: Session, meta: TurnMeta): Promise<void> {
+    return storeFor(session).recordTurnMeta(meta);
   }
 
   async function sessionInfo(session: Session) {
@@ -1281,12 +1211,15 @@ export function buildContinuationPrompt(
  * (restored from persisted history after an app restart); later turns
  * were produced live by this same agent process and are skipped.
  */
+/** Replay rendering shared by the history wrapper and the conversation store. */
+const LYX_REPLAY_OPTIONS = {
+  blockPattern: /```lyx[\s\S]*?```/g,
+  describeTarget: (m: TurnMeta) =>
+    `${m.target ? ` p${m.target}` : ''}${m.target2 ? ` p${m.target2}` : ''}`,
+};
+
 export function formatHistoryReplay(turns: Turn[], unseen: number): string {
-  return coreFormatHistoryReplay(turns, unseen, {
-    blockPattern: /```lyx[\s\S]*?```/g,
-    describeTarget: (m) =>
-      `${m.target ? ` p${m.target}` : ''}${m.target2 ? ` p${m.target2}` : ''}`,
-  });
+  return coreFormatHistoryReplay(turns, unseen, LYX_REPLAY_OPTIONS);
 }
 
 export function buildAutoPrompt(

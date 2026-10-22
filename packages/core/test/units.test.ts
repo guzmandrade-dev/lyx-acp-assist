@@ -10,6 +10,8 @@ import {
   saveHistory,
   historyFile,
   extractAttachmentText,
+  createConversationStore,
+  createLogError,
   UNSAVED_KEY,
   type Turn,
   type TurnMeta,
@@ -156,6 +158,101 @@ describe('formatHistoryReplay', () => {
 
   it('returns empty for zero unseen turns', () => {
     expect(formatHistoryReplay(turns, 0, { blockPattern: /```lyx[\s\S]*?```/g })).toBe('');
+  });
+});
+
+// --- conversation store ----------------------------------------------------------
+
+/** Poll `check` until it passes (100ms interval, 2s deadline). */
+async function waitFor(check: () => Promise<void>): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  for (;;) {
+    try {
+      await check();
+      return;
+    } catch {
+      if (Date.now() > deadline) throw new Error('waitFor deadline exceeded');
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
+}
+
+describe('createConversationStore', () => {
+  const replayOptions = {
+    blockPattern: /```lyx[\s\S]*?```/g,
+    describeTarget: (m: TurnMeta) => (m.target ? ` p${m.target}` : ''),
+  };
+
+  function makeStore(historyDir?: string) {
+    const conversations = new Map<string, Turn[]>();
+    const historyHandoff = new Map<string, number>();
+    const logError = createLogError(historyDir);
+    const store = createConversationStore({
+      historyDir,
+      logError,
+      conversations,
+      historyHandoff,
+      keyOf: () => 'doc-a',
+      replayOptions,
+    });
+    return { store, conversations, historyHandoff };
+  }
+
+  it('records turns and meta in the current conversation', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'core-store-'));
+    const { store } = makeStore(dir);
+    await store.recordTurn('hello', 'hi there [ACTION: none]');
+    await store.recordTurnMeta({ action: 'none', result: 'applied' });
+    const turns = await store.ensure('doc-a');
+    expect(turns).toHaveLength(2);
+    expect(turns[0]?.role).toBe('user');
+    expect(turns[0]?.content).toBe('hello');
+    expect(turns[1]?.role).toBe('assistant');
+    // meta lands on the LAST turn (assistant), after the async persist settles
+    await waitFor(async () => {
+      const stored = await loadHistory(dir, 'doc-a');
+      expect(stored).toHaveLength(2);
+      expect(stored[1]?.meta?.action).toBe('none');
+    });
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it('records action steps without user turns and marks handoff after a reload', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'core-store-'));
+    const first = makeStore(dir);
+    await first.store.recordTurn('edit this', '[ACTION: insert]');
+    await first.store.recordActionStep('[ACTION: insert-after p2]', 2);
+
+    // A fresh store over the same history dir simulates a restart: the
+    // loaded turns are unseen and must be replayed. Persist is
+    // fire-and-forget (matching app behavior), so await the write first.
+    await waitFor(async () => {
+      expect((await loadHistory(dir, 'doc-a')).length).toBe(3);
+    });
+    const second = makeStore(dir);
+    const turns = await second.store.ensure('doc-a');
+    expect(turns).toHaveLength(3);
+    expect(second.historyHandoff.get('doc-a')).toBe(3);
+    const prefix = second.store.buildHistoryPrefix('doc-a');
+    expect(prefix).toContain('Conversation so far');
+    expect(prefix).toContain('- User: edit this');
+    // unseen count drops to zero only when the caller clears it
+    second.historyHandoff.delete('doc-a');
+    expect(second.store.buildHistoryPrefix('doc-a')).toBe('');
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it('returns the last assistant turn untouched when meta targets a user turn', async () => {
+    const { store } = makeStore();
+    await store.recordTurn('hi', 'hello');
+    // Simulate a corrupted shape: append a trailing user turn
+    const { store: s2, conversations } = makeStore();
+    conversations.set('doc-a', [
+      { role: 'user', content: 'only a user turn', timestamp: 't' },
+    ]);
+    await s2.recordTurnMeta({ action: 'insert', result: 'error', error: 'x' });
+    const turns = conversations.get('doc-a') ?? [];
+    expect(turns[0]?.meta).toBeUndefined();
   });
 });
 
