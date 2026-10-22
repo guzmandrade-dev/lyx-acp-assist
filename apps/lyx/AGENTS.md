@@ -162,6 +162,53 @@ The full 20-instance replica reproduces the live symptom set exactly:
 machine until LyX is patched or the updates are rolled back. All other
 validation (mock suites, CI) is unaffected.
 
+## Client-side mitigations (2026-10-22, independently verified + implemented)
+
+The deaf-pipe root cause was re-verified live with three probes before
+building the mitigations: (1) raw Node (no app code) against the real
+`.out` → instant 0-byte EOF, `.in` still dispatches; (2) a P/Invoke
+replica of the zero-length overlapped `WriteFile` → **FALSE +
+ERROR_IO_PENDING** on build 26220 with the Oct 17 KBs, and LyX's
+`success &&` tolerance branch provably cannot fire; (3) "queue a reply,
+then connect `.out`" → still instant EOF, confirming no
+reply-timing workaround exists. Two mitigations now ship in the client:
+
+**1. Pipe discovery (`src/lyxserver/pipe-config.ts`).** The pipe base is
+no longer hardcoded: resolution order is explicit option > `LYX_PIPE`
+env > LyX's own `\serverpipe` from `%APPDATA%\LyX<version>\preferences`
+(newest version first; `//./pipe/x` normalized to `\\.\pipe\x`) > LyX's
+default. The same module parses LyX's `session` file and window titles
+(used by the fallback below). On this machine the setting matches the
+default, so discovery changes nothing here — but custom pipe names no
+longer silently break the app.
+
+**2. Write-only fallback mode (`client.ts`).** `start()` probes `.out`
+while handshaking: fresh connection + hello via `.in`; any data →
+healthy (the probe connection becomes the first readLoop stream — never
+destroy a healthy connection mid-flight, the server-side write into a
+dying client swallows one reply); zero-byte close twice → the deaf-pipe
+signature → the client degrades to write-only:
+- commands fire-and-forget over `.in` (150 ms grace; saves/paste 600 ms)
+- `getFilename` → window title ("doc.lyx (~\Documents) - LyX") resolved
+  via the dir hint, then known documents, then LyX's session file
+- `getSelectionStats`/`copySelection` → clear clipboard, `copy`, inspect
+  (the clear is essential: a rejected copy leaves a stale payload that
+  looks like a selection)
+- `getLayout` → empty ("unknown"); no ERROR replies exist, so callers
+  verify effects (disk re-read, clipboard comparison — the paragraph
+  targeting verification in server.ts still works because it compares
+  clipboard content, not replies)
+
+Verified live end-to-end against the deaf LyX: write-only detected,
+`getFilename` resolves the real document, stats probe reads the real
+clipboard. Tradeoffs: the user's clipboard is cleared/overwritten on
+selection reads (it already was overwritten in healthy mode), cursor
+layout is unknown to the agent, and blind command chains cost ~150 ms per
+command (a pN walk on a large document takes seconds). Mock transport
+gained a `-Deaf` mode reproducing reset-at-connect (tested in
+`lyxserver-write-only.test.ts`). When LyX is fixed upstream, the same
+`start()` probe transparently picks the full protocol again.
+
 ## Clipboard protocol (verified by Spike 2)
 
 LyX's `copy` LFUN puts the selection on the Windows clipboard in these
