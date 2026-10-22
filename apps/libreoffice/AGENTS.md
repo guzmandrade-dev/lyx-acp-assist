@@ -513,7 +513,7 @@ and CI" below); remaining: sidebar deck. The optional small UI bits are
 DONE (2026-10-19, see "Panel UI bits test" below).
 Roadmap and scope live in README.md.
 
-### Monorepo + shared core (done 2026-10-22)
+### Monorepo + shared core (done 2026-10-22; live-validated same day)
 
 This app and its LyX sibling now live in one monorepo (this repository,
 `lyx-acp-assist` on GitHub) with npm workspaces. Shared code moved to
@@ -521,13 +521,24 @@ This app and its LyX sibling now live in one monorepo (this repository,
 appName/writerName), agent-process spawn, shared types (superset
 TurnMeta), attachment-to-text conversion, chat-history persistence +
 restart replay, agent-settings store + routes, session lifecycle
-routes, and attachment routes. Both apps consume it; both test suites
-(102/102 LyX, 66/66 here) and the full CI matrix pass. The former
-standalone `libreoffice-acp-assist` repository is archived. Remaining
-unshared (the Phase B2 continuation, see the root `next-steps.md`):
-the message/stream SSE loop, multi-action orchestration, and the
-document/selection/undo/status routes — planned behind a backend/
-adapter contract, needing live testing against both editors.
+routes, attachment routes, the per-session conversation store (turn /
+action-step / meta recording + history handoff), the error logger, and
+the SSE start/fail helpers. Both apps consume it; both mocked suites
+plus the core suite pass, and the full CI matrix is green.
+
+**Live validation of the refactor (2026-10-22, real LibreOffice 26.8 +
+bridge + vibe-acp via the standalone dev server):** session creation,
+agent chat, a Writer insert-after applied through the bridge, the
+multi-action continuation loop (step-2 chat confirmation), conversation
+recording with per-step meta through the SHARED store, and one-click
+undo — all verified end-to-end. The refactor is not just test-green;
+it is live-green.
+
+The former standalone `libreoffice-acp-assist` repository is archived.
+The remaining LyX-side unification (message/stream loop behind a
+backend/adapter contract) is documented in the root `next-steps.md`;
+the LyX live test itself is blocked by an upstream LyX pipe bug on
+current Windows builds (see `apps/lyx/AGENTS.md`).
 
 ## Bridge auto-install (done 2026-10-18)
 
