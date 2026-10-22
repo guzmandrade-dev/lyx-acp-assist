@@ -627,6 +627,10 @@ the selection -> `buffer-write`. Insert-at-cursor and undo also wired.
 - `src/server.ts` — Express API: session (+ teardown), unified
   `/message/stream` (agent-decided intent: chat/insert/rewrite),
   documents, selection, undo, cancel. `src/electron/main.ts` + `public/` — UI.
+- `src/standalone.ts` — headless dev entry (no Electron): serves the
+  panel + API on a dynamic port (`PORT` env overrides); run
+  `node dist/standalone.js` to drive the app from scripts/tools
+  (same pattern as the LibreOffice app).
 - `test/mock-lyx-server.ts` — fake LyXServer harness (see its section).
 - 102 vitest tests green. Monorepo + shared core since 2026-10-22: this
   repo hosts both apps (`apps/lyx`, `apps/libreoffice`) over npm
