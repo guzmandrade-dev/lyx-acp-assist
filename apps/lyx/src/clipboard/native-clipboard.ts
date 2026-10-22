@@ -105,6 +105,13 @@ $t = [System.Windows.Forms.Clipboard]::GetText()
 Write-Output ([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($t)))
 `;
 
+const WIN_CLEAR_PS = `
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Windows.Forms
+[System.Windows.Forms.Clipboard]::Clear()
+Write-Output 'OK'
+`;
+
 function windowsClipboard(): RawClipboard {
   return {
     async hasFormat(format) {
@@ -135,6 +142,9 @@ function windowsClipboard(): RawClipboard {
     async readText() {
       const out = await ps(WIN_READ_TEXT_PS);
       return Buffer.from(out.trim(), 'base64').toString('utf8');
+    },
+    async clear() {
+      await ps(WIN_CLEAR_PS);
     },
   };
 }
@@ -186,6 +196,12 @@ function linuxClipboard(): RawClipboard {
         ? await runProcess('wl-paste', ['--no-newline'])
         : await runProcess('xclip', ['-selection', 'clipboard', '-o']);
       return r.code === 0 ? r.stdout : '';
+    },
+    async clear() {
+      // wl-copy has a dedicated --clear; xclip replaces the selection with
+      // whatever is piped in, so empty stdin empties the clipboard.
+      if (isWayland()) await runProcess('wl-copy', ['--clear']);
+      else await runProcess('xclip', ['-selection', 'clipboard'], '');
     },
   };
 }
@@ -248,6 +264,14 @@ function macosClipboard(): RawClipboard {
     async readText() {
       const out = await osascript('return the clipboard as text');
       return out.trimEnd();
+    },
+    async clear() {
+      await osascript(
+        'use framework "AppKit"\n' +
+          'set pb to current application\'s class NSPasteboard\'s generalPasteboard()\n' +
+          'pb\'s clearContents()\n' +
+          'return "OK"',
+      );
     },
   };
 }

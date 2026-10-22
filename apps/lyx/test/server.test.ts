@@ -15,6 +15,9 @@ const stubClipboard: RawClipboard = {
   async write() {
     /* no-op */
   },
+  async clear() {
+    /* no-op */
+  },
 };
 
 let express: Express;

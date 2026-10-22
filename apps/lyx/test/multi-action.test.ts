@@ -210,6 +210,9 @@ const rawClipboard: RawClipboard = {
   async readText() {
     return '';
   },
+  async clear() {
+    (globalThis as { __clipDoc?: string }).__clipDoc = '';
+  },
 };
 
 interface Harness {
