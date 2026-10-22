@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu } from 'electron';
 import { spawn, type ChildProcess } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -140,6 +140,16 @@ async function startApp(): Promise<void> {
     },
   });
   await mainWindow.loadURL(url);
+  // Electron shows no context menu unless the app builds one. Without this,
+  // right-click was dead and users could not paste into the composer.
+  mainWindow.webContents.on('context-menu', (_event, params) => {
+    Menu.buildFromTemplate([
+      { label: 'Cut', role: 'cut', enabled: params.editFlags.canCut },
+      { label: 'Copy', role: 'copy', enabled: params.editFlags.canCopy },
+      { label: 'Paste', role: 'paste', enabled: params.editFlags.canPaste },
+      { label: 'Select All', role: 'selectAll', enabled: params.editFlags.canSelectAll },
+    ]).popup({ window: mainWindow ?? undefined });
+  });
   mainWindow.on('closed', () => {
     mainWindow = null;
   });

@@ -997,16 +997,21 @@ fileInput.addEventListener('change', async () => {
   input.focus();
 });
 
-// Refresh the LyX context (active document tab + selection indicator) only
-// when the user interacts with the composer — never on a timer. Every pipe
-// LFUN dispatched into LyX makes LyX snap its view back to the cursor, so
-// even a 2s `server-get-filename` poll breaks wheel-scrolling an unfocused
-// LyX window (Windows scrolls inactive windows under the cursor). The
-// authoritative context is re-read server-side when a message is sent.
+// Refresh the LyX document tab only when the user interacts with the
+// composer — never on a timer. Every pipe LFUN dispatched into LyX makes
+// LyX snap its view back to the cursor, so even a 2s `server-get-filename`
+// poll breaks wheel-scrolling an unfocused LyX window (Windows scrolls
+// inactive windows under the cursor). The authoritative context is re-read
+// server-side when a message is sent.
+// IMPORTANT: composer interaction must NOT refresh the selection. Reading
+// the selection dispatches a `copy` LFUN that clears/overwrites the system
+// clipboard — wiping whatever the user copied (e.g. a LyX error from the
+// logs) to paste into the composer. The selection indicator updates on
+// send/document-switch instead; the server re-reads the real selection at
+// message-send time anyway.
 function refreshLyxContext() {
   if (!sessionId || busy) return;
   refreshDocuments();
-  refreshSelection();
 }
 let lyxContextRefreshTimer = null;
 input.addEventListener('input', () => {

@@ -511,9 +511,14 @@ dispatched into LyX makes LyX snap its view back to the cursor — this
 visibly disturbed the caret while typing in LyX AND broke
 wheel-scrolling an unfocused LyX window (Windows scrolls inactive
 windows; the 2s `server-get-filename` document poll kept yanking the
-view back). Fix: NO polling at all. The document tab + selection
-indicator refresh only on composer interaction (typing, debounced 400ms,
-and clicking into the input) plus connect/send/document-switch. The
+view back). Fix: NO polling at all. The document tab refreshes only on
+composer interaction (typing, debounced 400ms, and clicking into the
+input) plus connect/send/document-switch/app window focus; the selection
+indicator refreshes only on connect/send/document-switch. Composer
+interaction deliberately does NOT refresh the selection: reading it
+dispatches a `copy` LFUN that clears/overwrites the system clipboard,
+wiping text the user copied to paste into the composer (live-reported
+2026-10-22). The
 authoritative document + selection context is re-read server-side at
 message-send time (`refreshActiveDocument` + `save` + `buildContextBlock`
 + `readSelection`), so dropping the poll cannot send stale context. The
