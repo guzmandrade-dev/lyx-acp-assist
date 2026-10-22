@@ -628,7 +628,10 @@ the selection -> `buffer-write`. Insert-at-cursor and undo also wired.
   `/message/stream` (agent-decided intent: chat/insert/rewrite),
   documents, selection, undo, cancel. `src/electron/main.ts` + `public/` — UI.
 - `test/mock-lyx-server.ts` — fake LyXServer harness (see its section).
-- 66 vitest tests green.
+- 102 vitest tests green. Monorepo + shared core since 2026-10-22: this
+  repo hosts both apps (`apps/lyx`, `apps/libreoffice`) over npm
+  workspaces; shared code lives in `packages/core` (`@acp-assist/core`).
+  The default agent command is `vibe-acp` everywhere (opencode retired).
 - Tool-call progress in the stream is DONE (2026-10-04): `AcpClient.prompt`
   forwards `tool_call` session updates via `onToolCall`; the server emits
   `{"tool": {title, status}}` SSE frames; the UI shows one quiet muted line

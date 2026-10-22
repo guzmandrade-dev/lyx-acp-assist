@@ -513,6 +513,22 @@ and CI" below); remaining: sidebar deck. The optional small UI bits are
 DONE (2026-10-19, see "Panel UI bits test" below).
 Roadmap and scope live in README.md.
 
+### Monorepo + shared core (done 2026-10-22)
+
+This app and its LyX sibling now live in one monorepo (this repository,
+`lyx-acp-assist` on GitHub) with npm workspaces. Shared code moved to
+`packages/core` (`@acp-assist/core`): ACP client (parameterized
+appName/writerName), agent-process spawn, shared types (superset
+TurnMeta), attachment-to-text conversion, chat-history persistence +
+restart replay, agent-settings store + routes, session lifecycle
+routes, and attachment routes. Both apps consume it; both test suites
+(102/102 LyX, 66/66 here) and the full CI matrix pass. The former
+standalone `libreoffice-acp-assist` repository is archived. Remaining
+unshared (the Phase B2 continuation, see the root `next-steps.md`):
+the message/stream SSE loop, multi-action orchestration, and the
+document/selection/undo/status routes — planned behind a backend/
+adapter contract, needing live testing against both editors.
+
 ## Bridge auto-install (done 2026-10-18)
 
 One-click .oxt install from the panel: `src/bridge/install.ts`

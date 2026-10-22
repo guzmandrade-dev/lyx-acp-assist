@@ -8,6 +8,9 @@ node_modules/
 # Logs
 *.log
 
+# Session handoff notes (untracked on purpose)
+next-steps.md
+
 # OS junk
 .DS_Store
 Thumbs.db
