@@ -34,6 +34,7 @@ import {
   extractAttachmentText as coreExtractAttachmentText,
   formatHistoryReplay as coreFormatHistoryReplay,
   listKnownDocuments as coreListKnownDocuments,
+  registerAttachmentRoutes,
   loadHistory,
   saveHistory,
   sleep,
@@ -296,43 +297,11 @@ export function createServer(options: ServerOptions & {
   // --- attachments -------------------------------------------------------
 
   /** Store an uploaded file for the next message (base64 JSON body). */
-  app.post(
-    '/api/session/:id/attachments',
-    wrap(async (req, res) => {
-      const session = getSession(req.params['id']);
-      if (!options.attachmentsDir) throw new Error('Attachments are not configured.');
-      const name = (req.body?.name as string | undefined)?.trim();
-      const data = req.body?.data as string | undefined;
-      if (!name || !data) {
-        res.status(400).json({ error: 'name and data are required' });
-        return;
-      }
-      await fs.mkdir(options.attachmentsDir, { recursive: true });
-      const safe = name.replace(/[^\w.\- ]+/g, '_');
-      const id = randomUUID();
-      const filePath = path.join(options.attachmentsDir, `${id}-${safe}`);
-      await fs.writeFile(filePath, Buffer.from(data, 'base64'));
-      const text = await extractAttachmentText(filePath, name);
-      const att: Attachment = { id, name, path: filePath, text };
-      session.attachments.push(att);
-      res.json({ id, name, converted: text !== null });
-    }),
-  );
-
-  /** Drop a pending attachment before it is sent. */
-  app.delete(
-    '/api/session/:id/attachments/:attId',
-    wrap(async (req, res) => {
-      const session = getSession(req.params['id']);
-      const attId = String(req.params['attId'] ?? '');
-      const idx = session.attachments.findIndex((a) => a.id === attId);
-      if (idx >= 0) {
-        const removed = session.attachments.splice(idx, 1);
-        removed[0] && fs.unlink(removed[0].path).catch(() => undefined);
-      }
-      res.json({ ok: true });
-    }),
-  );
+  registerAttachmentRoutes(app, wrap, {
+    attachmentsDir: options.attachmentsDir,
+    getSession,
+    extractText: extractAttachmentText,
+  });
 
   // --- documents ---------------------------------------------------------
 
