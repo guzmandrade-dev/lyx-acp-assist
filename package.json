@@ -1,0 +1,20 @@
+{
+  "name": "acp-assist",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ACP assistant companions for LyX and LibreOffice (monorepo: packages/core shared library + per-editor apps).",
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "license": "MIT",
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "typecheck": "npm run typecheck --workspaces",
+    "test": "npm run test --workspaces"
+  }
+}

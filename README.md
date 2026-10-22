@@ -19,14 +19,16 @@ a quiet chat surface that floats beside the document.
 ## Repository layout
 
 ```
-apps/lyx/           LyX companion: Electron panel, read-only .lyx parser,
-                    LyXServer pipe client, native clipboard adapters
-apps/libreoffice/   LibreOffice companion: Electron panel, UNO bridge
-                    extension, module adapters (Writer/Calc/Impress)
+packages/core/    @acp-assist/core: shared ACP client, types, attachment
+                  conversion, chat-history persistence, restart replay
+apps/lyx/         LyX companion (Electron + read-only .lyx parser + pipe client)
+apps/libreoffice/  LibreOffice companion (Electron + UNO bridge + module adapters)
 ```
 
-Each app is self-contained: install, test, and package from its own
-directory. See each app's README for requirements and usage.
+npm workspaces: install once at the root (`npm install`), then develop,
+test, and package from either app's directory. Each app stays
+self-contained in packaging; `@acp-assist/core` rides along as a regular
+workspace dependency. See each app's README for requirements and usage.
 
 ## Development
 

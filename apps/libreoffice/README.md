@@ -165,13 +165,19 @@ other`), and the companion selects a **module adapter** that owns two jobs:
 Draw is reachable for free through the Impress adapter; Math and Base are
 out of scope for now.
 
-## What we reuse from lyx-acp-assist
+## What we share with lyx-acp-assist
 
-- `src/acp/` — ACP client over stdio, agent-agnostic (≈ verbatim)
-- `src/server.ts` — Express API: sessions, unified message stream, attachments
-- `src/electron/` — shell, floating-window logic
-- `public/` — companion panel UI (needs module-aware status/undo labels)
-- Attachment-to-text conversion, chat history persistence, agent settings UI
+Shared code lives in the workspace package `@acp-assist/core`
+(`packages/core` at the monorepo root), used by both apps:
+
+- ACP client over stdio (agent-agnostic), shared types, agent-process spawn
+- Attachment-to-text conversion (markitdown chain)
+- Chat-history persistence and restart replay
+
+Also reused in spirit from the sibling app: `src/server.ts` — Express
+API: sessions, unified message stream, attachments — `src/electron/`
+(shell, floating-window logic), and `public/` (companion panel UI, with
+module-aware status/undo labels).
 
 Replaced: everything LyX-specific — the `.lyx` parser, the LyXServer pipe
 client, and the native clipboard adapters (the biggest platform-specific

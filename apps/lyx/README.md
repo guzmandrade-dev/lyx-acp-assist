@@ -131,12 +131,15 @@ Electron user-data directory — `%APPDATA%\LyX ACP Assist` on Windows,
 src/lyx/         read-only .lyx parser, outline/context building, markup validation
 src/lyxserver/   LyXServer named-pipe client (LFUN dispatch)
 src/clipboard/   x-lyx clipboard abstraction + native adapters
-src/acp/         ACP client over stdio (agent-agnostic)
 src/server.ts    Express API: sessions, unified message stream, documents, undo
 src/electron/    Electron shell + floating-window logic
 public/          companion panel UI (plain HTML/CSS/JS)
 test/            vitest suites incl. a fake LyXServer speaking the real pipe protocol
 ```
+
+Shared code (ACP client, attachment conversion, chat-history persistence,
+restart replay) lives in the workspace package
+[`@acp-assist/core`](../../packages/core) at the monorepo root.
 
 ## Status
 

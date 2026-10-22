@@ -9,6 +9,10 @@ import fs from 'node:fs/promises';
 import { spawnAgentProcess, type AgentProcess } from './agent-process.js';
 
 export interface AcpClientOptions {
+  /** App name used in the ACP handshake (e.g. "lyx-acp-assist"). */
+  appName: string;
+  /** Editor name for user-facing messages (e.g. "LyX", "LibreOffice"). */
+  writerName: string;
   command: string;
   args: string[];
   env: Record<string, string>;
@@ -33,15 +37,15 @@ export class AcpClient {
 
   constructor(options: AcpClientOptions) {
     this.options = options;
-    this.app = client({ name: 'lyx-acp-assist' });
+    this.app = client({ name: options.appName });
     this.registerClientHandlers();
   }
 
   /**
    * Client-side handlers the agent may call mid-turn:
    * - fs/read_text_file: serve file reads (lazy document access).
-   * - fs/write_text_file: REFUSED. LyX is the single writer of the .lyx
-   *   file; agents must not write behind LyX's back (see AGENTS.md).
+   * - fs/write_text_file: REFUSED. The editor is the single writer of the
+   *   document; agents must not write behind its back (see AGENTS.md).
    * - session/request_permission: auto-approve the agent's tool calls.
    *   This app deliberately delegates all work to the agent process.
    */
@@ -62,8 +66,8 @@ export class AcpClient {
 
     this.app.onRequest('fs/write_text_file', () => {
       throw new Error(
-        'Writing files is not allowed: LyX is the single writer of the document. ' +
-          'Reply with content and an [ACTION: ...] tag instead.',
+        `Writing files is not allowed: ${this.options.writerName} is the single ` +
+          'writer of the document. Reply with content and an [ACTION: ...] tag instead.',
       );
     });
 

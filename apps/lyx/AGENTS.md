@@ -197,7 +197,7 @@ selection is empty. Useful as a cheap selection probe before `copy`.
   of LyX token format (`\emph on/\emph default`); the app validates and
   retries once with a corrective prompt (`findMarkupProblems`).
 - On Windows, `opencode` is a PowerShell shim: bare agent commands must
-  spawn with `shell: true` (`src/acp/agent-process.ts`).
+  spawn with `shell: true` (`@acp-assist/core` `src/acp/agent-process.ts`).
 
 ## Agent specialization (2026-10-03)
 
@@ -618,7 +618,9 @@ the selection -> `buffer-write`. Insert-at-cursor and undo also wired.
 - `src/lyxserver/client.ts` — LyXServer pipe client (LFUN dispatch).
 - `src/clipboard/lyx-clipboard.ts` + `src/clipboard/native-clipboard.ts` —
   x-lyx clipboard abstraction + cross-platform native adapter.
-- `src/acp/` — ACP client (VRP pattern).
+- ACP client, shared types, attachment conversion, and chat-history
+  persistence live in the workspace package `@acp-assist/core`
+  (`packages/core` at the monorepo root, shared with the LibreOffice app).
 - `src/server.ts` — Express API: session (+ teardown), unified
   `/message/stream` (agent-decided intent: chat/insert/rewrite),
   documents, selection, undo, cancel. `src/electron/main.ts` + `public/` — UI.

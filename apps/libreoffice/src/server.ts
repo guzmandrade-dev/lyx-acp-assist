@@ -9,13 +9,10 @@
  * single writer of truth.
  */
 
-import { randomUUID, createHash } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
-import { spawn } from 'node:child_process';
 import express from 'express';
-import type { ContentBlock } from '@agentclientprotocol/sdk';
 import {
   BridgeClient,
   BridgeError,
@@ -33,59 +30,35 @@ import { impressAdapter, parseImpressAction } from './modules/impress.js';
 import { genericAdapter } from './modules/generic.js';
 import type { ModuleAdapter, AgentAction, ActionOutcome, SelectionInfo } from './modules/types.js';
 import { extractContentBlock, parseContentBlock } from './modules/markdown.js';
-import { AcpClient } from './acp/client.js';
+import {
+  AcpClient,
+  UNSAVED_KEY,
+  extractAttachmentText as coreExtractAttachmentText,
+  formatHistoryReplay as coreFormatHistoryReplay,
+  listKnownDocuments,
+  loadHistory,
+  saveHistory,
+  sleep,
+} from '@acp-assist/core';
+import type {
+  AgentRunner,
+  AgentSettings,
+  Attachment,
+  Turn,
+  TurnMeta,
+} from '@acp-assist/core';
 
-export interface AgentSettings {
-  command: string;
-  args: string[];
-  env: Record<string, string>;
-}
-
-export interface Turn {
-  role: 'user' | 'assistant';
-  content: string;
-  timestamp: string;
-  /** Outcome of the action this assistant turn proposed (see TurnMeta). */
-  meta?: TurnMeta;
-}
-
-export interface TurnMeta {
-  action: string;
-  target?: number | null;
-  /** Calc: A1 anchor address, when the tag carried one. */
-  address?: string | null;
-  /** Active bridge module (writer/calc/impress/draw) for UI labels. */
-  module?: string;
-  result: 'applied' | 'error' | 'cancelled';
-  error?: string;
-  step?: number;
-}
-
-const UNSAVED_KEY = '(unsaved)';
-
-/** Conversation-history replay after an app restart (agent has no memory). */
-const HISTORY_REPLAY_LIMIT = 20;
-const HISTORY_REPLAY_CHAR_LIMIT = 500;
+export type {
+  AgentSettings,
+  Turn,
+  TurnMeta,
+  AgentRunner,
+  Attachment,
+} from '@acp-assist/core';
+export { listKnownDocuments } from '@acp-assist/core';
 
 /** Max document edits per user message (app-level safety stop). */
 const MAX_ACTIONS_PER_MESSAGE = 10;
-
-/** Minimal agent surface the server needs (AcpClient satisfies this). */
-export interface AgentRunner {
-  start(): Promise<void>;
-  stop(): void;
-  createSession(sessionId: string): Promise<void>;
-  cancel(sessionId: string): void;
-  prompt(
-    sessionId: string,
-    content: ContentBlock[],
-    options?: {
-      onChunk?: (chunk: string) => void;
-      onToolCall?: (tool: { title: string; status: string; kind: string }) => void;
-      timeoutMs?: number;
-    },
-  ): Promise<string>;
-}
 
 export interface Session {
   id: string;
@@ -117,13 +90,6 @@ export interface ServerOptions {
   installBridge?: (unopkgPath: string, oxtPath: string) => Promise<InstallResult>;
 }
 
-/** A file the user attached to the next message. */
-export interface Attachment {
-  id: string;
-  name: string;
-  path: string;
-  text: string | null;
-}
 
 export function createServer(options: ServerOptions & {
   /** Test hook: inject a fake agent process instead of spawning one. */
@@ -346,7 +312,11 @@ export function createServer(options: ServerOptions & {
         : await pickBridge();
       const agent: AgentRunner = options.agentFactory
         ? options.agentFactory(settings)
-        : new AcpClient(settings);
+        : new AcpClient({
+            ...settings,
+            appName: 'libreoffice-acp-assist',
+            writerName: 'LibreOffice',
+          });
       await agent.start();
 
       const id = randomUUID();
@@ -947,145 +917,25 @@ export function buildContinuationPrompt(
 }
 
 export function formatHistoryReplay(turns: Turn[], unseen: number): string {
-  const count = Math.min(Math.max(0, unseen), turns.length, HISTORY_REPLAY_LIMIT);
-  if (count <= 0) return '';
-  const lines: string[] = [
-    'Conversation so far (earlier turns, replayed because the app was restarted — you have no memory of these):',
-    'The user can see this history; treat it as context, not as a request to continue anything.',
-  ];
-  for (const turn of turns.slice(0, count)) {
-    const label = turn.role === 'user' ? 'User' : 'You';
-    let text = (turn.content ?? '')
-      .replace(/```(?:writer|calc|impress)[\s\S]*?```/g, '')
-      .replace(/\[ACTION:\s*[^\]]*\]/gi, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-    if (text.length > HISTORY_REPLAY_CHAR_LIMIT) {
-      text = `${text.slice(0, HISTORY_REPLAY_CHAR_LIMIT)}…`;
-    }
-    lines.push(`- ${label}: ${text}`);
-    if (turn.role === 'assistant' && turn.meta) {
-      const m = turn.meta;
-      if (m.result === 'applied' && m.action !== 'none') {
-        const at = m.target ? ` p${m.target}` : m.address ? ` ${m.address}` : '';
-        lines.push(`  (applied [ACTION: ${m.action}${at}] in the document)`);
-      } else if (m.result === 'error') {
-        lines.push(`  (action ${m.action} FAILED: ${m.error ?? 'unknown error'})`);
-      } else if (m.result === 'cancelled') {
-        lines.push(`  (action ${m.action} was cancelled before applying)`);
-      }
-    }
-  }
-  return '\n' + lines.join('\n');
+  return coreFormatHistoryReplay(turns, unseen, {
+    blockPattern: /```(?:writer|calc|impress)[\s\S]*?```/g,
+    describeTarget: (m) =>
+      m.target ? ` p${m.target}` : m.address ? ` ${m.address}` : '',
+  });
 }
 
 // --- attachments -----------------------------------------------------------------
 
-const ATTACHMENT_TEXT_LIMIT = 40_000;
+/** Extensions the app can read as text directly (no converter needed). */
 const TEXTUAL_FILE = /\.(txt|md|markdown|odt|fodt|csv|tsv|json|xml|bib|log|html?|yaml|yml|py|js|ts)$/i;
 
 export async function extractAttachmentText(
   filePath: string,
   name: string,
 ): Promise<string | null> {
-  if (TEXTUAL_FILE.test(name)) {
-    try {
-      const raw = await fs.readFile(filePath, 'utf8');
-      return raw.slice(0, ATTACHMENT_TEXT_LIMIT);
-    } catch {
-      return null;
-    }
-  }
-  for (const command of markitdownCandidates()) {
-    try {
-      const quoted = command.includes(' ') ? `"${command.replace(/"/g, '')}"` : command;
-      const out = await runCommand(`${quoted} "${filePath}"`, 60_000);
-      if (out.trim()) return out.slice(0, ATTACHMENT_TEXT_LIMIT);
-    } catch {
-      /* try the next converter */
-    }
-  }
-  return null;
-}
-
-function markitdownCandidates(): string[] {
-  const candidates: string[] = [];
-  if (process.env.LO_MARKITDOWN) candidates.push(process.env.LO_MARKITDOWN);
-  candidates.push('markitdown', 'uvx markitdown');
-  if (process.platform === 'win32') {
-    candidates.push(
-      path.join(os.homedir(), '.local', 'venvs', 'markitdown-mcp', 'Scripts', 'markitdown.exe'),
-    );
-  }
-  return candidates;
-}
-
-function runCommand(command: string, timeoutMs: number): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, { shell: true, windowsHide: true });
-    let out = '';
-    let err = '';
-    const timer = setTimeout(() => child.kill(), timeoutMs);
-    child.stdout?.on('data', (d: Buffer) => (out += d.toString('utf8')));
-    child.stderr?.on('data', (d: Buffer) => (err += d.toString('utf8')));
-    child.on('error', (e) => {
-      clearTimeout(timer);
-      reject(e);
-    });
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      if (code === 0) resolve(out);
-      else reject(new Error(`exit ${code}: ${err.slice(0, 200)}`));
-    });
+  return coreExtractAttachmentText(filePath, name, {
+    textualFile: TEXTUAL_FILE,
+    markitdownEnv: process.env.LO_MARKITDOWN,
   });
 }
 
-// --- history persistence ------------------------------------------------------------
-
-export async function listKnownDocuments(historyDir: string): Promise<string[]> {
-  let entries: string[];
-  try {
-    entries = await fs.readdir(historyDir);
-  } catch {
-    return [];
-  }
-  const keys: string[] = [];
-  for (const entry of entries) {
-    if (!entry.endsWith('.json')) continue;
-    try {
-      const raw = await fs.readFile(path.join(historyDir, entry), 'utf8');
-      const data = JSON.parse(raw) as { key?: string };
-      const key = data.key;
-      if (typeof key !== 'string' || key === UNSAVED_KEY) continue;
-      keys.push(key);
-    } catch {
-      /* unreadable entry — skip */
-    }
-  }
-  return keys;
-}
-
-function historyFile(dir: string, key: string): string {
-  const hash = createHash('sha256').update(key).digest('hex').slice(0, 16);
-  return path.join(dir, `${hash}.json`);
-}
-
-async function loadHistory(dir: string, key: string): Promise<Turn[]> {
-  try {
-    const raw = await fs.readFile(historyFile(dir, key), 'utf8');
-    const data = JSON.parse(raw) as { key?: string; turns: Turn[] };
-    if (data.key !== key) return [];
-    return Array.isArray(data.turns) ? data.turns : [];
-  } catch {
-    return [];
-  }
-}
-
-async function saveHistory(dir: string, key: string, turns: Turn[]): Promise<void> {
-  await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(historyFile(dir, key), JSON.stringify({ key, turns }, null, 2), 'utf8');
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
-}

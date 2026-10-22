@@ -9,12 +9,12 @@
   "type": "module",
   "main": "./dist/electron/main.js",
   "scripts": {
-    "build": "tsc && tsc -p tsconfig.preload.json",
+    "build": "npm run build -w @acp-assist/core && tsc && tsc -p tsconfig.preload.json",
     "dev": "tsc --watch",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "npm run build -w @acp-assist/core && tsc --noEmit",
     "start": "npm run build && electron ./dist/electron/main.js",
     "package": "npm run build && electron-builder",
-    "test": "vitest run",
+    "test": "npm run build -w @acp-assist/core && vitest run",
     "test:watch": "vitest"
   },
   "engines": {
@@ -37,6 +37,7 @@
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^1.7.0",
+    "@acp-assist/core": "*",
     "express": "^5.2.1",
     "zod": "^4.6.5"
   },

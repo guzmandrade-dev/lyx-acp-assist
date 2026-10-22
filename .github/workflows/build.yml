@@ -30,11 +30,10 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
-          cache-dependency-path: apps/${{ matrix.app }}/package-lock.json
+          cache-dependency-path: package-lock.json
 
-      - name: Install dependencies
+      - name: Install dependencies (all workspaces)
         run: npm ci
-        working-directory: apps/${{ matrix.app }}
 
       - name: Run tests
         run: npm test
@@ -105,11 +104,10 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
-          cache-dependency-path: apps/${{ matrix.app }}/package-lock.json
+          cache-dependency-path: package-lock.json
 
-      - name: Install dependencies
+      - name: Install dependencies (all workspaces)
         run: npm ci
-        working-directory: apps/${{ matrix.app }}
 
       - name: Download app icons
         uses: actions/download-artifact@v4

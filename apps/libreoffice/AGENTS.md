@@ -15,8 +15,10 @@ surface plus context provider; all reasoning is delegated to an external
 The design deliberately mirrors the sibling project **LyX ACP Assist**
 (`apps/lyx` in this monorepo): Electron + Express + TypeScript
 companion, `@agentclientprotocol/sdk`, one input box with agent-decided
-action tags, per-document chat history, undo UX. Reuse its code
-(`src/acp/`, `src/server.ts`, `src/electron/`, `public/`) wherever possible.
+action tags, per-document chat history, undo UX. Shared code (ACP client,
+types, attachment conversion, history persistence) lives in the workspace
+package `@acp-assist/core` (`packages/core` at the monorepo root);
+app-specific code stays under `src/` here.
 The LyX project is the reference for conventions; this file follows its
 AGENTS.md split (README = user-facing; AGENTS.md = decisions, verified
 facts, pitfalls).

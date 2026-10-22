@@ -9,13 +9,11 @@
  * go through the pipe (`paste` via the `application/x-lyx` clipboard).
  */
 
-import { randomUUID, createHash } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { spawn } from 'node:child_process';
 import express from 'express';
-import type { ContentBlock } from '@agentclientprotocol/sdk';
 import { LyxServerClient, LyxPipeError } from './lyxserver/client.js';
 import type { RawClipboard } from './clipboard/lyx-clipboard.js';
 import { LyxClipboard } from './clipboard/lyx-clipboard.js';
@@ -29,53 +27,34 @@ import {
   findMarkupProblems,
 } from './lyx/context.js';
 import { CHAT_KNOWLEDGE } from './lyx/knowledge.js';
-import { AcpClient } from './acp/client.js';
+import {
+  AcpClient,
+  UNSAVED_KEY,
+  extractAttachmentText as coreExtractAttachmentText,
+  formatHistoryReplay as coreFormatHistoryReplay,
+  listKnownDocuments as coreListKnownDocuments,
+  loadHistory,
+  saveHistory,
+  sleep,
+} from '@acp-assist/core';
+import type {
+  AgentRunner,
+  AgentSettings,
+  Attachment,
+  Turn,
+  TurnMeta,
+} from '@acp-assist/core';
 
-export interface AgentSettings {
-  command: string;
-  args: string[];
-  env: Record<string, string>;
-}
+export type {
+  AgentSettings,
+  Turn,
+  TurnMeta,
+  AgentRunner,
+  Attachment,
+} from '@acp-assist/core';
 
-export interface Turn {
-  role: 'user' | 'assistant';
-  content: string;
-  timestamp: string;
-  /**
-   * Outcome of the action the assistant proposed in this turn, recorded
-   * after the action was applied (or failed). Absent on older histories
-   * and on turns before this feature existed.
-   */
-  meta?: TurnMeta;
-}
 
-/** How the action a turn proposed was resolved against the document. */
-export interface TurnMeta {
-  /** The action tag the agent emitted, e.g. "insert", "move", "none". */
-  action: string;
-  /** Paragraph address for addressed actions ([pN]). */
-  target?: number | null;
-  /** Destination address for move/merge ([pM]). */
-  target2?: number | null;
-  /** "applied" when the action landed in LyX, "error" when it failed. */
-  result: 'applied' | 'error' | 'cancelled';
-  /** The error message when result is "error". */
-  error?: string;
-  /** Which edit of a multi-action run this turn is (1-based). */
-  step?: number;
-}
 
-/** Key for the unsaved-document pseudo conversation. */
-const UNSAVED_KEY = '(unsaved)';
-
-/**
- * Conversation-history replay after an app restart: the agent process is
- * new and has no memory, so it must be briefed on the turns it missed.
- * A turn counts as "replayed" once it has been sent in one prompt.
- */
-const HISTORY_REPLAY_LIMIT = 20;
-/** Per-turn character cap when replaying history into a prompt. */
-const HISTORY_REPLAY_CHAR_LIMIT = 500;
 
 /**
  * Documents with a body larger than this attach only their outline to
@@ -91,22 +70,6 @@ const OUTLINE_ONLY_BODY_LIMIT = 16_000;
  */
 const MAX_ACTIONS_PER_MESSAGE = 10;
 
-/** Minimal agent surface the server needs (AcpClient satisfies this). */
-export interface AgentRunner {
-  start(): Promise<void>;
-  stop(): void;
-  createSession(sessionId: string): Promise<void>;
-  cancel(sessionId: string): void;
-  prompt(
-    sessionId: string,
-    content: ContentBlock[],
-    options?: {
-      onChunk?: (chunk: string) => void;
-      onToolCall?: (tool: { title: string; status: string; kind: string }) => void;
-      timeoutMs?: number;
-    },
-  ): Promise<string>;
-}
 
 export interface Session {
   id: string;
@@ -147,15 +110,6 @@ export interface ServerOptions {
   settingsDir?: string;
 }
 
-/** A file the user attached to the next message. */
-export interface Attachment {
-  id: string;
-  name: string;
-  /** Absolute path of the stored file (agents with file tools can read it). */
-  path: string;
-  /** Extracted markdown/plain text, when conversion succeeded. */
-  text: string | null;
-}
 
 export function createServer(options: ServerOptions & {
   /** Test hook: inject a fake agent process instead of spawning one. */
@@ -320,6 +274,8 @@ export function createServer(options: ServerOptions & {
             env: requested?.env ?? persisted.env ?? {},
           })
         : new AcpClient({
+            appName: 'lyx-acp-assist',
+            writerName: 'LyX',
             command: requested?.command ?? persisted.command ?? 'opencode',
             args: requested?.args ?? persisted.args ?? [],
             env: requested?.env ?? persisted.env ?? {},
@@ -1432,37 +1388,11 @@ export function buildContinuationPrompt(
  * were produced live by this same agent process and are skipped.
  */
 export function formatHistoryReplay(turns: Turn[], unseen: number): string {
-  const count = Math.min(Math.max(0, unseen), turns.length, HISTORY_REPLAY_LIMIT);
-  if (count <= 0) return '';
-  const lines: string[] = [
-    `Conversation so far (earlier turns, replayed because the app was restarted — you have no memory of these):`,
-    `The user can see this history; treat it as context, not as a request to continue anything.`,
-  ];
-  for (const turn of turns.slice(0, count)) {
-    const label = turn.role === 'user' ? 'User' : 'You';
-    let text = (turn.content ?? '')
-      // The replay is context, not a request to re-apply: drop the action
-      // tag and any ```lyx block (the meta line below reports the outcome).
-      .replace(/```lyx[\s\S]*?```/g, '')
-      .replace(/\[ACTION:\s*[^\]]*\]/gi, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-    if (text.length > HISTORY_REPLAY_CHAR_LIMIT) {
-      text = `${text.slice(0, HISTORY_REPLAY_CHAR_LIMIT)}…`;
-    }
-    lines.push(`- ${label}: ${text}`);
-    if (turn.role === 'assistant' && turn.meta) {
-      const m = turn.meta;
-      if (m.result === 'applied' && m.action !== 'none') {
-        lines.push(`  (applied [ACTION: ${m.action}${m.target ? ` p${m.target}` : ''}${m.target2 ? ` p${m.target2}` : ''}] in the document)`);
-      } else if (m.result === 'error') {
-        lines.push(`  (action ${m.action} FAILED: ${m.error ?? 'unknown error'})`);
-      } else if (m.result === 'cancelled') {
-        lines.push(`  (action ${m.action} was cancelled before applying)`);
-      }
-    }
-  }
-  return '\n' + lines.join('\n');
+  return coreFormatHistoryReplay(turns, unseen, {
+    blockPattern: /```lyx[\s\S]*?```/g,
+    describeTarget: (m) =>
+      `${m.target ? ` p${m.target}` : ''}${m.target2 ? ` p${m.target2}` : ''}`,
+  });
 }
 
 export function buildAutoPrompt(
@@ -1592,78 +1522,22 @@ export function buildAutoPrompt(
 }
 
 /** How many characters of an attachment's extracted text go into the prompt. */
-const ATTACHMENT_TEXT_LIMIT = 40_000;
-
 /** Extensions the app can read as text directly (no converter needed). */
 const TEXTUAL_FILE = /\.(txt|md|markdown|tex|lyx|csv|tsv|json|xml|bib|sty|cls|log|html?|yaml|yml|py|js|ts)$/i;
 
 /**
  * Best-effort text/markdown extraction for an uploaded attachment:
  * text formats are read directly; binary formats (PDF, DOCX, XLSX, ...)
- * go through the markitdown CLI when it is installed.
+ * go through the markitdown CLI when it is installed (see
+ * @acp-assist/core for the converter chain).
  */
 export async function extractAttachmentText(
   filePath: string,
   name: string,
 ): Promise<string | null> {
-  if (TEXTUAL_FILE.test(name)) {
-    try {
-      const raw = await fs.readFile(filePath, 'utf8');
-      return raw.slice(0, ATTACHMENT_TEXT_LIMIT);
-    } catch {
-      return null;
-    }
-  }
-  for (const command of markitdownCandidates()) {
-    try {
-      const quoted = command.includes(' ')
-        ? `"${command.replace(/"/g, '')}"`
-        : command;
-      const out = await runCommand(`${quoted} "${filePath}"`, 60_000);
-      if (out.trim()) return out.slice(0, ATTACHMENT_TEXT_LIMIT);
-    } catch {
-      /* try the next converter */
-    }
-  }
-  return null;
-}
-
-/**
- * Converter candidates, most preferred first: LYX_MARKITDOWN env override,
- * then `markitdown` on PATH, then `uvx markitdown`, then the markitdown-mcp
- * venv (the same install the markitdown MCP server uses on this machine).
- */
-function markitdownCandidates(): string[] {
-  const candidates: string[] = [];
-  if (process.env.LYX_MARKITDOWN) candidates.push(process.env.LYX_MARKITDOWN);
-  candidates.push('markitdown', 'uvx markitdown');
-  if (process.platform === 'win32') {
-    candidates.push(
-      path.join(
-        os.homedir(), '.local', 'venvs', 'markitdown-mcp', 'Scripts', 'markitdown.exe',
-      ),
-    );
-  }
-  return candidates;
-}
-
-function runCommand(command: string, timeoutMs: number): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, { shell: true, windowsHide: true });
-    let out = '';
-    let err = '';
-    const timer = setTimeout(() => child.kill(), timeoutMs);
-    child.stdout?.on('data', (d: Buffer) => (out += d.toString('utf8')));
-    child.stderr?.on('data', (d: Buffer) => (err += d.toString('utf8')));
-    child.on('error', (e) => {
-      clearTimeout(timer);
-      reject(e);
-    });
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      if (code === 0) resolve(out);
-      else reject(new Error(`exit ${code}: ${err.slice(0, 200)}`));
-    });
+  return coreExtractAttachmentText(filePath, name, {
+    textualFile: TEXTUAL_FILE,
+    markitdownEnv: process.env.LYX_MARKITDOWN,
   });
 }
 
@@ -1876,53 +1750,16 @@ async function collectStyles(file: string, dir: string, depth: number): Promise<
  * disk (file-open on a stale path would reopen or fail in LyX).
  */
 export async function listKnownDocuments(historyDir: string): Promise<string[]> {
-  let entries: string[];
-  try {
-    entries = await fs.readdir(historyDir);
-  } catch {
-    return [];
-  }
-  const paths: string[] = [];
-  for (const entry of entries) {
-    if (!entry.endsWith('.json')) continue;
-    try {
-      const raw = await fs.readFile(path.join(historyDir, entry), 'utf8');
-      const data = JSON.parse(raw) as { key?: string };
-      const key = data.key;
-      if (typeof key !== 'string' || key === UNSAVED_KEY) continue;
-      await fs.access(key);
-      paths.push(key);
-    } catch {
-      /* unreadable entry or missing document — skip */
-    }
-  }
-  return paths;
-}
-
-function historyFile(dir: string, conversationKey: string): string {
-  const hash = createHash('sha256').update(conversationKey).digest('hex').slice(0, 16);
-  return path.join(dir, `${hash}.json`);
-}
-
-async function loadHistory(dir: string, conversationKey: string): Promise<Turn[]> {
-  try {
-    const raw = await fs.readFile(historyFile(dir, conversationKey), 'utf8');
-    const data = JSON.parse(raw) as { key?: string; turns: Turn[] };
-    if (data.key !== conversationKey) return []; // hash collision guard
-    return Array.isArray(data.turns) ? data.turns : [];
-  } catch {
-    return [];
-  }
-}
-
-async function saveHistory(dir: string, conversationKey: string, turns: Turn[]): Promise<void> {
-  await fs.mkdir(dir, { recursive: true });
-  const payload = JSON.stringify({ key: conversationKey, turns }, null, 2);
-  await fs.writeFile(historyFile(dir, conversationKey), payload, 'utf8');
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
+  return coreListKnownDocuments(historyDir, {
+    exists: async (key) => {
+      try {
+        await fs.access(key);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+  });
 }
 
 /** Minimal header used when the document has never been saved. */
