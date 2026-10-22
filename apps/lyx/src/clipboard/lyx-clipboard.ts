@@ -19,6 +19,8 @@ export interface RawClipboard {
   readFormat(format: string): Promise<Buffer | null>;
   /** Atomically write formats (format -> string or bytes). */
   write(formats: Record<string, string | Buffer>): Promise<void>;
+  /** Replace the whole clipboard with empty content (all formats). */
+  clear(): Promise<void>;
   /** Plain-text flavor of the clipboard. */
   readText(): Promise<string>;
 }
@@ -43,6 +45,16 @@ export class LyxClipboard {
   /** The plain-text flavor of the current clipboard (flattened selection). */
   async readText(): Promise<string> {
     return this.clipboard.readText();
+  }
+
+  /**
+   * Empty the clipboard (all formats). Used by the write-only pipe fallback
+   * to detect "no selection" reliably: a `copy` LFUN with no selection is
+   * rejected by LyX and leaves the clipboard untouched, so a stale payload
+   * would otherwise be mistaken for a fresh selection.
+   */
+  async clear(): Promise<void> {
+    await this.clipboard.clear();
   }
 
   /**

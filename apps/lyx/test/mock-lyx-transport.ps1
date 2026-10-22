@@ -19,7 +19,10 @@
 #   stream in Windows PowerShell 5.1 when spawned from Node.
 # - NamedPipeServerStream expects the bare pipe NAME (no \\.\pipe\ prefix):
 #   passing the full path creates a pipe nothing else can open.
-param([string]$PipeBase)
+# - Deaf mode (-Deaf): every .out connection is closed instantly with
+#   zero bytes, reproducing LyX's reset-at-connect bug on the affected
+#   Windows builds (see src/lyxserver/client.ts). .in still dispatches.
+param([string]$PipeBase, [switch]$Deaf)
 $ErrorActionPreference = 'Stop'
 
 $Name = $PipeBase -replace '^\\\\\.\\pipe\\', ''
@@ -54,6 +57,7 @@ $ctlTask = $null
 $script:outPending = [System.Collections.Generic.List[string]]::new()
 
 function Write-Reply([string]$line) {
+  if ($Deaf) { return }  # replies can never be delivered; do not queue
   # Try connected .out instances, newest first (ghosts fail on write).
   for ($i = $script:outPool.Count - 1; $i -ge 0; $i--) {
     $e = $script:outPool[$i]
@@ -132,8 +136,15 @@ while ($true) {
     try {
       if (-not $e.Connected -and $e.Wait.IsCompleted) {
         $e.Wait.Wait() | Out-Null
-        $e.Connected = $true
-        Send "OUTACCEPT|$i"
+        if ($Deaf) {
+          # Reset at connect, zero bytes: the deaf-pipe signature.
+          try { $e.Pipe.Disconnect() } catch {}
+          $e.Connected = $false
+          $e.Wait = $e.Pipe.WaitForConnectionAsync()
+        } else {
+          $e.Connected = $true
+          Send "OUTACCEPT|$i"
+        }
       }
     } catch {
       try { $e.Pipe.Dispose() } catch {}
@@ -142,7 +153,7 @@ while ($true) {
       Top-Up-Pool $outPool "$Name.out" 'Out'
     }
   }
-  if ($script:outPending.Count -gt 0) {
+  if (-not $Deaf -and $script:outPending.Count -gt 0) {
     foreach ($line in @($script:outPending)) {
       $script:outPending.Remove($line) | Out-Null
       Write-Reply $line

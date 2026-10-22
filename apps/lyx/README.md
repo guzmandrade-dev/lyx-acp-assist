@@ -74,6 +74,15 @@ https://github.com/user-attachments/assets/ce301d65-6185-4de0-8086-4a246bd8fc85
   breaks the pipe: LyX eats the backslashes as escapes). On Linux/macOS use the
   path form LyX expects for your install (e.g. `~/.lyxpipe`), or point the app
   at it with the `LYX_PIPE` environment variable.
+
+  The app reads the pipe path from LyX's own preferences file
+  (`%APPDATA%\LyX<version>\preferences` on Windows), so any pipe name you
+  configure just works; `LYX_PIPE` remains an escape hatch. If the LyXServer
+  `.out` pipe is broken server-side (a LyX named-pipe bug triggered by the
+  Windows updates of 2026-10-17; see AGENTS.md), the app detects it at
+  startup and falls back to a degraded write-only mode: commands still
+  apply, while document/selection reads come from the window title, the
+  session file, and the clipboard.
 - **Node.js 22+**
 - **An ACP agent CLI** — any of:
   - `vibe-acp` (no arguments)
