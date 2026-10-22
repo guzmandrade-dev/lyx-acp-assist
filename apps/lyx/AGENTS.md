@@ -108,22 +108,59 @@ See that repo's README/AGENTS.md for conventions.
     `PIPE_BUFSIZE` (512) — a client that never reads `.out` eventually
     loses replies.
 
-## Live-test debugging trail (2026-10-22, unresolved — resume after device reboot)
+## Live-test debugging trail (2026-10-22 — SOLVED: upstream LyX bug, not our code)
 
-During the Phase B2 live regression, LyX's pipe went completely deaf:
-the app client, a raw Node fs client, and a raw .NET NamedPipeClientStream
-client all connect, but LyX accepts `.out` connections and closes them
-with 0-byte EOF without ever echoing `LYXSRV:<client>:hello`, and
-`LYXCMD`s get no INFO/ERROR reply. Ruled out: app code (mock suite
-passes; client untouched since the 2026-10-04 live validation),
-config (`\serverpipe "//./pipe/lyxpipe"` correct in preferences),
-version (2.5.3, same as validated), modals (window idle, saved doc),
-zombie clients (killed all holders), two-instance confusion (retested with
-a single fresh instance + document open — still deaf). Not ruled out:
-OS-level named-pipe state (3+ days uptime) — a full device reboot is the
-pending experiment. Resume: relaunch ONE LyX with a document, then
-`node test/live_drive.mjs session` against the standalone server
-(`$env:PORT='8791'; node dist/standalone.js`).
+During the Phase B2 live regression, LyX's pipe went deaf: the app client,
+raw Node, raw .NET, and the ORIGINAL pre-monorepo client build (Oct 16)
+all connected to `.out` and got an instant 0-byte EOF; no `hello` echo, no
+INFO/ERROR replies. Meanwhile `.in` worked perfectly (`self-insert:x`
+dispatched and modified the document). Ruled out systematically: app
+code (old build + raw probes), LyX binary (unchanged since Sep 13),
+config, modals, zombie clients, two-instance silent disable, reboot
+(fresh boot, single instance, still deaf), and every OS-primitive theory
+(zero-length overlapped WriteFile, stale GetLastError after GOR — all
+behave fine in isolation).
+
+**Root cause (proven by a full instrumented replica of LyX's
+`LyXComm::pipeServer`, see the reproduction below):**
+
+1. The Windows updates of 2026-10-17 (KB5127690/KB5127846/KB5127839,
+   Insider build 26220) changed named-pipe behavior: a **zero-length
+   overlapped `WriteFile` now returns FALSE + ERROR_IO_PENDING** instead
+   of completing immediately with TRUE.
+2. LyX's server (`src/Server.cpp`, WRITING_STATE for output pipes)
+   issues exactly such a zero-length write on every fresh `.out`
+   connection (its reply buffer is empty until a command is answered).
+3. The state machine's pending-tolerance branch is guarded by
+   `if (success && (error == ERROR_IO_PENDING || error == NO_ERROR))` —
+   `success` is WriteFile's return, which is now FALSE, so the branch can
+   never fire for a pending zero-write. Control falls to the error path →
+   `resetPipe(i, true)` → the `.out` client is disconnected instantly.
+4. Every `.out` client hits this at connect → no reply can ever be
+   delivered → the app's "No reply from LyX" timeout. The `.in` ReadFile
+   path has different handling and keeps working — hence commands
+   dispatch while replies never arrive.
+
+The bug is LyX's fragile pattern (undefined zero-write/GetLastError
+semantics); the OS update only triggered it. **No client-side workaround
+exists** (the reset happens server-side deterministically at connect).
+Fix options: upstream LyX patch (one line: skip `WriteFile` when
+`iobuf` is empty, or tolerate FALSE+ERROR_IO_PENDING), or uninstalling
+the Oct 17 updates. A ready-to-send upstream bug report with the minimal
+repro is in the session handoff notes.
+
+**Minimal reproduction** (pure C#/.NET, no LyX needed — replicates
+`pipeServer()`'s outpipe loop verbatim): create an OUTBOUND overlapped
+pipe; overlapped ConnectNamedPipe; let a client connect; issue
+`WriteFile(h, <1-byte buffer>, 0, ..., &ov)` → observe `FALSE +
+ERROR_IO_PENDING` (old expected behavior: completes TRUE/0); then
+implement LyX's error logic verbatim → the client is reset on connect.
+The full 20-instance replica reproduces the live symptom set exactly:
+`.out` instant EOF, `.in` dispatch works, replies never delivered.
+
+**Consequence for the app:** the live pipe round-trip cannot run on this
+machine until LyX is patched or the updates are rolled back. All other
+validation (mock suites, CI) is unaffected.
 
 ## Clipboard protocol (verified by Spike 2)
 
