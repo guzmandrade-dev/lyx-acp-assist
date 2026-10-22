@@ -10,7 +10,7 @@ source. Companion architecture: LyX stays the editor; our app is a chat surface
 plus context provider; all reasoning is delegated to an external **ACP agent over
 stdio** (agent-agnostic — `opencode acp`, `goose acp`, etc.). No LLM inside this app.
 
-The design deliberately mirrors **Visual Research Pal** (`C:\Users\guzma\Git\visual-research-pal`),
+The design deliberately mirrors **Visual Research Pal** (`../visual-research-pal`),
 the predecessor project by the same author: Electron + Express + TypeScript,
 `@agentclientprotocol/sdk`, chat UI, agent config via JSON. Reuse its patterns
 (ACP client, config loading, report/schema validation with Zod) where possible.

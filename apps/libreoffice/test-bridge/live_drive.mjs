@@ -10,7 +10,7 @@
 // The agent command defaults to vibe-acp; override with AGENT_CMD.
 
 const base = process.env.BASE_URL ?? 'http://127.0.0.1:8787';
-const agentCommand = process.env.AGENT_CMD ?? 'C:\\Users\\guzma\\.local\\bin\\vibe-acp.exe';
+const agentCommand = process.env.AGENT_CMD ?? 'vibe-acp';
 
 // Tee all output to a log file: background-process output retention is
 // short-lived, so the log is the durable record of a run.

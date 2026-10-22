@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url';
 
 const DEBUG = Boolean(process.env.MOCK_DEBUG);
 const debug = (s: string) => {
-  if (DEBUG) fs.appendFileSync('C:/Users/guzma/Git/lyx-acp-assist/.tmp-mock.log', s + '\n');
+  if (DEBUG) fs.appendFileSync('.tmp-mock.log', s + '\n');
 };
 
 export interface MockParagraph {

@@ -1,0 +1,214 @@
+name: Build
+
+on:
+  push:
+    branches: [main, master]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [main, master]
+
+permissions:
+  contents: write
+
+env:
+  NODE_VERSION: 22
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [lyx, libreoffice]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: apps/${{ matrix.app }}/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: apps/${{ matrix.app }}
+
+      - name: Run tests
+        run: npm test
+        working-directory: apps/${{ matrix.app }}
+
+      - name: Typecheck
+        run: npm run typecheck
+        working-directory: apps/${{ matrix.app }}
+
+  # Per-app assets that are gitignored and rebuilt on CI: app icons are
+  # generated from public/logo.svg by a Windows-only PowerShell script
+  # (System.Drawing), and the LibreOffice bridge .oxt is rebuilt from
+  # extension/ sources by scripts/package-oxt.py. The per-OS build jobs
+  # download these assets back at their original paths before packaging.
+  assets:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [lyx, libreoffice]
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Generate app icons
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/generate-icon.ps1
+        working-directory: apps/${{ matrix.app }}
+
+      - name: Package bridge extension (.oxt)
+        if: matrix.app == 'libreoffice'
+        run: python scripts/package-oxt.py
+        working-directory: apps/libreoffice
+
+      - name: Upload app icons
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-icons-${{ matrix.app }}
+          path: |
+            apps/${{ matrix.app }}/build/icon.ico
+            apps/${{ matrix.app }}/build/icon-256.png
+            apps/${{ matrix.app }}/build/icon-512.png
+          if-no-files-found: error
+
+      - name: Upload bridge extension
+        if: matrix.app == 'libreoffice'
+        uses: actions/upload-artifact@v4
+        with:
+          name: bridge-oxt
+          path: apps/libreoffice/acp-bridge.oxt
+          if-no-files-found: error
+
+  build:
+    needs: assets
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [lyx, libreoffice]
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: apps/${{ matrix.app }}/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: apps/${{ matrix.app }}
+
+      - name: Download app icons
+        uses: actions/download-artifact@v4
+        with:
+          name: app-icons-${{ matrix.app }}
+          path: apps/${{ matrix.app }}/build
+
+      - name: Download bridge extension
+        if: matrix.app == 'libreoffice'
+        uses: actions/download-artifact@v4
+        with:
+          name: bridge-oxt
+          path: apps/libreoffice
+
+      - name: Build application
+        run: npm run build
+        working-directory: apps/${{ matrix.app }}
+
+      - name: Package application
+        run: npx electron-builder --publish never
+        working-directory: apps/${{ matrix.app }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload macOS artifact
+        if: matrix.os == 'macos-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-build-${{ matrix.app }}
+          path: apps/${{ matrix.app }}/dist-release/*.dmg
+          if-no-files-found: warn
+
+      - name: Upload macOS zip artifact
+        if: matrix.os == 'macos-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-zip-${{ matrix.app }}
+          path: apps/${{ matrix.app }}/dist-release/*.zip
+          if-no-files-found: warn
+
+      - name: Upload Linux artifact
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-build-${{ matrix.app }}
+          path: apps/${{ matrix.app }}/dist-release/*.AppImage
+          if-no-files-found: warn
+
+      - name: Upload Linux deb artifact
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-deb-${{ matrix.app }}
+          path: apps/${{ matrix.app }}/dist-release/*.deb
+          if-no-files-found: warn
+
+      - name: Upload Linux tar artifact
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-tar-${{ matrix.app }}
+          path: apps/${{ matrix.app }}/dist-release/*.tar.gz
+          if-no-files-found: warn
+
+      - name: Upload Windows artifact
+        if: matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build-${{ matrix.app }}
+          path: |
+            apps/${{ matrix.app }}/dist-release/*.exe
+            apps/${{ matrix.app }}/dist-release/*.zip
+          if-no-files-found: warn
+
+      - name: Upload bridge extension with Windows build
+        if: matrix.os == 'windows-latest' && matrix.app == 'libreoffice'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-oxt
+          path: apps/libreoffice/acp-bridge.oxt
+          if-no-files-found: warn
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          draft: true
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

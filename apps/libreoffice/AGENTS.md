@@ -13,7 +13,7 @@ surface plus context provider; all reasoning is delegated to an external
 `goose acp`). No LLM, no API keys inside this app.
 
 The design deliberately mirrors the sibling project **LyX ACP Assist**
-(`C:\Users\guzma\Git\lyx-acp-assist`): Electron + Express + TypeScript
+(`apps/lyx` in this monorepo): Electron + Express + TypeScript
 companion, `@agentclientprotocol/sdk`, one input box with agent-decided
 action tags, per-document chat history, undo UX. Reuse its code
 (`src/acp/`, `src/server.ts`, `src/electron/`, `public/`) wherever possible.
@@ -73,7 +73,8 @@ companion outside.**
   (`http.server`, `json`, `secrets`, …) and pyuno (`program\uno.py`) —
   the same interpreter runs in-process via the Python-UNO component loader.
 - Scratch profile for all testing (never touch the user's real profile):
-  `-env:UserInstallation=file:///C:/Users/guzma/AppData/Local/Temp/lo-acp-bridge`
+  `-env:UserInstallation=file:///C:/Users/<user>/AppData/Local/Temp/lo-acp-bridge`
+  (replace `<user>`)
 - For validation suites, LibreOffice runs with a UNO socket:
   `--accept=socket,host=localhost,port=2002;urp; --nodefault --norestore`,
   and the client connects via the bundled python to
@@ -455,8 +456,7 @@ Phase 4's in-LibreOffice presence, complete and verified live in the UI
   approved.
 - **opencode is RETIRED (2026-10-18, user request — security breach).**
   The default agent everywhere (code defaults, docs, live regressions) is
-  `vibe-acp` (no args; `C:\Users\guzma\.local\bin\vibe-acp.exe`, also on
-  PATH). Historical mentions of opencode in live-test records stay as
+  `vibe-acp` (no args; on PATH). Historical mentions of opencode in live-test records stay as
   facts, but never run it for new work.
 - Keep this file (AGENTS.md) for decisions, verified facts, pitfalls, and
   house rules; keep README.md user-facing. Mirror the lyx-acp-assist
@@ -495,8 +495,7 @@ vibe-acp (2026-10-18):
   rewrite / rewrite-slide / insert-after tags), deck-outline context,
   frame selection block, module-aware UI feedback labels + TurnMeta
   module field; npm test 54/54.
-- Live regression (vibe-acp, `C:\Users\guzma\.local\bin\vibe-acp.exe` —
-  verified as a third ACP agent alongside opencode): the agent ran a
+- Live regression (vibe-acp — verified as a third ACP agent alongside opencode): the agent ran a
   two-action run (insert-after s2 "Conclusions" with two bullets, then
   rewrite-slide s1 to an informal title-only reword) and stopped with
   `none`; deck verified via UNO (4 slides, right indices, body
