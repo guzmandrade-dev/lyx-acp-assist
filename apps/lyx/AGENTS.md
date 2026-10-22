@@ -8,7 +8,10 @@ A Copilot-for-Word-style LLM assistant for **LyX**: an agent that reads, suggest
 and writes **directly into the live document** — not a diff/code-review tool on the
 source. Companion architecture: LyX stays the editor; our app is a chat surface
 plus context provider; all reasoning is delegated to an external **ACP agent over
-stdio** (agent-agnostic — `opencode acp`, `goose acp`, etc.). No LLM inside this app.
+stdio** (agent-agnostic — `vibe-acp`, `copilot --acp`, `goose acp`, etc.).
+No LLM inside this app. **`opencode` is RETIRED — never run it for new
+work** (security breach, decided 2026-10-18 in the sibling project); its
+historical mentions in validation records stay as facts.
 
 The design deliberately mirrors **Visual Research Pal** (`../visual-research-pal`),
 the predecessor project by the same author: Electron + Express + TypeScript,

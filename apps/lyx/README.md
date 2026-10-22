@@ -76,10 +76,9 @@ https://github.com/user-attachments/assets/ce301d65-6185-4de0-8086-4a246bd8fc85
   at it with the `LYX_PIPE` environment variable.
 - **Node.js 22+**
 - **An ACP agent CLI** — any of:
-  - `opencode acp`
+  - `vibe-acp` (no arguments)
   - `copilot --acp`
   - `goose acp`
-  - `vibe-acp` (no arguments)
 
   Configurable at runtime in the app's "Agent settings" panel.
 - **Native clipboard access** for the `application/x-lyx` custom format, via:

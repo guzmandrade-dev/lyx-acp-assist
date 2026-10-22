@@ -30,6 +30,7 @@ import { CHAT_KNOWLEDGE } from './lyx/knowledge.js';
 import {
   AcpClient,
   UNSAVED_KEY,
+  createAgentSettings,
   extractAttachmentText as coreExtractAttachmentText,
   formatHistoryReplay as coreFormatHistoryReplay,
   listKnownDocuments as coreListKnownDocuments,
@@ -196,61 +197,8 @@ export function createServer(options: ServerOptions & {
   // --- settings (persisted server-side; the server port is random per
   // launch, so localStorage — origin-scoped — would not survive a restart) ---
 
-  const settingsFile = options.settingsDir
-    ? path.join(options.settingsDir, 'agent-settings.json')
-    : null;
-
-  async function readAgentSettingsFile(): Promise<Partial<AgentSettings>> {
-    if (!settingsFile) return {};
-    try {
-      const raw = JSON.parse(await fs.readFile(settingsFile, 'utf8'));
-      return raw && typeof raw === 'object' ? raw : {};
-    } catch {
-      return {};
-    }
-  }
-
-  app.get('/api/settings/agent', (_req, res) => {
-    readAgentSettingsFile()
-      .then((s) => res.json(s))
-      .catch(() => res.json({}));
-  });
-
-  app.put(
-    '/api/settings/agent',
-    wrap(async (req, res) => {
-      const s = readAgentSettingsBody(req.body);
-      if (!settingsFile) {
-        // No persistence configured (tests): echo back, nothing is stored.
-        res.json(s);
-        return;
-      }
-      await fs.mkdir(options.settingsDir!, { recursive: true });
-      const previous = await readAgentSettingsFile();
-      const merged = { ...previous, ...s };
-      await fs.writeFile(settingsFile, JSON.stringify(merged, null, 2), 'utf8');
-      res.json(merged);
-    }),
-  );
-
-  /** Validate and normalize the JSON body of PUT /api/settings/agent. */
-  function readAgentSettingsBody(body: unknown): Partial<AgentSettings> {
-    const b = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
-    const out: Partial<AgentSettings> = {};
-    if (typeof b.command === 'string') out.command = b.command.trim();
-    if (typeof b.args === 'string') out.args = b.args.trim().split(/\s+/).filter(Boolean);
-    else if (Array.isArray(b.args)) {
-      out.args = b.args.filter((a): a is string => typeof a === 'string' && a.trim().length > 0);
-    }
-    if (b.env && typeof b.env === 'object') {
-      out.env = Object.fromEntries(
-        Object.entries(b.env as Record<string, unknown>).filter(
-          (e): e is [string, string] => typeof e[1] === 'string',
-        ),
-      );
-    }
-    return out;
-  }
+  const agentSettings = createAgentSettings(options.settingsDir);
+  agentSettings.register(app, wrap);
 
   // --- session ---------------------------------------------------------
 
@@ -258,7 +206,7 @@ export function createServer(options: ServerOptions & {
     '/api/session',
     wrap(async (req, res) => {
       // Defaults < persisted settings < explicit request body.
-      const persisted = await readAgentSettingsFile();
+      const persisted = await agentSettings.read();
       const requested = req.body?.agent as Partial<AgentSettings> | undefined;
       // Tests may inject a fake LyX pipe client and a fake agent runner so
       // the whole multi-action loop can be exercised without live processes.
@@ -269,14 +217,14 @@ export function createServer(options: ServerOptions & {
 
       const agent: AgentRunner = options.agentFactory
         ? options.agentFactory({
-            command: requested?.command ?? persisted.command ?? 'opencode',
+            command: requested?.command ?? persisted.command ?? 'vibe-acp',
             args: requested?.args ?? persisted.args ?? [],
             env: requested?.env ?? persisted.env ?? {},
           })
         : new AcpClient({
             appName: 'lyx-acp-assist',
             writerName: 'LyX',
-            command: requested?.command ?? persisted.command ?? 'opencode',
+            command: requested?.command ?? persisted.command ?? 'vibe-acp',
             args: requested?.args ?? persisted.args ?? [],
             env: requested?.env ?? persisted.env ?? {},
           });
