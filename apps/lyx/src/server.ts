@@ -14,7 +14,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import express from 'express';
-import { LyxServerClient, LyxPipeError } from './lyxserver/client.js';
+import { LyxServerClient, LyxPipeError, createWriteOnlyFallbacks } from './lyxserver/client.js';
 import type { RawClipboard } from './clipboard/lyx-clipboard.js';
 import { LyxClipboard } from './clipboard/lyx-clipboard.js';
 import {
@@ -164,12 +164,26 @@ export function createServer(options: ServerOptions & {
       // Defaults < persisted settings < explicit request body.
       const persisted = await agentSettings.read();
       const requested = req.body?.agent as Partial<AgentSettings> | undefined;
+      // Hoisted so the write-only fallback's filename resolution can see it
+      // grow over the session's lifetime (it is the same set as
+      // session.knownDocuments below).
+      const knownDocuments = new Set<string>();
       // Tests may inject a fake LyX pipe client and a fake agent runner so
       // the whole multi-action loop can be exercised without live processes.
       const lyx = options.lyxFactory
         ? options.lyxFactory()
-        : new LyxServerClient();
+        : new LyxServerClient({
+            fallbacks: createWriteOnlyFallbacks(options.clipboard, () => knownDocuments),
+          });
       await lyx.start();
+      if (lyx.mode === 'write-only') {
+        console.warn(
+          'LyXServer pipe is deaf (LyX resets every .out connection; see ' +
+            'AGENTS.md "Live-test debugging trail"). Running in write-only ' +
+            'fallback mode: commands work, replies are substituted from ' +
+            'the window title, session file, and clipboard.',
+        );
+      }
 
       const agent: AgentRunner = options.agentFactory
         ? options.agentFactory({
@@ -194,7 +208,7 @@ export function createServer(options: ServerOptions & {
         agent,
         conversations: new Map(),
         historyHandoff: new Map(),
-        knownDocuments: new Set(),
+        knownDocuments,
         documentPath: null,
         cancelRequested: false,
         attachments: [],
@@ -773,6 +787,7 @@ export function createServer(options: ServerOptions & {
       documents: [...session.knownDocuments],
       layout,
       outline,
+      lyxMode: session.lyx.mode,
       conversation: session.conversations.get(conversationKey(session)) ?? [],
     };
   }
@@ -808,7 +823,7 @@ export function createServer(options: ServerOptions & {
         `File: ${session.documentPath}\n` +
         `Text class: ${ctx.textclass ?? 'unknown'}\n` +
         `LyX format: ${ctx.formatVersion ?? 'unknown'}\n` +
-        `Cursor paragraph layout: ${layout}\n\n` +
+        `Cursor paragraph layout: ${layout || 'unknown'}\n\n` +
         `Document outline ([pN] ids address paragraphs):\n${renderOutline(ctx.outline)}\n\n`;
       let contextText = head;
       const classLayouts = ctx.textclass ? await findClassLayouts(ctx.textclass) : null;

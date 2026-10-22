@@ -14,7 +14,9 @@ const activeMocks: Array<{ mock: MockLyxServer; client: LyxServerClient }> = [];
 async function startMock(paragraphs?: Array<{ layout: string; text: string }>) {
   const mock = new MockLyxServer({ paragraphs });
   await mock.start();
-  const client = new LyxServerClient({ pipeBase: mock.pipeBase });
+  // Small probe window: the mock never echoes the hello, so a healthy
+  // start() always waits it out (the deaf case resolves instantly).
+  const client = new LyxServerClient({ pipeBase: mock.pipeBase, deafProbeMs: 60 });
   activeMocks.push({ mock, client });
   await client.start();
   return { mock, client };
@@ -30,6 +32,7 @@ afterEach(async () => {
 describe.skipIf(process.platform !== 'win32')('LyxServerClient against mock LyX', () => {
   it('handshakes and round-trips filename and layout', async () => {
     const { client } = await startMock([{ layout: 'Standard', text: 'Hello mock' }]);
+    expect(client.mode).toBe('pipe');
     expect(await client.getFilename()).toBe('C:/mock/doc.lyx');
     expect(await client.getLayout()).toBe('Standard');
   });

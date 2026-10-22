@@ -34,6 +34,13 @@ export interface MockParagraph {
 export interface MockLyxOptions {
   paragraphs?: MockParagraph[];
   filename?: string;
+  /**
+   * Reproduce the deaf-pipe bug (see src/lyxserver/client.ts): every .out
+   * connection is closed instantly with zero bytes, exactly like LyX's
+   * reset-at-connect on the affected Windows builds. Commands via .in
+   * still dispatch; replies never arrive.
+   */
+  deaf?: boolean;
 }
 
 interface Cursor {
@@ -54,6 +61,7 @@ export class MockLyxServer {
   private readonly filename: string;
   private cursor: Cursor = { p: 0, offset: 0 };
   private selection: { p: number; start: number; end: number } | null = null;
+  private readonly deaf: boolean;
   /** PowerShell child process hosting the real named-pipe transport. */
   private transport: ChildProcess | null = null;
   /** Writable fd of the transport's control pipe (reply channel). */
@@ -64,6 +72,7 @@ export class MockLyxServer {
     this.pipeBase = `\\\\.\\pipe\\lyxmock-${process.pid}-${instanceCounter}-${randomUUID().slice(0, 8)}`;
     this.paragraphs = options.paragraphs ?? [{ layout: 'Standard', text: 'Hello mock' }];
     this.filename = options.filename ?? 'C:/mock/doc.lyx';
+    this.deaf = options.deaf ?? false;
     this.clipboardText = '';
   }
 
@@ -76,11 +85,9 @@ export class MockLyxServer {
   async start(): Promise<void> {
     if (this.transport) return;
     const script = fileURLToPath(new URL('./mock-lyx-transport.ps1', import.meta.url));
-    const child = spawn(
-      'powershell',
-      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-PipeBase', this.pipeBase],
-      { windowsHide: true },
-    );
+    const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-PipeBase', this.pipeBase];
+    if (this.deaf) args.push('-Deaf');
+    const child = spawn('powershell', args, { windowsHide: true });
     this.transport = child;
 
     const ready = new Promise<void>((resolve, reject) => {
