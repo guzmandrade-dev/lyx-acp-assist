@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<oor:component-data xmlns:oor="http://openoffice.org/2001/registry" xmlns:xs="http://www.w3.org/2001/XMLSchema" oor:name="Sidebar" oor:package="org.openoffice.Office.UI">
+  <node oor:name="Content" oor:op="modify">
+    <node oor:name="DeckList" oor:op="modify">
+      <node oor:name="ACPDeck" oor:op="replace">
+        <prop oor:name="Id">
+          <value>ACPDeck</value>
+        </prop>
+        <prop oor:name="Title">
+          <value xml:lang="en-US">ACP Assist</value>
+        </prop>
+        <prop oor:name="HelpURL">
+          <value/>
+        </prop>
+        <prop oor:name="IconURL">
+          <value>vnd.sun.star.extension:org.libreofficeacp.bridge/icon.png</value>
+        </prop>
+        <prop oor:name="OrderIndex">
+          <value>5000</value>
+        </prop>
+        <prop oor:name="ContextList">
+          <value oor:separator=";">
+            any, any, visible ;
+          </value>
+        </prop>
+        <prop oor:name="HiddenInViewer">
+          <value>false</value>
+        </prop>
+        <prop oor:name="IsExperimental">
+          <value>false</value>
+        </prop>
+        <prop oor:name="TitleBarIconURL">
+          <value/>
+        </prop>
+        <prop oor:name="HighContrastIconURL">
+          <value>vnd.sun.star.extension://org.libreofficeacp.bridge/icon.png</value>
+        </prop>
+        <prop oor:name="HighContrastTitleBarIconURL">
+          <value/>
+        </prop>
+      </node>
+    </node>
+    <node oor:name="PanelList" oor:op="modify">
+      <node oor:name="ACPStatusPanel" oor:op="replace">
+        <prop oor:name="Id">
+          <value>ACPStatusPanel</value>
+        </prop>
+        <prop oor:name="Title">
+          <value xml:lang="en-US">Status</value>
+        </prop>
+        <prop oor:name="DeckId">
+          <value>ACPDeck</value>
+        </prop>
+        <prop oor:name="HelpURL">
+          <value/>
+        </prop>
+        <prop oor:name="WantsAWT">
+          <value>true</value>
+        </prop>
+        <prop oor:name="OrderIndex">
+          <value>100</value>
+        </prop>
+        <prop oor:name="ContextList">
+          <value oor:separator=";">
+            any, any, visible ;
+          </value>
+        </prop>
+        <prop oor:name="WantsCanvas">
+          <value>false</value>
+        </prop>
+        <prop oor:name="IsExperimental">
+          <value>false</value>
+        </prop>
+        <prop oor:name="TitleBarIconURL">
+          <value/>
+        </prop>
+        <prop oor:name="ImplementationURL">
+          <value>private:resource/toolpanel/ACPPanelFactory/ACPStatusPanel</value>
+        </prop>
+        <prop oor:name="DefaultMenuCommand">
+          <value/>
+        </prop>
+        <prop oor:name="TitleBarIsOptional">
+          <value>true</value>
+        </prop>
+        <prop oor:name="ShowForReadOnlyDocument">
+          <value>true</value>
+        </prop>
+        <prop oor:name="HighContrastTitleBarIconURL">
+          <value/>
+        </prop>
+      </node>
+    </node>
+  </node>
+</oor:component-data>

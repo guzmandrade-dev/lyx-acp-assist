@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>LibreOffice ACP Assist</title>
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'" />
+  <link rel="stylesheet" href="style.css" />
+  <link rel="icon" type="image/svg+xml" href="logo.svg" />
+</head>
+<body>
+  <div class="toolbar">
+    <img class="brand-mark" src="logo.svg" width="22" height="22" alt="" aria-hidden="true" />
+    <select id="doc-select" title="Active LibreOffice document"></select>
+    <details class="agent-settings">
+      <summary class="pin" title="Agent settings">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 8V4H8" />
+          <rect width="16" height="12" x="4" y="8" rx="2" />
+          <path d="M2 14h2" />
+          <path d="M20 14h2" />
+          <path d="M15 13v2" />
+          <path d="M9 13v2" />
+        </svg>
+      </summary>
+      <div class="agent-settings-panel">
+        <label>Command <input id="agent-cmd" type="text" value="vibe-acp" /></label>
+        <label>Args <input id="agent-args" type="text" value="" /></label>
+        <div class="settings-row">
+          <small>Examples: vibe-acp (no args) &middot; copilot --acp &middot; goose acp</small>
+        </div>
+      </div>
+    </details>
+    <button id="pin" class="pin" aria-pressed="false" title="Floating disabled (click to enable)">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 2v7" />
+        <path d="M5 9h14" />
+        <path d="M8 9l-2 8h12l-2-8" />
+        <path d="M12 17v4" />
+        <path d="M9 21h6" />
+      </svg>
+    </button>
+    <button id="reconnect" class="pin" title="Reconnect: restart the agent session and re-read the document">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+        <path d="M21 3v6h-6" />
+      </svg>
+    </button>
+  </div>
+
+  <div class="context">
+    <div id="status" class="status" role="status" aria-live="polite">
+      <span class="dot" aria-hidden="true"></span>
+      <span id="status-text">checking LibreOffice&hellip;</span>
+      <button id="install-btn" class="install-btn" hidden
+        title="Install the ACP Assist bridge extension into your LibreOffice">
+        Install bridge&hellip;</button>
+      <span id="bridge-spinner" class="bridge-spinner" aria-hidden="true" hidden></span>
+      <span id="bridge-busy-text" class="bridge-busy-text" hidden>talking to LibreOffice&hellip;</span>
+    </div>
+    <div id="doc" class="doc" title=""></div>
+    <div id="selection" class="selection" hidden></div>
+  </div>
+
+  <main id="chat" aria-live="polite"></main>
+
+  <footer>
+    <div id="chips" class="chips"></div>
+    <textarea id="input" rows="3"
+      placeholder="Ask the agent. It reads the document and your selection, then decides: reply here, insert at the cursor, or rewrite what you selected."></textarea>
+    <div class="composer-hint">The agent chooses whether to write into LibreOffice or just chat.</div>
+    <div class="row">
+      <button id="attach" title="Attach a file (PDF, Word, Excel, text&hellip;)" disabled>+</button>
+      <button id="undo" title="Undo the last agent edit inside LibreOffice">Undo edit</button>
+      <button id="stop" title="Stop the running generation" hidden>Stop</button>
+      <button id="send" title="Send message (Enter)">Send</button>
+    </div>
+    <input id="file-input" type="file" multiple hidden />
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

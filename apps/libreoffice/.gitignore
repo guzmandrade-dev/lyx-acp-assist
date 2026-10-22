@@ -1,0 +1,21 @@
+# Node (companion app, Phase 1+)
+node_modules/
+dist/
+release/
+dist-release/
+build/
+release-out/
+*.log
+
+# Packaged extension artifact — rebuilt from extension/ via scripts/package-oxt.py
+acp-bridge.oxt
+
+# Scratch LibreOffice profile used for testing
+lo-acp-bridge/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+test-bridge/live_drive.log
+next-steps.md
