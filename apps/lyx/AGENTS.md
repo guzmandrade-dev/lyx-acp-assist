@@ -86,6 +86,44 @@ See that repo's README/AGENTS.md for conventions.
   of the transport.
 - Spike script doubles as a CLI: `node spikes/spike1-pipe.mjs undo
   "self-insert:hello" server-get-filename` (colon separates func:arg).
+- **Server internals (verified from LyX 2.5 source, 2026-10-22):**
+  - `MAX_CLIENTS = 10`, `PIPE_BUFSIZE = 512` (src/Server.h). The Windows
+    server is an overlapped-I/O thread (`LyXComm::pipeServer`) running
+    10 inbound + 10 outbound pipe instances; commands are posted to the Qt
+    main loop (`read_ready` -> `Server::callback`), replies are broadcast
+    into every connected `.out` instance's buffer.
+  - **`hello` consumes a client slot and only `bye` frees it** — the
+    registry never dedupes by name. Our client now sends
+    `LYXSRV:<client>:bye` on `stop()` so app restarts don't leak slots;
+    after 10 leaks LyX ignores further handshakes (but still dispatches
+    `LYXCMD`s) for the lifetime of that LyX process.
+  - **A second LyX instance silently disables its server** if the pipe
+    already exists (`openConnection`: `WaitNamedPipeA` check ->
+    `pipename_.erase()`, error only on stderr). So "double-click a .lyx
+    while LyX runs" produces a fully working editor whose pipe never
+    answers — exactly the "No reply from LyX" symptom. Recovery: close
+    all LyX instances, relaunch ONE (its startup must be the moment the
+    pipes are created), then reconnect.
+  - Replies are dropped wholesale if the un-read `outbuf_` exceeds
+    `PIPE_BUFSIZE` (512) — a client that never reads `.out` eventually
+    loses replies.
+
+## Live-test debugging trail (2026-10-22, unresolved — resume after device reboot)
+
+During the Phase B2 live regression, LyX's pipe went completely deaf:
+the app client, a raw Node fs client, and a raw .NET NamedPipeClientStream
+client all connect, but LyX accepts `.out` connections and closes them
+with 0-byte EOF without ever echoing `LYXSRV:<client>:hello`, and
+`LYXCMD`s get no INFO/ERROR reply. Ruled out: app code (mock suite
+passes; client untouched since the 2026-10-04 live validation),
+config (`\serverpipe "//./pipe/lyxpipe"` correct in preferences),
+version (2.5.3, same as validated), modals (window idle, saved doc),
+zombie clients (killed all holders), two-instance confusion (retested with
+a single fresh instance + document open — still deaf). Not ruled out:
+OS-level named-pipe state (3+ days uptime) — a full device reboot is the
+pending experiment. Resume: relaunch ONE LyX with a document, then
+`node test/live_drive.mjs session` against the standalone server
+(`$env:PORT='8791'; node dist/standalone.js`).
 
 ## Clipboard protocol (verified by Spike 2)
 

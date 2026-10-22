@@ -87,6 +87,18 @@ export class LyxServerClient extends EventEmitter {
 
   stop(): void {
     this.shuttingDown = true;
+    // Deregister from LyX's client list (LyX registers every "hello" and
+    // only frees the slot on an explicit "bye"; the list caps at 10
+    // clients, after which LyX silently ignores further handshakes for
+    // the lifetime of the LyX process). Best-effort: a failing write
+    // (LyX gone) must not block teardown.
+    if (this.inFd !== null && !this.helloPending) {
+      try {
+        this.send(`LYXSRV:${this.clientName}:bye\n`);
+      } catch {
+        /* pipe gone — nothing to deregister from */
+      }
+    }
     if (this.inFd !== null) {
       try {
         fs.closeSync(this.inFd);
