@@ -26,7 +26,6 @@ const pinBtn = document.getElementById('pin');
 const reconnectBtn = document.getElementById('reconnect');
 const installBtn = document.getElementById('install-btn');
 const cmdEl = document.getElementById('agent-cmd');
-const argsEl = document.getElementById('agent-args');
 const attachBtn = document.getElementById('attach');
 const fileInput = document.getElementById('file-input');
 const chipsEl = document.getElementById('chips');
@@ -39,18 +38,34 @@ const pendingAttachments = [];
 
 // Agent settings persist SERVER-side: the server listens on a random port each
 // launch, so the page origin changes and localStorage would be wiped on restart.
+// The UI uses ONE field holding the full command line ("copilot --acp");
+// the split into a spawnable command + args happens on save/connect.
+
+/** Split the single agent command line into a spawnable command + args. */
+function parseAgentCommand(raw) {
+  const tokens = raw.trim().split(/\s+/).filter(Boolean);
+  return { command: tokens[0] ?? '', args: tokens.slice(1) };
+}
+
+/** Render persisted { command, args } back into the single input. */
+function formatAgentCommand(settings) {
+  return [settings.command, ...(Array.isArray(settings.args) ? settings.args : [])]
+    .join(' ')
+    .trim();
+}
+
 async function loadSettings() {
   try {
     const s = await api('/api/settings/agent');
-    if (typeof s.command === 'string' && s.command) cmdEl.value = s.command;
-    if (Array.isArray(s.args)) argsEl.value = s.args.join(' ');
+    if (typeof s.command === 'string' && s.command) cmdEl.value = formatAgentCommand(s);
   } catch {
     /* keep the HTML defaults */
   }
 }
 
 function saveSettings() {
-  const body = JSON.stringify({ command: cmdEl.value.trim(), args: argsEl.value.trim() });
+  const { command, args } = parseAgentCommand(cmdEl.value);
+  const body = JSON.stringify({ command, args });
   // Fire-and-forget; a failed save must not break the UI.
   api('/api/settings/agent', { method: 'PUT', body }).catch(() => {});
 }
@@ -632,9 +647,8 @@ async function refreshDocuments() {
 async function connect() {
   await refreshStatus();
   saveSettings();
-  const cmd = cmdEl.value.trim() || 'vibe-acp';
-  const rawArgs = argsEl.value.trim();
-  const args = rawArgs ? rawArgs.split(/\s+/) : [];
+  const { command, args } = parseAgentCommand(cmdEl.value);
+  const cmd = command || 'vibe-acp';
   const info = await api('/api/session', {
     method: 'POST',
     body: JSON.stringify({ agent: { command: cmd, args } }),
@@ -1181,7 +1195,6 @@ function start() {
   pinBtn.setAttribute('aria-pressed', 'false');
   pinBtn.title = 'Floating disabled';
   cmdEl.addEventListener('blur', saveSettings);
-  argsEl.addEventListener('blur', saveSettings);
   const settingsDetails = document.querySelector('.agent-settings');
   document.addEventListener('pointerdown', (e) => {
     if (settingsDetails instanceof HTMLDetailsElement && settingsDetails.open

@@ -596,7 +596,8 @@ two undos (paste + paragraph break).
   before pasting, so a cancelled rewrite is never pasted.
 - `DELETE /api/session/:id` tears a session down (stops the agent
   process and LyX pipe client) — used by the UI's Reconnect button.
-- UI: agent settings (command/args) persist in `localStorage`, Stop
+- UI: agent settings (single command line, split client-side into
+  command + args) persist SERVER-side, Stop
   button aborts the fetch + sends cancel, animated typing indicator
   (the old `setBusy` left a permanent "thinking…" bubble — fixed).
 
@@ -606,7 +607,8 @@ two undos (paste + paragraph break).
   ACP public preview) both work as the app's agent.
 - `goose acp` is also installed on this machine.
 - Configurable at runtime via the app's "Agent settings" panel
-  (command + args, sent to POST /api/session).
+  (a single command line like `copilot --acp`; the UI splits it into
+  command + args for POST /api/session and the settings store).
 
 ## Performance note
 
