@@ -1,0 +1,5 @@
+# Normalize all text files to LF in repo and working tree
+* text=auto eol=lf
+
+# Windows-specific files keep CRLF
+*.bat text eol=crlf

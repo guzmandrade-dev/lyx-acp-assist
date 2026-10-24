@@ -8,6 +8,9 @@ node_modules/
 # Logs
 *.log
 
+# Impeccable design-skill local state (critique snapshots, live sessions, hook cache)
+.impeccable/
+
 # Session handoff notes (untracked on purpose)
 next-steps.md
 
