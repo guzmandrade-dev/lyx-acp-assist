@@ -706,7 +706,7 @@ async function reconnect() {
   }
 }
 
-function renderFeedback(msgDiv, { applied, target, target2, address, module, cancelled, error }) {
+function renderFeedback(msgDiv, { applied, target, target2, address, module, cancelled, error, tagNote }) {
   const feedback = document.createElement('div');
   let prefix = '';
   let undoLabel = 'Undo edit';
@@ -778,6 +778,12 @@ function renderFeedback(msgDiv, { applied, target, target2, address, module, can
   } else {
     feedback.className = 'feedback none';
     prefix = 'Replied in chat — document unchanged';
+  }
+
+  // The server auto-corrects near-miss action tags (typos like
+  // "[AACTION:") so the edit still applies; tell the user it happened.
+  if (tagNote) {
+    prefix += ` — action tag auto-corrected from “${tagNote}”`;
   }
 
   feedback.appendChild(document.createTextNode(prefix));
@@ -862,6 +868,7 @@ async function streamMessage(message) {
   let target2 = null;
   let address = null;
   let module = null;
+  let tagNote = null;
   let cancelled = false;
   let error = null;
   let stopReason = null;
@@ -925,6 +932,7 @@ async function streamMessage(message) {
           target2 = payload.target2 ?? null;
           address = payload.address ?? null;
           module = payload.module ?? null;
+          tagNote = payload.tagNote ?? null;
           div._applied = applied; // quote strips the ```writer block like the render does
         } else if (payload.appliedStep) {
           // Boundary between two edits of one multi-action run: close the
@@ -934,8 +942,8 @@ async function streamMessage(message) {
           div._applied = applied;
           textDiv.innerHTML =
             renderAssistantText(full, applied) || (started ? '' : '<p>(no response)</p>');
-          renderFeedback(div, { applied, target, target2, address, module, cancelled, error });
-          streamSteps.push({ div, textDiv, text: full, applied, target, target2, address, module, error, cancelled });
+          renderFeedback(div, { applied, target, target2, address, module, cancelled, error, tagNote });
+          streamSteps.push({ div, textDiv, text: full, applied, target, target2, address, module, error, cancelled, tagNote });
           const next = addMessage('assistant', '');
           div = next.div;
           textDiv = next.textDiv;
@@ -946,12 +954,14 @@ async function streamMessage(message) {
           target2 = null;
           address = null;
           module = null;
+          tagNote = null;
           error = null;
           cancelled = false;
           full = '';
           started = false;
         } else if (payload.action === 'none') {
           applied = 'none';
+          tagNote = payload.tagNote ?? null;
         } else if (payload.cancelled) {
           cancelled = true;
         } else if (payload.stopped) {
@@ -983,7 +993,7 @@ async function streamMessage(message) {
   div._rawText = full; // final raw text for the copy/quote actions
   div._applied = applied;
   textDiv.innerHTML = renderAssistantText(full, applied) || (started ? '' : '<p>(no response)</p>');
-  renderFeedback(div, { applied, target, target2, address, module, cancelled, error });
+  renderFeedback(div, { applied, target, target2, address, module, cancelled, error, tagNote });
   if (stopReason) {
     const appliedCount = streamSteps.filter((s) => s.applied && s.applied !== 'none').length + (applied && applied !== 'none' ? 1 : 0);
     const note = document.createElement('div');

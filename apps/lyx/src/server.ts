@@ -30,6 +30,7 @@ import { CHAT_KNOWLEDGE } from './lyx/knowledge.js';
 import {
   AcpClient,
   UNSAVED_KEY,
+  ACTION_HEADER,
   createAgentSettings,
   createConversationStore,
   createLogError,
@@ -399,6 +400,10 @@ export function createServer(options: ServerOptions & {
       lastAction = outcome.action;
       lastTarget = outcome.target;
       lastTarget2 = outcome.target2;
+
+      // Near-miss action tags (typos like "[AACTION:") are auto-corrected
+      // by the tolerant parser; tell the panel so the user sees it.
+      if (outcome.tagNote) send({ tagNote: outcome.tagNote, ...(step > 1 ? { step } : {}) });
 
       const noteMeta = async (result: 'applied' | 'error' | 'cancelled', error?: string) => {
         await recordTurnMeta(session, {
@@ -1143,12 +1148,20 @@ interface ActionOutcome {
   target: number | null;
   /** Destination address [pM] for move (0 = top of the document). */
   target2: number | null;
+  /** Raw tag text when a near-miss tag (typo, missing colon) was
+   *  auto-corrected by the tolerant parser; null when the tag was
+   *  canonical or no tag matched. */
+  tagNote?: string | null;
 }
 
-/** Extract the trailing [ACTION: ...] tag and the ```lyx block from a reply. */
+/**
+ * Extract the trailing [ACTION: ...] tag and the ```lyx block from a reply.
+ * The header tolerates tag typos ("[AACTION:", doubled letters) and a
+ * missing colon — tagNote reports the auto-correction.
+ */
 export function parseAction(reply: string): ActionOutcome {
   const m = reply.match(
-    /\[ACTION:\s*(continue|merge|move|delete-at|rewrite-at|insert-before|insert-after|insert-top|rewrite|insert|none)(?:\s+p(\d+))?(?:\s+(?:to\s+)?p(\d+))?\s*\]/i,
+    new RegExp(`${ACTION_HEADER}\\s*(continue|merge|move|delete-at|rewrite-at|insert-before|insert-after|insert-top|rewrite|insert|none)(?:\\s+p(\\d+))?(?:\\s+(?:to\\s+)?p(\\d+))?\\s*\\]`, 'i'),
   );
   const action = ((m?.[1] ?? 'none').toLowerCase() as AgentAction);
   const target = m?.[2] ? Number.parseInt(m[2], 10) : null;
@@ -1156,7 +1169,13 @@ export function parseAction(reply: string): ActionOutcome {
   // `continue` is accepted for forward-compatibility but is not a document
   // edit: the server's multi-action loop drives continuations itself.
   const body = action === 'none' || action === 'continue' ? null : extractBodyLayouts(reply);
-  return { action, body, target, target2 };
+  const canonical =
+    `[ACTION: ${action}${target !== null ? ` p${target}` : ''}${target2 !== null ? ` p${target2}` : ''}]`;
+  // "move p3 to p5" is accepted grammar, not a typo: compare with the
+  // optional "to" stripped so it is not reported as an auto-correction.
+  const rawTag = m?.[0]?.trim();
+  const tagNote = rawTag !== undefined && rawTag.replace(/\s+to\s+/i, ' ') !== canonical ? rawTag : null;
+  return { action, body, target, target2, tagNote };
 }
 
 /** Describe one applied step compactly for the next continuation prompt. */

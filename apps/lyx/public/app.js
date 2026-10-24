@@ -648,7 +648,7 @@ async function reconnect() {
   }
 }
 
-function renderFeedback(msgDiv, { applied, target, target2, cancelled, error }) {
+function renderFeedback(msgDiv, { applied, target, target2, cancelled, error, tagNote }) {
   const feedback = document.createElement('div');
   let prefix = '';
   let undoLabel = 'Undo edit';
@@ -701,6 +701,12 @@ function renderFeedback(msgDiv, { applied, target, target2, cancelled, error }) 
   } else {
     feedback.className = 'feedback none';
     prefix = 'Replied in chat — document unchanged';
+  }
+
+  // The server auto-corrects near-miss action tags (typos like
+  // "[AACTION:") so the edit still applies; tell the user it happened.
+  if (tagNote) {
+    prefix += ` — action tag auto-corrected from “${tagNote}”`;
   }
 
   feedback.appendChild(document.createTextNode(prefix));
@@ -769,6 +775,7 @@ async function streamMessage(message) {
   let applied = null;
   let target = null;
   let target2 = null;
+  let tagNote = null;
   let cancelled = false;
   let error = null;
   let stopReason = null;
@@ -831,6 +838,9 @@ async function streamMessage(message) {
           target = payload.target ?? null;
           target2 = payload.target2 ?? null;
           div._applied = applied; // quote strips the ```lyx block like the render does
+        } else if (payload.tagNote) {
+          // Near-miss action tag auto-corrected by the server parser.
+          tagNote = payload.tagNote;
         } else if (payload.appliedStep) {
           // Boundary between two edits of one multi-action run: close the
           // current bubble (with its feedback) and start a fresh one below
@@ -839,8 +849,8 @@ async function streamMessage(message) {
           div._applied = applied;
           textDiv.innerHTML =
             renderAssistantText(full, applied) || (started ? '' : '<p>(no response)</p>');
-          renderFeedback(div, { applied, target, target2, cancelled, error });
-          streamSteps.push({ div, textDiv, text: full, applied, target, target2, error, cancelled });
+          renderFeedback(div, { applied, target, target2, cancelled, error, tagNote });
+          streamSteps.push({ div, textDiv, text: full, applied, target, target2, error, cancelled, tagNote });
           const next = addMessage('assistant', '');
           div = next.div;
           textDiv = next.textDiv;
@@ -849,6 +859,7 @@ async function streamMessage(message) {
           applied = null;
           target = null;
           target2 = null;
+          tagNote = null;
           error = null;
           cancelled = false;
           full = '';
@@ -879,7 +890,7 @@ async function streamMessage(message) {
   div._rawText = full; // final raw text for the copy/quote actions
   div._applied = applied;
   textDiv.innerHTML = renderAssistantText(full, applied) || (started ? '' : '<p>(no response)</p>');
-  renderFeedback(div, { applied, target, target2, cancelled, error });
+  renderFeedback(div, { applied, target, target2, cancelled, error, tagNote });
   if (stopReason) {
     const appliedCount = streamSteps.filter((s) => s.applied && s.applied !== 'none').length + (applied && applied !== 'none' ? 1 : 0);
     const note = document.createElement('div');

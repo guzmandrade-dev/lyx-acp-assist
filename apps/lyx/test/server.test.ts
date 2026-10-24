@@ -405,6 +405,28 @@ describe('agent action parsing', () => {
     expect(mergeAdjacentCase.target2).toBe(6);
   });
 
+  it('auto-corrects typo tags ([AACTION:, doubled letters) and reports the correction', () => {
+    const reply =
+      'Here is the edit.\n\n```lyx\n\\begin_layout Standard\nBetter text\n\\end_layout\n```\n\n[AACTION: rewrite-at p3]';
+    const out = parseAction(reply);
+    expect(out.action).toBe('rewrite-at');
+    expect(out.target).toBe(3);
+    expect(out.body).toContain('\\begin_layout Standard');
+    expect(out.tagNote).toBe('[AACTION: rewrite-at p3]');
+  });
+
+  it('accepts a missing colon; canonical tags carry no correction note', () => {
+    expect(parseAction('[ACTION insert-after p2]').action).toBe('insert-after');
+    expect(parseAction('[ACTION insert-after p2]').target).toBe(2);
+    expect(parseAction('[ACTION insert-after p2]').tagNote).toBe('[ACTION insert-after p2]');
+    expect(parseAction('[ACTION: insert-after p2]').tagNote).toBeNull();
+    expect(parseAction('[ACTION: none]').tagNote).toBeNull();
+  });
+
+  it('does not report "move pN to pM" as a correction (accepted grammar)', () => {
+    expect(parseAction('[ACTION: move p2 to p0]').tagNote).toBeNull();
+  });
+
   it('normalizes typography so file text and clipboard text compare equal', () => {
     // .lyx file stores straight quotes; the clipboard exports curly ones.
     const fromFile = 'Apple has confirmed that a "small number" of users on the AT';

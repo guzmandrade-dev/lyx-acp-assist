@@ -12,12 +12,15 @@
  */
 
 import type { BridgeClient, BridgeDocument, SlidesSelectionShape } from '../bridge/client.js';
-import { extractContentBlock } from './markdown.js';
+import { extractContentBlock, ACTION_HEADER, ACTION_TAG_LINE, actionTagNote } from './markdown.js';
 import type { ActionOutcome, AppliedAction, ModuleAdapter, SelectionInfo } from './types.js';
 
-/** Last-tag grammar: [ACTION: name] or [ACTION: name sN]. */
-const IMPRESS_TAG =
-  /\[ACTION:\s*(rewrite-slide|insert-after|rewrite|none|continue)(?:\s+s([0-9]+))?\s*\]/gi;
+/** Last-tag grammar: [ACTION: name] or [ACTION: name sN]. The header
+ * tolerates tag typos ("[AACTION:"), reported via tagNote. */
+const IMPRESS_TAG = new RegExp(
+  `${ACTION_HEADER}\\s*(rewrite-slide|insert-after|rewrite|none|continue)(?:\\s+s([0-9]+))?\\s*\\]`,
+  'gi',
+);
 
 const CONTENT_ACTIONS = ['rewrite', 'rewrite-slide', 'insert-after'];
 
@@ -26,7 +29,7 @@ function blockLines(block: string): string[] {
   return block
     .split('\n')
     .map((line) => line.trim())
-    .filter((line) => line.length > 0 && !/^\[ACTION:/.test(line));
+    .filter((line) => line.length > 0 && !ACTION_TAG_LINE.test(line));
 }
 
 /** Parse an agent reply against the Impress vocabulary. */
@@ -49,6 +52,7 @@ export function parseImpressAction(reply: string): ActionOutcome {
         ? lines.map((text) => ({ style: null, runs: [{ text }] }))
         : null,
     grid: null,
+    tagNote: actionTagNote(m?.[0], `[ACTION: ${action}${target !== null ? ` s${target}` : ''}]`),
   };
 }
 

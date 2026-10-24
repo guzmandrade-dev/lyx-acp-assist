@@ -29,7 +29,7 @@ import { calcAdapter, parseCalcAction } from './modules/calc.js';
 import { impressAdapter, parseImpressAction } from './modules/impress.js';
 import { genericAdapter } from './modules/generic.js';
 import type { ModuleAdapter, AgentAction, ActionOutcome, SelectionInfo } from './modules/types.js';
-import { extractContentBlock, parseContentBlock } from './modules/markdown.js';
+import { extractContentBlock, parseContentBlock, ACTION_HEADER, actionTagNote } from './modules/markdown.js';
 import {
   AcpClient,
   UNSAVED_KEY,
@@ -444,7 +444,7 @@ export function createServer(options: ServerOptions & {
           break;
         }
         if (outcome.action === 'none' || outcome.action === 'continue') {
-          send({ action: 'none', ...(step > 1 ? { step } : {}) });
+          send({ action: 'none', ...(outcome.tagNote ? { tagNote: outcome.tagNote } : {}), ...(step > 1 ? { step } : {}) });
           await noteMeta('applied');
           stoppedReason = 'none';
           break;
@@ -458,6 +458,7 @@ export function createServer(options: ServerOptions & {
             target: outcome.target,
             address: outcome.address,
             module: adapter.id === 'generic' ? 'other' : adapter.id,
+            ...(outcome.tagNote ? { tagNote: outcome.tagNote } : {}),
             ...(step > 1 ? { step } : {}),
           });
           await noteMeta('applied');
@@ -636,12 +637,14 @@ export function createServer(options: ServerOptions & {
 
 // --- action parsing -----------------------------------------------------------
 
-/** Tag grammar: [ACTION: name] or [ACTION: name pN], with a ```writer block. */
+/** Tag grammar: [ACTION: name] or [ACTION: name pN], with a ```writer block.
+ * The header tolerates tag typos ("[AACTION:", doubled letters) and a
+ * missing colon — tagNote reports the auto-correction. */
 export function parseAction(reply: string): ActionOutcome {
   // The agent sometimes echoes tags while explaining; the LAST tag is the
   // operative one (the instructions demand it be the reply's last line).
   const tags = [...reply.matchAll(
-    /\[ACTION:\s*(delete-at|rewrite-at|insert-after|insert-top|rewrite|insert|none|continue)(?:\s+p(\d+))?\s*\]/gi,
+    new RegExp(`${ACTION_HEADER}\\s*(delete-at|rewrite-at|insert-after|insert-top|rewrite|insert|none|continue)(?:\\s+p(\\d+))?\\s*\\]`, 'gi'),
   )];
   const m = tags[tags.length - 1];
   const action = ((m?.[1] ?? 'none').toLowerCase() as AgentAction);
@@ -655,6 +658,7 @@ export function parseAction(reply: string): ActionOutcome {
     address: null,
     block: needsContent ? (rawBlock !== null ? parseContentBlock(rawBlock) : null) : null,
     grid: null,
+    tagNote: actionTagNote(m?.[0], `[ACTION: ${action}${target !== null ? ` p${target}` : ''}]`),
   };
 }
 

@@ -8,6 +8,18 @@
  */
 
 import type { BlockParagraph, BlockRun } from '../bridge/client.js';
+import { ACTION_HEADER, actionTagNote } from '@acp-assist/core';
+
+// Shared with the LyX app via @acp-assist/core; re-exported here so the
+// module adapters keep their single markdown.js import point.
+export { ACTION_HEADER, actionTagNote };
+
+/**
+ * Line-level action-tag test with the tolerant header: tags are
+ * protocol, never content, so parseContentBlock/parseTsvBlock drop any
+ * line that looks like a tag — including typo'd ones.
+ */
+export const ACTION_TAG_LINE = new RegExp(`^\\s*${ACTION_HEADER}[^\\]]*\\]\\s*$`, 'i');
 
 /** Map a markdown heading level to a Writer paragraph style name. */
 function headingStyle(level: number): string | null {
@@ -125,7 +137,7 @@ export function parseContentBlock(block: string): BlockParagraph[] {
     // Agents sometimes put the action tag INSIDE the fenced block (and
     // echo the block twice). Tags are protocol, never content: drop them
     // wherever they appear so they can never land in the document.
-    if (/^\s*\[ACTION:\s*[^\]]*\]\s*$/i.test(line)) {
+    if (ACTION_TAG_LINE.test(line)) {
       flush();
       continue;
     }
@@ -207,7 +219,7 @@ export function extractContentBlock(reply: string, lang: string = 'writer'): str
 export function parseTsvBlock(block: string): string[][] {
   const rows: string[][] = [];
   for (const raw of block.replace(/\r\n/g, '\n').split('\n')) {
-    if (/^\s*\[ACTION:\s*[^\]]*\]\s*$/i.test(raw)) continue;
+    if (ACTION_TAG_LINE.test(raw)) continue;
     rows.push(raw.split('\t'));
   }
   while (rows.length > 0 && (rows[rows.length - 1] ?? []).every((c) => c.trim() === '')) {

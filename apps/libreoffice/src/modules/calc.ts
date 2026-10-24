@@ -10,12 +10,15 @@
  */
 
 import type { BridgeClient, BridgeDocument, CalcInfo, CalcSelection } from '../bridge/client.js';
-import { extractContentBlock, parseTsvBlock } from './markdown.js';
+import { extractContentBlock, parseTsvBlock, ACTION_HEADER, actionTagNote } from './markdown.js';
 import type { ActionOutcome, AppliedAction, AgentAction, ModuleAdapter, SelectionInfo } from './types.js';
 
-/** Last-tag grammar: [ACTION: name] or [ACTION: name B2] (A1 anchor). */
-const CALC_TAG =
-  /\[ACTION:\s*(write-cells|insert-rows|insert-cols|rewrite|none|continue)(?:\s+([A-Za-z]{1,4}[1-9][0-9]{0,6}))?\s*\]/gi;
+/** Last-tag grammar: [ACTION: name] or [ACTION: name B2] (A1 anchor). The
+ * header tolerates tag typos ("[AACTION:"), reported via tagNote. */
+const CALC_TAG = new RegExp(
+  `${ACTION_HEADER}\\s*(write-cells|insert-rows|insert-cols|rewrite|none|continue)(?:\\s+([A-Za-z]{1,4}[1-9][0-9]{0,6}))?\\s*\\]`,
+  'gi',
+);
 
 /** Parse an agent reply against the Calc vocabulary. */
 export function parseCalcAction(reply: string): ActionOutcome {
@@ -32,6 +35,7 @@ export function parseCalcAction(reply: string): ActionOutcome {
     address,
     block: null,
     grid: needsContent && rawBlock !== null ? parseTsvBlock(rawBlock) : null,
+    tagNote: actionTagNote(m?.[0], `[ACTION: ${action}${address ? ` ${address}` : ''}]`),
   };
 }
 

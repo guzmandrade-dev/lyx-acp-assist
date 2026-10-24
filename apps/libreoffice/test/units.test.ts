@@ -27,6 +27,7 @@ describe('parseAction', () => {
       address: null,
       block: null,
       grid: null,
+      tagNote: null,
     });
   });
 
@@ -56,6 +57,36 @@ describe('parseAction', () => {
     const out = parseAction('I will insert something. [ACTION: insert]');
     expect(out.action).toBe('insert');
     expect(out.block).toBeNull();
+  });
+
+  it('auto-corrects typo tags ([AACTION:, doubled letters) and reports the correction', () => {
+    const reply = 'Here is the edit.\n\n```writer\nNew text.\n```\n\n[AACTION: rewrite-at p3]';
+    const out = parseAction(reply);
+    expect(out.action).toBe('rewrite-at');
+    expect(out.target).toBe(3);
+    expect(out.block).toEqual([
+      { style: null, runs: [{ text: 'New text.', bold: false, italic: false, code: false }] },
+    ]);
+    expect(out.tagNote).toBe('[AACTION: rewrite-at p3]');
+  });
+
+  it('accepts a missing colon; canonical tags carry no correction note', () => {
+    expect(parseAction('[ACTION insert-after p2]').action).toBe('insert-after');
+    expect(parseAction('[ACTION insert-after p2]').target).toBe(2);
+    expect(parseAction('[ACTION insert-after p2]').tagNote).toBe('[ACTION insert-after p2]');
+    expect(parseAction('[ACTION: insert-after p2]').tagNote).toBeNull();
+    expect(parseAction('[ACTION: none]').tagNote).toBeNull();
+  });
+
+  it('regression: live-agent reply with a typo tag left the document untouched (2026-10-24)', () => {
+    const reply = "Loosening the phrasing.\n\n```writer\nI'm applying for the Support Engineer role.\n```\n\nACTION TAG:\n\n[AACTION: rewrite-at p3]";
+    const out = parseAction(reply);
+    expect(out.action).toBe('rewrite-at');
+    expect(out.target).toBe(3);
+    expect(out.block).toEqual([
+      { style: null, runs: [{ text: "I'm applying for the Support Engineer role.", bold: false, italic: false, code: false }] },
+    ]);
+    expect(out.tagNote).toBe('[AACTION: rewrite-at p3]');
   });
 });
 
@@ -118,6 +149,12 @@ describe('parseContentBlock', () => {
       { style: 'Heading 2', runs: [{ text: 'Future Work', bold: false, italic: false, code: false }] },
       { style: null, runs: [{ text: 'A paragraph.', bold: false, italic: false, code: false }] },
     ]);
+  });
+
+  it('drops typo tag lines from content ([AACTION: regression)', () => {
+    const block = 'First.\n[AACTION: rewrite-at p3]\nSecond.';
+    expect(parseContentBlock(block).map((p) => p.runs.map((r) => r.text).join('')))
+      .toEqual(['First.', 'Second.']);
   });
 
   it('regression: live-agent reply with tag inside the fence, echoed block', () => {
@@ -352,6 +389,7 @@ describe('parseCalcAction', () => {
       address: null,
       block: null,
       grid: null,
+      tagNote: null,
     });
   });
 
@@ -378,6 +416,13 @@ describe('parseCalcAction', () => {
 
   it('writer tags do not parse in the calc grammar', () => {
     expect(parseCalcAction('[ACTION: rewrite-at p3]').action).toBe('none');
+  });
+
+  it('auto-corrects typo tags and reports the correction', () => {
+    const out = parseCalcAction('[AACTION: insert-rows A5]');
+    expect(out.action).toBe('insert-rows');
+    expect(out.address).toBe('A5');
+    expect(out.tagNote).toBe('[AACTION: insert-rows A5]');
   });
 });
 
@@ -526,6 +571,7 @@ describe('parseImpressAction', () => {
       address: null,
       block: null,
       grid: null,
+      tagNote: null,
     });
   });
 
@@ -565,6 +611,13 @@ describe('parseImpressAction', () => {
     expect(parseImpressAction('[ACTION: rewrite-at p2]').action).toBe('none');
     expect(parseImpressAction('[ACTION: write-cells]').action).toBe('none');
     expect(parseImpressAction('[ACTION: insert]').action).toBe('none');
+  });
+
+  it('auto-corrects typo tags and reports the correction', () => {
+    const out = parseImpressAction('[ACTTION: insert-after s2]');
+    expect(out.action).toBe('insert-after');
+    expect(out.target).toBe(2);
+    expect(out.tagNote).toBe('[ACTTION: insert-after s2]');
   });
 });
 

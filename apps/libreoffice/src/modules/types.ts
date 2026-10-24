@@ -39,6 +39,10 @@ export interface ActionOutcome {
   target: number | null;
   /** Calc: A1 anchor address (e.g. "B2"), when the tag carries one. */
   address: string | null;
+  /** Raw tag text when a near-miss tag (typo, missing colon) was
+   *  auto-corrected by the tolerant parser; null when the tag was
+   *  canonical or no tag matched. */
+  tagNote?: string | null;
 }
 
 /** What the server knows about the selection right now. */
