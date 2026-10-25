@@ -50,6 +50,9 @@ const fakeDocText = (paragraphs: Array<{ layout: string; text: string }>) =>
 
 async function writeFakeDoc(): Promise<FakeDoc> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'lyx-multi-'));
+  // These tests predate the save-consent gate; their harness documents live
+  // in a (marker-only) git working tree, so the disk save is ungated.
+  await fs.mkdir(path.join(dir, '.git'));
   const file = path.join(dir, 'doc.lyx');
   const paragraphs = [
     { layout: 'Title', text: 'placeholder title' },

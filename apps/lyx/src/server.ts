@@ -27,6 +27,7 @@ import {
   findMarkupProblems,
 } from './lyx/context.js';
 import { CHAT_KNOWLEDGE } from './lyx/knowledge.js';
+import { isVersionControlled } from './vcs.js';
 import {
   AcpClient,
   UNSAVED_KEY,
@@ -97,6 +98,11 @@ export interface Session {
   documentPath: string | null;
   /** Set when the client asks to stop the current generation. */
   cancelRequested: boolean;
+  /**
+   * Document paths whose save conditions the user accepted this session
+   * (save-consent gate; only asked for documents outside version control).
+   */
+  saveConsent: Set<string>;
   /** Files waiting to be included with the next message. */
   attachments: Attachment[];
 }
@@ -212,6 +218,7 @@ export function createServer(options: ServerOptions & {
         knownDocuments,
         documentPath: null,
         cancelRequested: false,
+        saveConsent: new Set(),
         attachments: [],
       };
       sessions.set(id, session);
@@ -259,6 +266,7 @@ export function createServer(options: ServerOptions & {
       const active = await refreshActiveDocument(session);
       res.json({
         active,
+        versionControlled: active ? await isVersionControlled(active) : null,
         documents: [...session.knownDocuments],
       });
     }),
@@ -281,7 +289,34 @@ export function createServer(options: ServerOptions & {
       await session.lyx.request('file-open', target);
       await sleep(200); // let the view settle
       const active = await refreshActiveDocument(session);
-      res.json({ active, documents: [...session.knownDocuments] });
+      res.json({
+        active,
+        versionControlled: active ? await isVersionControlled(active) : null,
+        documents: [...session.knownDocuments],
+      });
+    }),
+  );
+
+  // --- save consent --------------------------------------------------------
+
+  /**
+   * Record that the user accepted the conditions for saving a document
+   * that lives outside version control (asked once per document path,
+   * per session; see the gate in the message stream handler). The disk
+   * save itself is only performed by the message flow, so consent is
+   * purely a session-state flag.
+   */
+  app.post(
+    '/api/session/:id/save-consent',
+    wrap(async (req, res) => {
+      const session = getSession(req.params['id']);
+      const docPath = (req.body?.path as string | undefined)?.trim();
+      if (!docPath) {
+        res.status(400).json({ error: 'path is required' });
+        return;
+      }
+      session.saveConsent.add(docPath);
+      res.json({ ok: true, path: docPath });
     }),
   );
 
@@ -576,6 +611,23 @@ export function createServer(options: ServerOptions & {
 
     try {
       await refreshActiveDocument(session);
+      // Save-consent gate: the save below overwrites the file on disk with
+      // the assistant's edits. In a VCS working tree the previous state is
+      // recoverable; outside one it is not, so the user must have accepted
+      // that condition for THIS document path first (modal in the panel UI;
+      // the client retries after POSTing /save-consent).
+      if (
+        session.documentPath &&
+        !(await isVersionControlled(session.documentPath)) &&
+        !session.saveConsent.has(session.documentPath)
+      ) {
+        res.status(409).json({
+          error: 'This document is not under version control. Accept that the assistant saves changes to the file before sending a message.',
+          code: 'save-consent-required',
+          documentPath: session.documentPath,
+        });
+        return;
+      }
       // Read path per architecture: save the buffer first so the outline
       // and body parsed from disk match the live document. Only for saved
       // buffers — buffer-write on an untitled buffer opens a Save As dialog.
@@ -790,6 +842,7 @@ export function createServer(options: ServerOptions & {
       sessionId: session.id,
       documentPath: docPath,
       documents: [...session.knownDocuments],
+      versionControlled: docPath ? await isVersionControlled(docPath) : null,
       layout,
       outline,
       lyxMode: session.lyx.mode,

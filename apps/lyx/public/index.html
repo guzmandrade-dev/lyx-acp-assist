@@ -55,6 +55,7 @@
       <span id="lyx-busy-text" class="lyx-busy-text" hidden>talking to LyX&hellip;</span>
     </div>
     <div id="doc" class="doc" title=""></div>
+    <span id="vcs-warn" class="vcs-warn" hidden title="This document is not in a version-controlled folder. The assistant will ask for consent before its first save.">no version control</span>
     <div id="selection" class="selection" hidden></div>
   </div>
 
@@ -76,6 +77,24 @@
     </div>
     <input id="file-input" type="file" multiple hidden />
   </footer>
+
+  <div id="save-consent-backdrop" class="modal-backdrop" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="save-consent-title" aria-describedby="save-consent-text">
+      <h2 id="save-consent-title">Document is not version-controlled</h2>
+      <p id="save-consent-text">
+        <code id="save-consent-path"></code> is not in a version-controlled folder
+        (no Git). While the assistant works, it <strong>saves the document to disk
+        automatically</strong>, overwriting the file &mdash; a bad edit has no history
+        to recover from. Keeping the document in a Git repository (or making manual
+        backups) is strongly recommended.
+      </p>
+      <p class="modal-hint">Do you accept that this session may save changes to the file? (Asked once per document.)</p>
+      <div class="modal-actions">
+        <button id="save-consent-cancel">Cancel</button>
+        <button id="save-consent-accept" class="modal-primary">Accept and save</button>
+      </div>
+    </div>
+  </div>
 
   <script src="app.js"></script>
 </body>

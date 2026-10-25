@@ -28,9 +28,23 @@ const cmdEl = document.getElementById('agent-cmd');
 const attachBtn = document.getElementById('attach');
 const fileInput = document.getElementById('file-input');
 const chipsEl = document.getElementById('chips');
+const vcsWarnEl = document.getElementById('vcs-warn');
+const consentBackdrop = document.getElementById('save-consent-backdrop');
+const consentPathEl = document.getElementById('save-consent-path');
+const consentAcceptBtn = document.getElementById('save-consent-accept');
+const consentCancelBtn = document.getElementById('save-consent-cancel');
 let emptyEl = document.getElementById('empty');
 /** Document path whose conversation is currently rendered in the chat. */
 let chatDocKey = null;
+
+/** Save-consent state (server-enforced; mirrored here to warn early). */
+let activeDocPath = null;
+/** null = unknown/unsaved; otherwise whether the active doc is in a VCS. */
+let docVersionControlled = null;
+/** Document paths the user already accepted this session (client mirror). */
+const saveConsentPaths = new Set();
+/** Resolver of the open save-consent modal, null while closed. */
+let consentResolver = null;
 
 /** Attachment ids waiting to be sent with the next message. */
 const pendingAttachments = [];
@@ -570,6 +584,66 @@ async function api(path, init) {
   return body;
 }
 
+// --- save consent (documents outside version control) ----------------------
+//
+// The server saves the live document to disk on every message. When the
+// file is not inside a VCS working tree that overwrite is unrecoverable,
+// so the server refuses the message (409 save-consent-required) until the
+// user accepts the conditions for that document path, once per session.
+
+/** Track the active document + its VCS status; toggle the warning badge. */
+function setDocInfo(docPath, versionControlled) {
+  activeDocPath = docPath || null;
+  docVersionControlled = versionControlled ?? null;
+  vcsWarnEl.hidden = !(activeDocPath && docVersionControlled === false);
+}
+
+/** Show the save-consent modal; resolves true when the user accepts. */
+function showSaveConsent(docPath) {
+  return new Promise((resolve) => {
+    consentPathEl.textContent = docPath;
+    consentBackdrop.hidden = false;
+    consentAcceptBtn.focus();
+    consentResolver = (accepted) => {
+      consentBackdrop.hidden = true;
+      consentResolver = null;
+      resolve(accepted);
+    };
+  });
+}
+
+consentAcceptBtn.addEventListener('click', () => consentResolver?.(true));
+consentCancelBtn.addEventListener('click', () => consentResolver?.(false));
+consentBackdrop.addEventListener('mousedown', (e) => {
+  if (e.target === consentBackdrop) consentResolver?.(false);
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && consentResolver) consentResolver(false);
+});
+
+/** Ask + register consent for a document path; false when declined. */
+async function requestSaveConsent(docPath) {
+  const accepted = await showSaveConsent(docPath);
+  if (!accepted) return false;
+  saveConsentPaths.add(docPath);
+  try {
+    await api(`/api/session/${sessionId}/save-consent`, {
+      method: 'POST',
+      body: JSON.stringify({ path: docPath }),
+    });
+  } catch {
+    /* stale session: the server re-asks via the stream's 409 */
+  }
+  return true;
+}
+
+/** Pre-send gate: warn before the user bubble, when the state is known. */
+async function ensureSaveConsent() {
+  if (!activeDocPath || docVersionControlled !== false) return true;
+  if (saveConsentPaths.has(activeDocPath)) return true;
+  return requestSaveConsent(activeDocPath);
+}
+
 async function refreshStatus() {
   try {
     const st = await api('/api/status');
@@ -629,6 +703,7 @@ docSelect.addEventListener('change', async () => {
     );
     docEl.textContent = r.active ?? '(unsaved document)';
     docEl.title = r.active ?? '';
+    setDocInfo(r.active, r.versionControlled);
     // Each document has its own conversation history — after switching,
     // re-render the chat from the newly active document's history.
     await refreshChatForDocument(r.active);
@@ -662,6 +737,7 @@ async function refreshDocuments() {
   try {
     const r = await withLyxBusy(api(`/api/session/${sessionId}/documents`));
     updateDocSelector(r.active, r.documents);
+    setDocInfo(r.active, r.versionControlled);
     if (r.active) {
       docEl.textContent = r.active;
       docEl.title = r.active;
@@ -683,6 +759,7 @@ async function connect() {
   });
   sessionId = info.sessionId;
   chatDocKey = info.documentPath ?? '(unsaved)';
+  setDocInfo(info.documentPath, info.versionControlled);
   docEl.textContent = info.documentPath ?? '(unsaved document)';
   docEl.title = info.documentPath ?? '';
   updateDocSelector(info.documentPath, info.documents ?? []);
@@ -847,6 +924,9 @@ async function streamMessage(message) {
   if (!res.ok || !res.body) {
     const body = await res.json().catch(() => ({}));
     const err = new Error(body.error ?? `${res.status} ${res.statusText}`);
+    // Machine-readable save-consent refusal (see send()).
+    err.code = body.code;
+    err.documentPath = body.documentPath;
     maybeSetBusyFromError(err);
     hideTyping();
     generationStart = 0;
@@ -1018,9 +1098,19 @@ async function streamMessage(message) {
 }
 
 async function send() {
-  if (busy || !sessionId || lyxBusy) return;
+  if (busy || !sessionId || lyxBusy || consentResolver) return;
   const message = input.value.trim();
   if (!message) return;
+  // Save-consent gate: warn before anything is sent when the active
+  // document is known to be outside version control. The server enforces
+  // the same gate (409 save-consent-required), which covers stale state.
+  if (!(await ensureSaveConsent())) {
+    addSystemMessage(
+      'Not sent: the document is not under version control. Accept saving to continue, or keep it in a Git repository.',
+      true,
+    );
+    return;
+  }
   input.value = '';
   addMessage('user', message);
   try {
@@ -1029,7 +1119,24 @@ async function send() {
     pendingAttachments.length = 0;
     renderChips();
   } catch (e) {
-    if (e.name !== 'AbortError') {
+    if (e.name === 'AbortError') {
+      /* user stop — no extra message */
+    } else if (e.code === 'save-consent-required') {
+      // Server-side gate (the client's VCS state was stale): ask now and
+      // retry the same message once after acceptance.
+      const docPath = e.documentPath ?? activeDocPath;
+      if (docPath && (await requestSaveConsent(docPath))) {
+        try {
+          await streamMessage(message);
+          pendingAttachments.length = 0;
+          renderChips();
+        } catch (e2) {
+          if (e2.name !== 'AbortError') addSystemMessage(`error: ${e2.message}`, true);
+        }
+      } else {
+        addSystemMessage('Not sent: saving was not accepted.', true);
+      }
+    } else {
       addSystemMessage(`error: ${e.message}`, true);
     }
   } finally {

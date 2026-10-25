@@ -112,6 +112,9 @@ shows the active document, selection word count, and connection status.
 - Streaming responses, stop/cancel, undo of the last agent edit inside LyX
 - File attachments (PDF, Office, text…) converted to text for the agent
 - Per-document chat history, persisted
+- Save-consent gate: a document outside version control (no Git) is never
+  saved to disk until you accept that in a dialog — asked once per document
+  per session (re-asked after an app restart)
 - Automatic correction of one round of malformed LyX markup from the agent
 - Layout vocabulary of the active textclass is injected into every prompt
   (Beamer, journal classes, …), so the agent only uses real layout names

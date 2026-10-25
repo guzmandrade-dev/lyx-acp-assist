@@ -306,6 +306,82 @@ body {
   flex-shrink: 0;
 }
 
+/* ── Version-control warning badge (active document outside any VCS) ── */
+.vcs-warn {
+  display: inline-flex;
+  align-items: center;
+  font-size: var(--text-xs);
+  color: var(--status-warn);
+  background: var(--amber-subtle);
+  border: 1px solid var(--amber-border);
+  border-radius: var(--radius-pill);
+  padding: 2px 8px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* ── Save-consent modal ── */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-7);
+  background: rgba(44, 36, 22, 0.45);
+}
+.modal {
+  max-width: 460px;
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-float);
+  padding: var(--space-7);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.modal h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+.modal p {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+  color: var(--text-secondary);
+}
+.modal p code {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+  background: var(--surface-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 1px 4px;
+  word-break: break-all;
+}
+.modal-hint { font-size: var(--text-xs); }
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-4);
+  margin-top: var(--space-2);
+}
+.modal-actions button { min-width: 96px; }
+.modal-primary {
+  background: var(--accent);
+  color: var(--text-on-accent);
+  border-color: var(--accent);
+  font-weight: var(--weight-semibold);
+}
+.modal-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+
 /* ── Agent settings popover ── */
 .agent-settings { position: relative; }
 .agent-settings summary { list-style: none; }

@@ -258,6 +258,28 @@ time out until the user dismisses it. Known triggers:
 The real app must avoid dialog-triggering commands (operate only on
 saved files) and detect request hangs (queue timeout + retry).
 
+## Save consent (documents outside version control; 2026-10-24)
+
+The message flow saves the live buffer to disk before parsing it (read
+path). In a git working tree that save is recoverable; outside any VCS it
+is not, so the save is consent-gated:
+
+- `src/vcs.ts` — `isVersionControlled(file)`: walks up from the file's
+  directory looking for `.git` (dir **or file** — linked worktrees),
+  `.hg`, `.svn`; per-directory results are cached in-process.
+- Session info, `GET /documents`, and `documents/switch` report
+  `versionControlled` for the active document; the panel shows a
+  "no version control" badge when false.
+- `POST /message/stream` **refuses (409 `code: "save-consent-required"`
+  + `documentPath`) before the first save** of a non-VCS document until
+  `POST /save-consent {path}` registered acceptance (once per document
+  path, per session). The panel asks via a modal before sending (using its
+  cached status) and again on the 409 (stale state); nothing is ever
+  saved silently — the gate is server-side, not UI-only.
+- LibreOffice deliberately has **no such gate**: its bridge never writes
+  or saves the file — edits are tracked changes in the live buffer and
+  the user saves manually, so the user already controls every overwrite.
+
 ## Selection statistics
 
 `server-get-statistics` returns "words chars chars-with-spaces" of the
