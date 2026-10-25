@@ -50,11 +50,17 @@ See that repo's README/AGENTS.md for conventions.
 - LyX user dir: `%APPDATA%\LyX2.5`. The preferences file header now says
   "LyX 2.5.3, Format 40" (after a GUI save; the stale Format 38 file written
   by 2.4.4 was replaced).
-- **LyXServer pipe is configured and working.** The preference MUST use
-  forward slashes: `\serverpipe "//./pipe/lyxpipe"` — backslashes cannot
-  round-trip (LyX's config lexer eats them as escapes when reading, so
-  `"\\\\.\\pipe\\lyxpipe"` silently becomes `\.\pipe\lyxpipe` and no pipes
-  are created; no error is shown). LyX normalizes the forward-slash form.
+- **LyXServer pipe is configured and working.** No manual preference edit
+  is needed for the app: it discovers the pipe from LyX's own
+  `\serverpipe` preference (`%APPDATA%\LyX<version>\preferences`, newest
+  version first), falling back to LyX's default (\\.\pipe\lyxpipe)
+  — see pipe discovery in `src/lyxserver/pipe-config.ts`. Only when
+  setting `\serverpipe` by hand in the preferences file, the value MUST
+  use forward slashes: `\serverpipe "//./pipe/lyxpipe"` — backslashes
+  cannot round-trip (LyX's config lexer eats them as escapes when
+  reading, so `"\\\\.\\pipe\\lyxpipe"` silently becomes `\\.\pipe\lyxpipe`
+  and no pipes are created; no error is shown). LyX normalizes the
+  forward-slash form.
 - Pipes: `\\.\pipe\lyxpipe.in` (client -> LyX) and `\\.\pipe\lyxpipe.out`
   (LyX -> client). They exist whenever LyX runs with a document open.
 - The **lyxsocket** (`ServerSocket`, used by `lyxclient` on Linux) is
