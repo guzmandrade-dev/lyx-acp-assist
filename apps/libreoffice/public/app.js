@@ -200,9 +200,21 @@ function hideEmpty() {
   if (emptyEl) emptyEl.hidden = true;
 }
 
+/**
+ * Auto-follow: keep the chat pinned to the bottom while messages and
+ * streamed chunks arrive, unless the user scrolled up to read. "Near
+ * bottom" comes from the last scroll position, NOT re-measured after an
+ * append — a single appended message (~82px: bubble + gap) is taller
+ * than the old 60px post-hoc check, which silently disabled following in
+ * long transcripts.
+ */
+let followChat = true;
+chat.addEventListener('scroll', () => {
+  followChat = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 60;
+});
+
 function scrollToBottomIfNear() {
-  const nearBottom = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 60;
-  if (nearBottom) chat.scrollTop = chat.scrollHeight;
+  if (followChat) chat.scrollTop = chat.scrollHeight;
 }
 
 const QUOTE_ICON = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
