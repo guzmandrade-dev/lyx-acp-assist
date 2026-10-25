@@ -160,8 +160,7 @@ restart replay) lives in the workspace package
 ## Status
 
 Validated end-to-end against live LyX 2.5.3 on **Windows** (pipe round-trip,
-clipboard fidelity, multi-edit loop) with `opencode acp` and `copilot --acp`
-as agents.
+clipboard fidelity, multi-edit loop) with `copilot --acp` as agents.
 
 Linux and macOS are supported in code — the clipboard adapters (wl-copy/xclip,
 NSPasteboard), the FIFO-based LyXServer client, layout-class discovery, and
