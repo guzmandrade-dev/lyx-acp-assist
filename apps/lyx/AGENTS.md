@@ -191,6 +191,19 @@ signature → the client degrades to write-only:
 - commands fire-and-forget over `.in` (150 ms grace; saves/paste 600 ms)
 - `getFilename` → window title ("doc.lyx (~\Documents) - LyX") resolved
   via the dir hint, then known documents, then LyX's session file
+  - **Dirty-title hazard (live-debugged 2026-10-24):** LyX's title carries
+    Qt's modification placeholder — `GuiView::updateWindowTitle` appends
+    `[*]` to the display name, and Qt substitutes it with `*` while the
+    buffer is modified ("doc.lyx (~\Documents)* - LyX"). The fallback
+    parsed the `*` as part of the name, resolved nothing, and returned
+    `''` — so after the FIRST edit of a multi-action run (buffer dirty,
+    not yet saved) `documentPath` went empty: save skipped, context
+    build failed ("document unsaved?" — which the agent relayed as "the
+    document needs to be saved"), and every paragraph verification broke
+    the run. Symptom: exactly one applied edit per message, continuation
+    turns recorded in the unsaved-keyed history. `parseWindowTitle`
+    now strips the trailing `*`/`[*]` marker (regression tests in
+    `pipe-config.test.ts`).
 - `getSelectionStats`/`copySelection` → clear clipboard, `copy`, inspect
   (the clear is essential: a rejected copy leaves a stale payload that
   looks like a selection)
@@ -321,6 +334,16 @@ selection is empty. Useful as a cheap selection probe before `copy`.
 - Agents sometimes emit LaTeX-style inline commands (`\emph{...}`) instead
   of LyX token format (`\emph on/\emph default`); the app validates and
   retries once with a corrective prompt (`findMarkupProblems`).
+- **Inset spacing (verified against LyX 2.5 file output, 2026-10-24):** in
+  the `.lyx` format a newline — or the blank line LyX writes after
+  `\end_inset` — is a separator, NOT a space. Spaces around an inline
+  inset (Formula, ref, citation, URL) must be explicit space characters:
+  trailing on the text line before `\begin_inset`, leading on the text
+  line after `\end_inset`. Agents naturally write
+  `word\n\begin_inset Formula $x$...` and the document renders "wordx"
+  (live-reported: the spellchecker sees one word). The cheat-sheet
+  teaches the rule; `findMarkupProblems` lints it (Foot insets attach to
+  their word, labels are exempt).
 - On Windows, `opencode` is a PowerShell shim: bare agent commands must
   spawn with `shell: true` (`@acp-assist/core` `src/acp/agent-process.ts`).
 

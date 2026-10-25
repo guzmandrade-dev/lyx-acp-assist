@@ -65,6 +65,24 @@ describe('parseWindowTitle', () => {
     expect(parseWindowTitle('doc.lyx - LyX')).toEqual({ fileName: 'doc.lyx', dirHint: null });
   });
 
+  it('parses a DIRTY buffer title (Qt [*] marker substituted to *)', () => {
+    // GuiView.cpp updateWindowTitle: title = displayName(130) + "[*]" +
+    // " - LyX"; Qt turns "[*]" into "*" while the buffer is modified.
+    expect(parseWindowTitle('sample.lyx (~\\Documents)* - LyX')).toEqual({
+      fileName: 'sample.lyx',
+      dirHint: '~\\Documents',
+    });
+    expect(parseWindowTitle('doc.lyx* - LyX')).toEqual({ fileName: 'doc.lyx', dirHint: null });
+  });
+
+  it('parses a title with the literal, unsubstituted [*] placeholder', () => {
+    expect(parseWindowTitle('doc.lyx[*] - LyX')).toEqual({ fileName: 'doc.lyx', dirHint: null });
+  });
+
+  it('does not strip markers that are not trailing', () => {
+    expect(parseWindowTitle('*doc.lyx - LyX')).toEqual({ fileName: '*doc.lyx', dirHint: null });
+  });
+
   it('returns null for a documentless window', () => {
     expect(parseWindowTitle('LyX')).toBeNull();
     expect(parseWindowTitle('')).toBeNull();

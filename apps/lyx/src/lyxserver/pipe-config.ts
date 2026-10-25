@@ -80,11 +80,18 @@ export function parseWindowTitle(title: string): ParsedWindowTitle | null {
   const m = /^(.+?)\s+-\s+LyX(?:\s*[\d.]+)?$/i.exec(title.trim());
   const rest = m?.[1]?.trim();
   if (rest === undefined) return null;
-  const paren = /^(.+?)\s*\((.+)\)$/.exec(rest);
+  // Qt window-modification marker: GuiView sets the title to
+  // "<display name>[*] - LyX" (GuiView.cpp updateWindowTitle) and Qt
+  // substitutes "[*]" with "*" while the buffer is dirty ("doc.lyx
+  // (~\Docs)* - LyX") and strips it when clean. Without this, a dirty
+  // buffer (one paste into an unsaved document) makes the write-only
+  // filename fallback unresolvable and breaks multi-action runs.
+  const clean = rest.replace(/\s*(?:\[\*\]|\*)$/, '');
+  const paren = /^(.+?)\s*\((.+)\)$/.exec(clean);
   const fileName = paren?.[1]?.trim();
   const dirHint = paren?.[2]?.trim();
   if (fileName !== undefined && dirHint !== undefined) return { fileName, dirHint };
-  return { fileName: rest, dirHint: null };
+  return { fileName: clean, dirHint: null };
 }
 
 /**
