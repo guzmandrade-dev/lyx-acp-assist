@@ -132,6 +132,9 @@ html, body {
   margin: 0;
   padding: 0;
   height: 100%;
+  /* The panel is a fixed-size window: the document itself must never
+     scroll (scrolling belongs to the chat area only). */
+  overflow: hidden;
 }
 
 body {
@@ -353,7 +356,13 @@ body {
 
 /* ── Chat stream ── */
 main {
-  flex: 1;
+  flex: 1 1 auto;
+  min-height: 0;
+  /* Containing block for absolutely-positioned descendants (.sr-only in
+     the typing indicator): without it they anchor to the viewport and
+     inflate the document's scroll area, letting the user scroll past the
+     last message into blank space while the agent works. */
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: var(--space-5);
