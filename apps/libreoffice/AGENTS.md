@@ -662,6 +662,17 @@ the full debugging trail), verified live against the static panel:
   smooth-scrolls to it. MutationObserver-driven (synchronous, no rAF —
   rAF is paused while the panel window is hidden).
 
+## Multi-action continuation feedback fix (done 2026-10-24)
+
+Same fix as the LyX app (see its AGENTS.md multi-action note): when a run
+applies edits and then ends with the agent's `[ACTION: none]` summary
+step, the final summary bubble no longer shows the misleading per-step
+"Replied in chat — document unchanged" — only the run-level "Finished
+after N edit(s)" note, which matches the applied edits. Plain chat
+replies keep the label. Verified with a mocked SSE stream. (The post-edit
+save is also present here by design: the multi-action loop saves the
+buffer before re-reading context for the continuation step.)
+
 ## Packaging and CI (done 2026-10-18)
 
 - **Icons**: `scripts/generate-icon.ps1` ported from lyx-acp-assist with a

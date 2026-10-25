@@ -610,6 +610,19 @@ glued to the first paragraph). Fix: `buffer-begin` followed by
 paste merges into it and keeps the layout. Undoing an insert-top takes
 two undos (paste + paragraph break).
 
+**Continuation-bubble feedback fix (2026-10-24, live-reported):** a run
+that applies one edit and then stops with the agent's `[ACTION: none]`
+summary step renders two bubbles; the final summary bubble previously
+got the per-step feedback "Replied in chat — document unchanged", which
+contradicted the edit visible in the first bubble. Fix (client): on the
+final bubble, when earlier steps applied edits and this step has no
+action/error/cancel, skip the per-bubble feedback — the run-level note
+("Finished after N edit(s)") is the accurate outcome. Plain single-step
+chat replies keep the "document unchanged" label. Verified with a mocked
+SSE stream (applied → appliedStep → summary text → stopped:none): bubble
+1 = content + "Inserted at the top of the document" + Undo, bubble 2 =
+summary + "Finished after 1 edit", no contradiction.
+
 ## Stop / cancel + session teardown (2026-10-04)
 
 - `AcpClient.cancel()` sends the `session/cancel` notification via the

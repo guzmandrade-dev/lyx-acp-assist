@@ -1067,7 +1067,14 @@ async function streamMessage(message) {
   div._rawText = full; // final raw text for the copy/quote actions
   div._applied = applied;
   textDiv.innerHTML = renderAssistantText(full, applied) || (started ? '' : '<p>(no response)</p>');
-  renderFeedback(div, { applied, target, target2, address, module, cancelled, error, tagNote });
+  // The final bubble of a multi-action run is usually the agent's summary
+  // continuation (its [ACTION: none] step): the run-level note below
+  // ("Finished after N edit(s)") is the accurate outcome, and a per-bubble
+  // "document unchanged" here would contradict the edits applied in the
+  // earlier bubbles.
+  if (streamSteps.length === 0 || applied || cancelled || error) {
+    renderFeedback(div, { applied, target, target2, address, module, cancelled, error, tagNote });
+  }
   if (stopReason) {
     const appliedCount = streamSteps.filter((s) => s.applied && s.applied !== 'none').length + (applied && applied !== 'none' ? 1 : 0);
     const note = document.createElement('div');
