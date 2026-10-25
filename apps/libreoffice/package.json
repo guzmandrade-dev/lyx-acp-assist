@@ -51,6 +51,8 @@
     "files": [
       "dist/**/*",
       "public/**/*",
+      "build/icon-256.png",
+      "build/icon.ico",
       "!test/**",
       "!test-bridge/**",
       "!extension/**",
