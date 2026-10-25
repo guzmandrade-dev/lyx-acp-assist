@@ -208,6 +208,68 @@ function scrollToBottomIfNear() {
   if (followChat) chat.scrollTop = chat.scrollHeight;
 }
 
+/**
+ * Question ticks — small markers on a rail beside the chat, one per user
+ * question (GitHub-Copilot-style), so long agent responses stay
+ * navigable: hover shows the question, click scrolls it to the top.
+ */
+const scrollTicks = document.getElementById('scroll-ticks');
+let tickMsgs = [];
+
+function updateScrollTicks() {
+  if (!scrollTicks) return;
+  const msgs = Array.from(chat.querySelectorAll('.msg.user'));
+  const rebuilt =
+    msgs.length !== tickMsgs.length || msgs.some((m, i) => m !== tickMsgs[i]);
+  if (rebuilt) {
+    scrollTicks.replaceChildren();
+    for (const m of msgs) {
+      const tick = document.createElement('button');
+      tick.type = 'button';
+      tick.className = 'scroll-tick';
+      const preview = (m.querySelector('.text')?.textContent ?? '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 120);
+      tick.title = preview;
+      tick.setAttribute('aria-label', `Jump to question: ${preview}`);
+      tick.addEventListener('click', () => {
+        // offsetTop is relative to main's padding box (main is the
+        // positioned offsetParent) — the same coordinate space scrollTop
+        // uses. Leave a small breathing gap above the question.
+        chat.scrollTo({ top: Math.max(0, m.offsetTop - 12), behavior: 'smooth' });
+      });
+      tick._msg = m;
+      scrollTicks.appendChild(tick);
+    }
+    tickMsgs = msgs;
+  }
+  // No scrollbar, no rail: ticks are navigation for long transcripts.
+  scrollTicks.hidden = chat.scrollHeight <= chat.clientHeight;
+  const total = chat.scrollHeight;
+  const railH = scrollTicks.clientHeight;
+  for (const tick of scrollTicks.children) {
+    const m = tick._msg;
+    const center = m.offsetTop + m.offsetHeight / 2;
+    const y = total > 0 ? (center / total) * railH : 0;
+    tick.style.top = `${Math.max(7, Math.min(railH - 7, y))}px`;
+  }
+}
+
+// Track new messages, history replays, and the typing indicator's
+// visibility without touching the streaming hot path (childList of chat's
+// direct children only — streamed text lives deeper in the subtree). The
+// observer batches records, so the synchronous update runs once per
+// change batch — rAF is deliberately avoided because it is paused while
+// the panel window is hidden (user switched to LyX), which would leave
+// stale ticks behind.
+new MutationObserver(updateScrollTicks).observe(chat, {
+  childList: true,
+  attributes: true,
+  attributeFilter: ['hidden'],
+});
+window.addEventListener('resize', updateScrollTicks);
+
 const QUOTE_ICON = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
   + '<path d="M3 21c3 0 7-1 7-8V5c0-1.25-.756-2.017-2-2H4c-1.25 0-2 .75-2 1.972V11c0 1.25.75 2 2 2 1 0 1 0 1 1v1c0 1-1 2-2 2s-1 .008-1 1.031V20c0 1 0 1 1 1z"/>'
   + '<path d="M15 21c3 0 7-1 7-8V5c0-1.25-.757-2.017-2-2h-4c-1.25 0-2 .75-2 1.972V11c0 1.25.75 2 2 2h.75c0 2.25.25 4-2.75 4v3c0 1 0 1 1 1z"/>'

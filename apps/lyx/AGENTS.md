@@ -681,6 +681,42 @@ dynamically:
   `[hidden] { display: none !important; }` rule; `showEmpty()` now also
   re-appends the element so it stays the last child.
 
+## Chat scroll UX: root-cause overscroll fix + question ticks (2026-10-24)
+
+- **The blank space was still reachable via the DOCUMENT, not `main`**
+  (live-verified with a static server + devtools): the typing indicator
+  contains a `.sr-only` span (`position: absolute`), but no ancestor up
+  its chain was positioned — so its containing block was the viewport and
+  its static position sat ~content-height below the fold. While the
+  indicator was visible (exactly "waiting for response"), it inflated
+  `documentElement.scrollHeight`, making the whole page scrollable; wheel
+  scroll chained from the chat to the document and scrolled past the last
+  message into blank space. Fix: `main { position: relative; }` (main
+  becomes the containing block and clips it) plus `overflow: hidden` on
+  `html, body` as a safety net — the panel is a fixed window and the
+  document must never scroll. The 2026-10-10 fix above was real but
+  addressed a different inflation path.
+- **Auto-follow was silently broken in long transcripts:** the old
+  `scrollToBottomIfNear` re-measured "near bottom" AFTER the append — a
+  single appended message (~82px bubble+gap) exceeds the 60px threshold,
+  so a user parked at the bottom would not see their own question, the
+  typing indicator, or streamed chunks arrive. Fix: a `followChat` flag
+  maintained by a scroll listener (position of the last user scroll);
+  `scrollToBottomIfNear` scrolls when following, does nothing when the
+  user has scrolled up to read (no yanking mid-stream).
+- **Question ticks (user request, GitHub-Copilot-style):** a 14px rail
+  beside the chat (`#scroll-ticks` in a new `.chat-wrap` around `main`) —
+  one small marker per user question, positioned proportionally to the
+  transcript. Hover shows the question text, click smooth-scrolls it to
+  the top. Hidden while the transcript fits the viewport. Updated by a
+  MutationObserver on `main`'s direct children (messages, typing
+  indicator visibility) + window resize — deliberately synchronous, not
+  rAF-coalesced, because rAF is paused when the panel window is hidden
+  (user switched to LyX) and would leave stale ticks. The rail lives in
+  `.chat-wrap` (not inside `main`) so it stays fixed while content
+  scrolls; `main` is `position: relative` so `.msg.offsetTop` is in
+  `scrollTop`'s coordinate space.
+
 ## Action outcome persistence + error log (2026-10-10)
 
 - Each assistant turn can carry `meta: { action, target, target2, result:

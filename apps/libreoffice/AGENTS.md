@@ -641,6 +641,27 @@ the browser against the dev server + a live bridge + real vibe-acp turns:
 - **Reconnect button**: tears down and recreates the session; the
   per-document conversation history reloads correctly. Also observed:
   reconnect is what re-evaluates the install button's preflight.
+
+## Chat scroll UX: overscroll root cause + question ticks (done 2026-10-24)
+
+Same two fixes as the LyX app (see its AGENTS.md "Chat scroll UX" note for
+the full debugging trail), verified live against the static panel:
+
+- **Scroll past the last message into blank space while waiting:** the
+  typing indicator's `.sr-only` span (`position: absolute`) had no
+  positioned ancestor, so it anchored to the viewport and inflated the
+  DOCUMENT's scrollable area exactly while the indicator was visible —
+  wheel scroll chained from the chat to the page. Fix: `main { position:
+  relative; }` + `overflow: hidden` on `html, body`.
+- **Auto-follow broken in long transcripts:** the old post-append
+  "near bottom" check used a 60px threshold, but one appended message is
+  ~82px, so the chat never followed the user's own question or the
+  stream. Fix: a `followChat` flag maintained by a scroll listener.
+- **Question ticks (user request):** a 14px rail beside the chat in a new
+  `.chat-wrap` — one marker per user question, hover preview, click
+  smooth-scrolls to it. MutationObserver-driven (synchronous, no rAF —
+  rAF is paused while the panel window is hidden).
+
 ## Packaging and CI (done 2026-10-18)
 
 - **Icons**: `scripts/generate-icon.ps1` ported from lyx-acp-assist with a
