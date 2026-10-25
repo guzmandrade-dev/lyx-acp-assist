@@ -1,6 +1,6 @@
 {
   "name": "acp-assist",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "private": true,
   "description": "ACP assistant companions for LyX and LibreOffice (monorepo: packages/core shared library + per-editor apps).",
   "type": "module",
