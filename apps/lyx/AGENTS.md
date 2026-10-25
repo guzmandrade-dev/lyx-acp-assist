@@ -329,12 +329,13 @@ selection is empty. Useful as a cheap selection probe before `copy`.
 LLMs know LaTeX but not `.lyx` markup. Specialization is done with:
 - **Knowledge base** (`src/lyx/knowledge.ts`): a verified cheat-sheet
   (insets with required inner `Plain Layout`, token-format emphasis,
-  Formula/URL/citation examples) attached to every Insert/Rewrite/Chat
-  prompt. This fixed real failures: empty yellow Note insets, malformed
-  URL insets.
+  Formula/URL/citation examples, explicit spaces around inline insets)
+  attached to every Insert/Rewrite/Chat prompt. This fixed real failures:
+  empty yellow Note insets, malformed URL insets, words glued to
+  formulas/references (missing spaces — invisible in the raw markup).
 - **Validation + retry** (`findMarkupProblems`): LaTeX-style inline
-  commands, empty insets, insets missing their inner layout trigger one
-  corrective retry.
+  commands, empty insets, insets missing their inner layout, words glued
+  to inline insets (missing spaces) trigger one corrective retry.
 - ACP has no `systemPrompt` field in this SDK version, so prompt-level
   injection is the portable mechanism across agents.
 

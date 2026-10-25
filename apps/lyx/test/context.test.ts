@@ -9,6 +9,7 @@ import {
   normalizeMarkupBlock,
 } from '../src/lyx/context.js';
 import { parse } from '../src/lyx/parser.js';
+import { LYX_MARKUP_KNOWLEDGE } from '../src/lyx/knowledge.js';
 
 const HEADER = [
   '#LyX 2.5 created this file. For more info see https://www.lyx.org/',
@@ -96,6 +97,101 @@ describe('findMarkupProblems', () => {
       '\\end_layout',
     ].join('\n');
     expect(findMarkupProblems(body)).toEqual([]);
+  });
+});
+
+describe('findMarkupProblems — spaces around inline insets', () => {
+  it('flags a word glued before an inline Formula', () => {
+    const body =
+      '\\begin_layout Standard\nThe value is\n\\begin_inset Formula $x$\n\\end_inset\n.\n\\end_layout';
+    const problems = findMarkupProblems(body);
+    expect(problems.some((p) => p.includes('Missing space before'))).toBe(true);
+  });
+
+  it('flags a word glued after an inline Formula', () => {
+    const body =
+      '\\begin_layout Standard\nThe value is \n\\begin_inset Formula $x$\n\\end_inset\nand more text\n\\end_layout';
+    const problems = findMarkupProblems(body);
+    expect(problems.some((p) => p.includes('Missing space after'))).toBe(true);
+  });
+
+  it('flags text glued to a cross-reference inset', () => {
+    const body = [
+      '\\begin_layout Standard',
+      'See section',
+      '\\begin_inset CommandInset ref',
+      'LatexCommand ref',
+      'reference "sec:x"',
+      '',
+      '\\end_inset',
+      'for details',
+      '\\end_layout',
+    ].join('\n');
+    const problems = findMarkupProblems(body);
+    expect(problems.some((p) => p.includes('Missing space before'))).toBe(true);
+    expect(problems.some((p) => p.includes('Missing space after'))).toBe(true);
+  });
+
+  it('accepts explicit spaces around an inline Formula', () => {
+    const body =
+      '\\begin_layout Standard\nThe value is \n\\begin_inset Formula $x$\n\\end_inset\n and more text\n\\end_layout';
+    expect(findMarkupProblems(body)).toEqual([]);
+  });
+
+  it('accepts punctuation directly after an inset', () => {
+    const body =
+      '\\begin_layout Standard\nThe value is \n\\begin_inset Formula $x$\n\\end_inset\n.\n\\end_layout';
+    expect(findMarkupProblems(body)).toEqual([]);
+  });
+
+  it('leaves Foot insets attached to their word', () => {
+    const body = [
+      '\\begin_layout Standard',
+      'A claim',
+      '\\begin_inset Foot',
+      'status collapsed',
+      '',
+      '\\begin_layout Plain Layout',
+      'The source.',
+      '\\end_layout',
+      '',
+      '\\end_inset',
+      '\\end_layout',
+    ].join('\n');
+    expect(findMarkupProblems(body)).toEqual([]);
+  });
+
+  it('leaves label insets glued to their heading', () => {
+    const body = [
+      '\\begin_layout Section',
+      'My Section',
+      '\\begin_inset CommandInset label',
+      'LatexCommand label',
+      'name "sec:x"',
+      '',
+      '\\end_inset',
+      '\\end_layout',
+    ].join('\n');
+    expect(findMarkupProblems(body)).toEqual([]);
+  });
+
+  it('still flags when blank lines separate the text and the inset', () => {
+    const body =
+      '\\begin_layout Standard\nThe value is\n\n\\begin_inset Formula $x$\n\\end_inset\n\n\\end_layout';
+    const problems = findMarkupProblems(body);
+    expect(problems.some((p) => p.includes('Missing space before'))).toBe(true);
+  });
+});
+
+describe('LYX_MARKUP_KNOWLEDGE spacing rules', () => {
+  it('teaches explicit spaces around inline insets (guard against editors stripping them)', () => {
+    // "is" carries a trailing space before the inset (the ${' '} in the
+    // template literal renders as one real space).
+    expect(LYX_MARKUP_KNOWLEDGE).toMatch(/The energy is \n/);
+    // "and" starts with a real leading space after \end_inset.
+    expect(LYX_MARKUP_KNOWLEDGE).toMatch(/\\end_inset\n {3}and it is conserved\./);
+    // The URL example shows the space between "See" and the inset.
+    expect(LYX_MARKUP_KNOWLEDGE).toMatch(/See \n {2}\\begin_inset Flex URL/);
   });
 });
 

@@ -6,6 +6,10 @@
  * domain-focused tools like WordPress Studio): every construct here was
  * verified against LyX 2.5 output. Keep it short — it ships with every
  * Insert/Rewrite prompt.
+ *
+ * The SPACES AROUND INSETS and URL examples carry SIGNIFICANT trailing /
+ * leading spaces. Trailing spaces are written as ${' '} interpolation so
+ * editors cannot strip them; tests in test/context.test.ts guard them.
  */
 
 export const LYX_MARKUP_KNOWLEDGE = `LyX internal markup (.lyx) cheat-sheet — you MUST follow these conventions:
@@ -49,7 +53,7 @@ NOTE (the yellow inset)
 
 URL / HYPERLINK
   \\begin_layout Standard
-  See
+  See${' '}
   \\begin_inset Flex URL
   status collapsed
 
@@ -77,6 +81,24 @@ NAMED REFERENCE TO A LABEL
   reference "sec:method"
 
   \\end_inset
+
+SPACES AROUND INSETS (the format has NO implicit spaces)
+- A newline before \\begin_inset or after \\end_inset — and the blank line
+  LyX itself writes after insets — is a separator, NOT a space:
+  "word\\n\\begin_inset Formula $x$\\n\\end_inset\\n." renders as "wordx."
+  The missing space is invisible in the raw markup.
+- The space must be an explicit SPACE CHARACTER in the text: end the
+  text line before the inset with a space, start the text line after it
+  with one:
+  \\begin_layout Standard
+  The energy is${' '}
+  \\begin_inset Formula $E=mc^{2}$
+  \\end_inset
+  ${' '}and it is conserved.
+  \\end_layout
+- Exceptions: no space next to punctuation (a "." right after
+  \\end_inset), and a Foot inset attaches to its word like a footnote
+  marker.
 
 EVERY \\begin_inset with a body (Note, Foot, URL, ...) MUST contain a
 \\begin_layout Plain Layout ... \\end_layout block inside it — an inset

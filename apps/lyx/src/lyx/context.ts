@@ -232,6 +232,43 @@ export function findMarkupProblems(body: string): string[] {
       );
     }
   }
+
+  // Words glued to inline insets: a bare newline (or blank line) around an
+  // inset is a separator, NOT a space, so "word\n\begin_inset Formula
+  // $x$\n\end_inset\n." renders as "wordx." — the missing space is
+  // invisible in the raw markup (live-reported 2026-10-24).
+  const insetLines = body.split(/\r?\n/);
+  const inlineStack: boolean[] = [];
+  for (let i = 0; i < insetLines.length; i++) {
+    const line = insetLines[i]!;
+    if (/^\\begin_inset\b/.test(line)) {
+      const inline = INLINE_INSET.test(line);
+      inlineStack.push(inline);
+      if (inline) {
+        const prev = nearestNonBlank(insetLines, i, -1);
+        if (prev && !prev.startsWith('\\') && /[A-Za-z0-9]$/.test(prev)) {
+          problems.push(
+            `Missing space before an inline inset: the text "${prev.trim()}" ` +
+              'is glued to \\begin_inset, and a newline is NOT a space in ' +
+              '.lyx — it will render "wordX". End that text line with a ' +
+              'real space character.',
+          );
+        }
+      }
+    } else if (/^\\end_inset\b/.test(line)) {
+      if (inlineStack.pop()) {
+        const next = nearestNonBlank(insetLines, i, 1);
+        if (next && !next.startsWith('\\') && /^[A-Za-z0-9]/.test(next)) {
+          problems.push(
+            `Missing space after an inline inset: it is glued to the text ` +
+              `"${next.trim()}", and a newline is NOT a space in .lyx — it ` +
+              'will render "Xword". Start that text line with a real space ' +
+              'character (skip it only when punctuation follows).',
+          );
+        }
+      }
+    }
+  }
   return problems;
 }
 
@@ -284,6 +321,26 @@ const INSET_PROP_LINE =
  * prose starting with the same words ("after the proof…") survives.
  */
 const INSET_QUOTED_PROP_LINE = /^(reference|plural|caps|noprefix|nolink|prefix|after|before|options|entry|filename|type)\s+"[^"]*"$/;
+
+/**
+ * Insets whose content reads as inline prose (formulas, cross-references,
+ * citations, URLs). In .lyx the newline — or blank line — between such an
+ * inset and adjacent text is a pure separator (LyX renders NO space
+ * there), so a space must be an explicit trailing/leading space character
+ * on the neighboring text line. Foot/Note insets are excluded (they
+ * attach to the preceding word like footnote markers), as are
+ * label/index insets (invisible anchors).
+ */
+const INLINE_INSET =
+  /^\\begin_inset (Formula|Flex URL|CommandInset (?:ref|eqref|vref|pageref|vpageref|prettyref|formatted|citation))\b/;
+
+/** Nearest non-blank line from index i in direction dir, or null. */
+function nearestNonBlank(lines: string[], i: number, dir: -1 | 1): string | null {
+  for (let j = i + dir; j >= 0 && j < lines.length; j += dir) {
+    if (lines[j]!.trim() !== '') return lines[j]!;
+  }
+  return null;
+}
 
 function isInsetSyntaxLine(text: string): boolean {
   return INSET_PROP_LINE.test(text) || INSET_QUOTED_PROP_LINE.test(text);
