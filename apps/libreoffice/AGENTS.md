@@ -673,6 +673,15 @@ replies keep the label. Verified with a mocked SSE stream. (The post-edit
 save is also present here by design: the multi-action loop saves the
 buffer before re-reading context for the continuation step.)
 
+Same-day correction: the first guard (`|| applied`) missed that the
+server's `{action: none}` frame sets `applied = 'none'` — truthy — so the
+label still rendered live (the first mock omitted that frame). The guard
+now treats applied null/'none' as "no action", and the same suppression
+covers history replay (none-action turn right after an applied non-none
+assistant turn gets no label). Also dropped the stray "Stopped (none)"
+note under plain chat replies. Re-verified live with the exact server
+frame sequence and replayed histories.
+
 ## Packaging and CI (done 2026-10-18)
 
 - **Icons**: `scripts/generate-icon.ps1` ported from lyx-acp-assist with a

@@ -137,26 +137,38 @@ function renderConversation(turns) {
     return;
   }
   hideEmpty();
-  for (const turn of turns) {
+  for (let i = 0; i < turns.length; i++) {
+    const turn = turns[i];
     const { div } = addMessage(turn.role, turn.content);
     // Restore a persisted action outcome (applied/error/cancelled) from a
     // previous app run, so failures are visible after a restart.
     if (turn.role === 'assistant' && turn.meta) {
       // Remember the outcome so copy/quote strips the ```lyx block like the render does.
       div._applied = turn.meta.result === 'applied' ? turn.meta.action : null;
-      renderFeedback(div, {
-        applied: turn.meta.result === 'applied' && turn.meta.action !== 'none'
-          ? turn.meta.action
-          : turn.meta.result === 'cancelled'
-            ? null
-            : turn.meta.action === 'none'
-              ? 'none'
-              : null,
-        target: turn.meta.target ?? null,
-        target2: turn.meta.target2 ?? null,
-        cancelled: turn.meta.result === 'cancelled',
-        error: turn.meta.result === 'error' ? turn.meta.error : null,
-      });
+      // The [ACTION: none] summary step that closed a multi-action run is
+      // persisted with result "applied", action "none"; replaying it with
+      // "document unchanged" under the applied edit right before it would
+      // be misleading — skip the label there, like the live stream.
+      const prev = turns[i - 1];
+      const summaryContinuation =
+        turn.meta.result === 'applied' && turn.meta.action === 'none'
+        && prev?.role === 'assistant' && prev.meta?.result === 'applied'
+        && !!prev.meta?.action && prev.meta.action !== 'none';
+      if (!summaryContinuation) {
+        renderFeedback(div, {
+          applied: turn.meta.result === 'applied' && turn.meta.action !== 'none'
+            ? turn.meta.action
+            : turn.meta.result === 'cancelled'
+              ? null
+              : turn.meta.action === 'none'
+                ? 'none'
+                : null,
+          target: turn.meta.target ?? null,
+          target2: turn.meta.target2 ?? null,
+          cancelled: turn.meta.result === 'cancelled',
+          error: turn.meta.result === 'error' ? turn.meta.error : null,
+        });
+      }
     }
   }
 }
@@ -965,11 +977,15 @@ async function streamMessage(message) {
   div._applied = applied;
   textDiv.innerHTML = renderAssistantText(full, applied) || (started ? '' : '<p>(no response)</p>');
   // The final bubble of a multi-action run is usually the agent's summary
-  // continuation (its [ACTION: none] step): the run-level note below
+  // continuation (its [ACTION: none] step — the {action: none} frame sets
+  // applied = 'none', which is truthy): the run-level note below
   // ("Finished after N edit(s)") is the accurate outcome, and a per-bubble
   // "document unchanged" here would contradict the edits applied in the
   // earlier bubbles.
-  if (streamSteps.length === 0 || applied || cancelled || error) {
+  const summaryContinuation =
+    streamSteps.length > 0 && (applied === null || applied === 'none')
+    && !cancelled && !error && !tagNote;
+  if (!summaryContinuation) {
     renderFeedback(div, { applied, target, target2, cancelled, error, tagNote });
   }
   if (stopReason) {
@@ -985,7 +1001,12 @@ async function streamMessage(message) {
       error: `Stopped because an edit failed (${appliedCount} earlier edit${appliedCount === 1 ? '' : 's'} applied)`,
       limit: `Stopped after the safety limit of ${appliedCount} edit${appliedCount === 1 ? '' : 's'} — send "continue" for more`,
     };
-    const text = labels[stopReason] ?? `Stopped (${stopReason})`;
+    // 'none'/'done' carry no run note for a plain chat reply — the
+    // per-bubble "document unchanged" label already says it.
+    const text =
+      stopReason === 'none' || stopReason === 'done'
+        ? labels.none
+        : labels[stopReason] ?? `Stopped (${stopReason})`;
     if (text) {
       note.textContent = text;
       div.appendChild(note);

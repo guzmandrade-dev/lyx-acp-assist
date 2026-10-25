@@ -623,6 +623,21 @@ SSE stream (applied → appliedStep → summary text → stopped:none): bubble
 1 = content + "Inserted at the top of the document" + Undo, bubble 2 =
 summary + "Finished after 1 edit", no contradiction.
 
+**Correction + replay path (same day, live-reported):** the first guard
+used `|| applied`, but the server's `{action: none}` frame sets
+`applied = 'none'` — truthy — so the label still rendered on live runs
+(the first mocked stream omitted that frame and masked the bug). The
+guard now treats applied null/'none' as "no action". The same suppression
+also covers HISTORY REPLAY: the summary step is persisted as
+`{result: "applied", action: "none"}` and re-rendered by
+renderConversation, so a none-action assistant turn preceded by an
+applied non-none assistant turn gets no label (a genuine chat reply
+keeps it). Also dropped the stray "Stopped (none)" run note under plain
+chat replies — the label fallback fired on intentionally-null labels.
+Re-verified live on both apps with the exact server frame sequence
+(incl. `{action:'none', step:2}`), two-edit runs, error mid-run, the
+safety-limit stop, and replayed histories.
+
 ## Stop / cancel + session teardown (2026-10-04)
 
 - `AcpClient.cancel()` sends the `session/cancel` notification via the
