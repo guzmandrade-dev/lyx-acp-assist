@@ -253,6 +253,14 @@ export interface CompanionServerOptions<TState = unknown> {
   backend: CompanionBackend<TState>;
   /** Test hook: inject a fake agent process instead of spawning one. */
   agentFactory?: (settings: AgentSettings) => AgentRunner;
+  /**
+   * App-only routes (e.g. LyX save-consent), registered with the same
+   * wrap and session lookup the core routes use.
+   */
+  extraRoutes?: (app: express.Express, ctx: {
+    wrap: WrapFn;
+    getSession: (id: string | string[] | undefined) => CompanionSession<TState>;
+  }) => void;
 }
 
 export function createCompanionServer<TState>(
@@ -687,6 +695,8 @@ export function createCompanionServer<TState>(
     }
     return store;
   }
+
+  options.extraRoutes?.(app, { wrap, getSession });
 
   return app;
 }

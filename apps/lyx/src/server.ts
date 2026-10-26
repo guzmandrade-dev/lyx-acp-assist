@@ -7,14 +7,18 @@
  * per document path, and the client can list/switch documents. All
  * document reads go through the pipe + the saved `.lyx` file; all writes
  * go through the pipe (`paste` via the `application/x-lyx` clipboard).
+ *
+ * Phase B2 (audit Track D): the session lifecycle, shared routes, and the
+ * multi-action message loop live in core `createCompanionServer`; this
+ * file is the app's `CompanionBackend` — the pipe + clipboard + verified
+ * paste choreographies, the save-consent gate, and the LyX-only
+ * markup-retry (VRP) step.
  */
 
-import { randomUUID } from 'node:crypto';
 import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import express from 'express';
 import { LyxServerClient, LyxPipeError, createWriteOnlyFallbacks } from './lyxserver/client.js';
 import type { RawClipboard } from './clipboard/lyx-clipboard.js';
 import { LyxClipboard } from './clipboard/lyx-clipboard.js';
@@ -32,31 +36,23 @@ import { CHAT_KNOWLEDGE } from './lyx/knowledge.js';
 import { discoverLyxEnvironment } from './lyxserver/pipe-config.js';
 import { TIMINGS } from './timings.js';
 import {
-  AcpClient,
   UNSAVED_KEY,
   createParseActionTag,
-  createAgentSettings,
   createAttachmentExtractor,
-  createConversationStore,
-  createLogError,
+  createCompanionServer,
   createWrap,
   isVersionControlled,
   buildAttachmentBlock,
   formatHistoryReplay as coreFormatHistoryReplay,
   listKnownDocuments as coreListKnownDocuments,
-  registerAttachmentRoutes,
-  registerSessionRoutes,
-  startSse,
-  sseFail,
   MAX_ACTIONS_PER_MESSAGE,
   pollUntil,
-  sleep,
-  createApiAuthGuard,
-  generateApiToken,
-  type CompanionRecord,
-  type ConversationStore,
+  type AppliedResult,
+  type CompanionBackend,
+  type CompanionSession,
+  type ReadStepResult,
 } from '@acp-assist/core';
-import { createPanelBootScript, createPanelIndexHandler, panelPublicDir, type PanelConfig } from '@acp-assist/panel';
+import { panelPublicDir, type PanelConfig } from '@acp-assist/panel';
 import type {
   AgentRunner,
   AgentSettings,
@@ -74,8 +70,6 @@ export type {
 } from '@acp-assist/core';
 
 
-
-
 /**
  * Documents with a body larger than this attach only their outline to
  * prompts; the agent then reads/searches the saved file with its own
@@ -83,14 +77,7 @@ export type {
  */
 const OUTLINE_ONLY_BODY_LIMIT = 16_000;
 
-/**
- * Maximum document edits one user message may apply. ACP only signals that
- * a single response finished; continuing with the next edit is an app-level
- * loop, so it needs a hard stop even if the agent keeps proposing actions.
- */
-
-
-/** Parsed document snapshot (see Session.docSnapshot). */
+/** Parsed document snapshot (see LyxState.docSnapshot). */
 export interface DocumentSnapshot {
   path: string;
   mtimeMs: number;
@@ -98,27 +85,18 @@ export interface DocumentSnapshot {
   ctx: DocumentContext;
 }
 
-export interface Session {
-  id: string;
+
+/**
+ * The app backend's per-session state (opaque to the core server): the
+ * pipe client (with write-only fallbacks), the clipboard adapter, the
+ * active document path, the parsed document snapshot cache, and the
+ * save-consent set.
+ */
+export interface LyxState {
   lyx: LyxServerClient;
   clipboard: LyxClipboard;
-  agent: AgentRunner;
-  /** Conversation history per document path. */
-  conversations: Map<string, Turn[]>;
-  /**
-   * Per conversation key: number of leading turns loaded from persisted
-   * history (pre-restart) that the current agent process has NOT seen.
-   * The next prompt replays them (see buildHistoryPrefix).
-   */
-  historyHandoff: Map<string, number>;
-  /** All document paths seen during this session (for the selector). */
-  knownDocuments: Set<string>;
   /** Active document path, refreshed from LyX on every request. */
   documentPath: string | null;
-  /** Set when the client asks to stop the current generation. */
-  cancelRequested: boolean;
-  /** Last request/SSE-frame time; drives the idle-session GC (audit B2). */
-  lastActive: number;
   /**
    * Parsed document snapshot, cached per (path, mtimeMs). One request
    * parses the document ONCE: every save() bumps the file's mtime, so the
@@ -132,8 +110,23 @@ export interface Session {
    * (save-consent gate; only asked for documents outside version control).
    */
   saveConsent: Set<string>;
-  /** Files waiting to be included with the next message. */
-  attachments: Attachment[];
+  /**
+   * Audit B4: restores the user's pre-run clipboard text at the end of a
+   * message run; a no-op until readStep(1) saves the text (the choreography
+   * clobbers the clipboard on every edit).
+   */
+  restoreClipboard: () => Promise<void>;
+}
+
+/** One step's data: the context block + selection read for that step. */
+interface LyxStepData {
+  contextText: string;
+  selection: {
+    hasSelection: boolean;
+    lyxBody: string | null;
+    text: string | null;
+    layout: string | null;
+  };
 }
 
 export interface ServerOptions {
@@ -182,704 +175,77 @@ export function createServer(options: ServerOptions & {
   /** Test hook: inject a fake LyXServerClient instead of the real pipe. */
   lyxFactory?: () => LyxServerClient;
 }) {
-  const app = express();
-  // API auth (audit B1): random bearer token + loopback Host check; the
-  // panel gets the token same-origin via the injected index.html. Static
-  // assets sit BEFORE the guard (not sensitive), all /api routes after.
-  const apiToken = options.apiToken ?? generateApiToken();
-  app.locals.apiToken = apiToken;
-  const publicDir = options.publicDir ?? panelPublicDir();
-  app.use(express.json({ limit: '5mb' }));
-  app.get('/', createPanelIndexHandler(publicDir, { token: apiToken, config: options.panelConfig }));
-  // CSP-safe boot script (external same-origin): carries the token +
-  // panel config to the page.
-  app.get('/panel-boot.js', createPanelBootScript({ token: apiToken, config: options.panelConfig }));
-  if (options.assetsDir) {
-    app.use(express.static(options.assetsDir, { maxAge: 0, etag: false, lastModified: false }));
-  }
-  app.use(express.static(publicDir, { maxAge: 0, etag: false, lastModified: false }));
-  app.use(createApiAuthGuard(apiToken));
-
-  const sessions = new Map<string, Session>();
-
-  const logError = createLogError(options.logDir);
-
-  // Audit B2: F5 / crash-reload of the panel orphans the running agent
-  // process + pipe client (only an explicit Reconnect deletes the old
-  // session). Track per-request activity and sweep idle sessions — the
-  // pipe client's stop() sends `bye`, freeing LyX's 10-slot registry.
-  const sessionIdleMs = options.sessionIdleMs ?? 30 * 60_000;
-  app.use((req, _res, next) => {
-    const m = /^\/api\/session\/([^/]+)/.exec(req.path);
-    const session = m ? sessions.get(m[1] ?? '') : undefined;
-    if (session) session.lastActive = Date.now();
-    next();
-  });
-  const sweeper = setInterval(() => {
-    const now = Date.now();
-    for (const [id, session] of sessions) {
-      if (now - session.lastActive < sessionIdleMs) continue;
-      sessions.delete(id);
-      try {
-        session.lyx.stop();
-      } catch {
-        /* best-effort */
-      }
-      session.agent.stop();
-      logError('[gc] idle session torn down', new Error(`session ${id} idle > ${sessionIdleMs}ms`));
-    }
-  }, Math.max(1_000, Math.round(sessionIdleMs / 10)));
-  sweeper.unref();
-
-  const wrap = createWrap({
-    logError,
-    mapStatus: (err) => (err instanceof LyxPipeError ? 503 : 500),
-  });
-
-  // --- status ----------------------------------------------------------
-
-  app.get('/api/status', (_req, res) => {
-    const probe = new LyxServerClient();
-    res.json({ lyxPipeAvailable: probe.isAvailable() });
-  });
-
-  // --- settings (persisted server-side; the server port is random per
-  // launch, so localStorage — origin-scoped — would not survive a restart) ---
-
-  const agentSettings = createAgentSettings(options.settingsDir);
-  agentSettings.register(app, wrap);
-
-  // --- session ---------------------------------------------------------
-
-  app.post(
-    '/api/session',
-    wrap(async (req, res) => {
-      // Defaults < persisted settings < explicit request body.
-      const persisted = await agentSettings.read();
-      const requested = req.body?.agent as Partial<AgentSettings> | undefined;
-      // Hoisted so the write-only fallback's filename resolution can see it
-      // grow over the session's lifetime (it is the same set as
-      // session.knownDocuments below).
-      const knownDocuments = new Set<string>();
-      // Tests may inject a fake LyX pipe client and a fake agent runner so
-      // the whole multi-action loop can be exercised without live processes.
-      const lyx = options.lyxFactory
-        ? options.lyxFactory()
-        : new LyxServerClient({
-            fallbacks: createWriteOnlyFallbacks(options.clipboard, () => knownDocuments),
-          });
-      await lyx.start();
-      if (lyx.mode === 'write-only') {
-        console.warn(
-          'LyXServer pipe is deaf (LyX resets every .out connection; see ' +
-            'AGENTS.md "Live-test debugging trail"). Running in write-only ' +
-            'fallback mode: commands work, replies are substituted from ' +
-            'the window title, session file, and clipboard.',
-        );
-      }
-
-      const agent: AgentRunner = options.agentFactory
-        ? options.agentFactory({
-            command: requested?.command ?? persisted.command ?? 'vibe-acp',
-            args: requested?.args ?? persisted.args ?? [],
-            env: requested?.env ?? persisted.env ?? {},
-          })
-        : new AcpClient({
-            appName: 'lyx-acp-assist',
-            writerName: 'LyX',
-            command: requested?.command ?? persisted.command ?? 'vibe-acp',
-            args: requested?.args ?? persisted.args ?? [],
-            env: requested?.env ?? persisted.env ?? {},
-          });
-      await agent.start();
-
-      const id = randomUUID();
-      const session: Session = {
-        id,
-        lyx,
-        clipboard: new LyxClipboard(options.clipboard),
-        agent,
-        conversations: new Map(),
-        historyHandoff: new Map(),
-        knownDocuments,
-        documentPath: null,
-        cancelRequested: false,
-        lastActive: Date.now(),
-        saveConsent: new Set(),
-        attachments: [],
-      };
-      sessions.set(id, session);
-      await agent.createSession(id);
-
-      // Seed the document selector with paths from previous sessions. The
-      // pipe has no "list open buffers" LFUN, so without this the selector
-      // only shows the active tab after an app restart (the in-memory
-      // knownDocuments set starts empty).
-      if (options.historyDir) {
-        for (const docPath of await listKnownDocuments(options.historyDir)) {
-          session.knownDocuments.add(docPath);
-        }
-      }
-
-      // First connect: the panel shows an outline-aware welcome message.
-      res.json(await sessionInfo(session, { outline: true }));
-    }),
-  );
-
-  // --- context ---------------------------------------------------------
-
-  registerSessionRoutes(app, wrap, {
-    getSession,
-    sessions,
-    sessionInfo,
-    teardown: (s) => s.lyx.stop(),
-  });
-
-  // --- attachments -------------------------------------------------------
-
-  /** Store an uploaded file for the next message (base64 JSON body). */
-  registerAttachmentRoutes(app, wrap, {
+  return createCompanionServer({
+    panelConfig: options.panelConfig,
+    publicDir: options.publicDir ?? panelPublicDir(),
+    assetsDir: options.assetsDir,
+    historyDir: options.historyDir,
     attachmentsDir: options.attachmentsDir,
-    getSession,
+    logDir: options.logDir,
+    settingsDir: options.settingsDir,
+    apiToken: options.apiToken,
+    sessionIdleMs: options.sessionIdleMs,
     extractText: extractAttachmentText,
+    backend: createLyxBackend(options),
+    agentFactory: options.agentFactory,
+    extraRoutes: (app, ctx) => {
+      // --- save consent ------------------------------------------------------
+      /**
+       * Record that the user accepted the conditions for saving a document
+       * that lives outside version control (asked once per document path,
+       * per session; see the gate in readStep). The disk save itself is
+       * only performed by the message flow, so consent is purely a
+       * session-state flag.
+       */
+      app.post(
+        '/api/session/:id/save-consent',
+        ctx.wrap(async (req, res) => {
+          const session = ctx.getSession(req.params['id']);
+          const docPath = (req.body?.path as string | undefined)?.trim();
+          if (!docPath) {
+            res.status(400).json({ error: 'path is required' });
+            return;
+          }
+          session.state.saveConsent.add(docPath);
+          res.json({ ok: true, path: docPath });
+        }),
+      );
+    },
   });
+}
 
-  // --- documents ---------------------------------------------------------
-
-  /** List known documents and which one is active right now. */
-  app.get(
-    '/api/session/:id/documents',
-    wrap(async (req, res) => {
-      const session = getSession(req.params['id']);
-      const active = await refreshActiveDocument(session);
-      res.json({
-        active,
-        versionControlled: active ? await isVersionControlled(active) : null,
-        documents: [...session.knownDocuments],
-      });
-    }),
-  );
-
-  /**
-   * Switch LyX's active tab/window to the given document (it must be
-   * already open). The pipe has no "list buffers" LFUN, so switching is
-   * done via file-open, which activates an already-open buffer.
-   */
-  app.post(
-    '/api/session/:id/documents/switch',
-    wrap(async (req, res) => {
-      const session = getSession(req.params['id']);
-      const target = req.body?.path as string | undefined;
-      if (!target) {
-        res.status(400).json({ error: 'path is required' });
-        return;
-      }
-      await session.lyx.request('file-open', target);
-      // Wait until LyX actually switched (bounded poll instead of a fixed
-      // sleep); on timeout we fall through and report whatever is active.
-      await pollUntil(async () => (await session.lyx.getFilename()) === target, {
-        timeoutMs: TIMINGS.documentSwitchPollMs,
-        intervalMs: 50,
-      });
-      const active = await refreshActiveDocument(session);
-      res.json({
-        active,
-        versionControlled: active ? await isVersionControlled(active) : null,
-        documents: [...session.knownDocuments],
-      });
-    }),
-  );
-
-  // --- save consent --------------------------------------------------------
-
-  /**
-   * Record that the user accepted the conditions for saving a document
-   * that lives outside version control (asked once per document path,
-   * per session; see the gate in the message stream handler). The disk
-   * save itself is only performed by the message flow, so consent is
-   * purely a session-state flag.
-   */
-  app.post(
-    '/api/session/:id/save-consent',
-    wrap(async (req, res) => {
-      const session = getSession(req.params['id']);
-      const docPath = (req.body?.path as string | undefined)?.trim();
-      if (!docPath) {
-        res.status(400).json({ error: 'path is required' });
-        return;
-      }
-      session.saveConsent.add(docPath);
-      res.json({ ok: true, path: docPath });
-    }),
-  );
-
-  // --- selection ---------------------------------------------------------
-
-  app.get(
-    '/api/session/:id/selection',
-    wrap(async (req, res) => {
-      const session = getSession(req.params['id']);
-      res.json(await readSelection(session));
-    }),
-  );
-
-  // --- message (unified; the agent infers the action) --------------------
-
-  /**
-   * Streaming message: one input for everything. The agent decides the
-   * intent and ends its reply with an action tag:
-   *   [ACTION: none]    - conversational reply; the document is untouched
-   *   [ACTION: insert]  - paste the ```lyx block at the cursor
-   *   [ACTION: rewrite] - replace the current selection with the block
-   *
-   * After a document action is applied, the app re-reads the saved document
-   * and prompts the agent again for the next edit, so one request can apply
-   * several edits. The run stops when the agent replies [ACTION: none],
-   * when an action fails, when the user cancels, or after
-   * MAX_ACTIONS_PER_MESSAGE edits.
-   *
-   * SSE frames: {"text": ...} chunks, {"tool": {title, status}} for
-   * agent tool activity, then {"applied": "insert"|"rewrite"} per edit,
-   * {"appliedStep": n} between edits, {"stopped": reason}, then
-   * {"done": true}. Errors/cancellation are sent as {"error": ...} /
-   * {"cancelled": true} frames.
-   */
-  app.post('/api/session/:id/message/stream', async (req, res) => {
-    const maybeSession = sessions.get(param(req.params['id']));
-    if (!maybeSession) {
-      res.status(404).json({ error: 'Unknown session' });
-      return;
-    }
-    const session: Session = maybeSession;
-    const message = (req.body?.message as string | undefined)?.trim();
-    if (!message) {
-      res.status(400).json({ error: 'message is required' });
-      return;
-    }
-
-    // Tracked across the handler so the catch block can persist the error
-    // as turn metadata when the failure happens after the turn was recorded.
-    let turnRecorded = false;
-    let lastAction: AgentAction = 'none';
-    let lastTarget: number | null = null;
-    let lastTarget2: number | null = null;
-    // Audit B4: restores the user's pre-run clipboard text; a no-op until
-    // the choreography's first clipboard touch saves it (assigned in try).
-    let restoreClipboardText: () => Promise<void> = async () => {};
-
-    type Send = (obj: unknown) => void;
-
-    interface ApplyResult {
-      ok: boolean;
-      cancelled: boolean;
-      error: string | null;
-      appliedAction: AgentAction | null;
-      appliedTarget: number | null;
-      appliedTarget2: number | null;
-      /** Number of edits applied so far in this multi-action run. */
-      appliedCount: number;
-    }
-
-    /**
-     * Prompt the agent once and, when it proposes a document action, apply
-     * exactly that action. `step` is 1 for the first edit of a run and >1
-     * for continuations; each applied edit is recorded as its own turn so
-     * undo-per-edit and restart-visible outcomes keep working.
-     */
-    async function promptAndApply(
-      prompt: string,
-      step: number,
-      selection: Awaited<ReturnType<typeof readSelection>>,
-      send: Send,
-      originalMessage: string,
-    ): Promise<{ reply: string; outcome: ActionOutcome; result: ApplyResult }> {
-      const zero: ApplyResult = {
-        ok: false,
-        cancelled: false,
-        error: null,
-        appliedAction: null,
-        appliedTarget: null,
-        appliedTarget2: null,
-        appliedCount: 0,
-      };
-      let reply = await session.agent.prompt(session.id, [{ type: 'text', text: prompt }], {
-        onChunk: (chunk) => send({ text: chunk, ...(step > 1 ? { step } : {}) }),
-        onToolCall: (tool) => send({ tool }),
-        timeoutMs: TIMINGS.promptTimeoutMs,
-      });
-      let outcome = parseAction(reply);
-
-      // If the agent wants to write into the document, validate the markup
-      // and retry once with a corrective prompt (VRP pattern).
-      if (!session.cancelRequested && outcome.action !== 'none' && outcome.action !== 'continue' && outcome.body) {
-        const problems = findMarkupProblems(outcome.body);
-        if (problems.length > 0) {
-          const retry = buildMarkupRetryPrompt(outcome.action, problems);
-          reply = await session.agent.prompt(session.id, [{ type: 'text', text: retry }], {
-            onChunk: (chunk) => send({ text: `\n${chunk}`, ...(step > 1 ? { step } : {}) }),
-            onToolCall: (tool) => send({ tool }),
-            // Same budget as the main prompt (audit B8: this call had NO
-            // timeoutMs, so a stuck retry could hang the stream).
-            timeoutMs: TIMINGS.promptTimeoutMs,
-          });
-          outcome = parseAction(reply);
-        }
-      }
-
-      if (step === 1) {
-        await recordTurn(session, originalMessage, reply);
-      } else {
-        await recordActionStep(session, reply, step);
-      }
-      lastAction = outcome.action;
-      lastTarget = outcome.target;
-      lastTarget2 = outcome.target2;
-
-      // Near-miss action tags (typos like "[AACTION:") are auto-corrected
-      // by the tolerant parser; tell the panel so the user sees it.
-      if (outcome.tagNote) send({ tagNote: outcome.tagNote, ...(step > 1 ? { step } : {}) });
-
-      const noteMeta = async (result: 'applied' | 'error' | 'cancelled', error?: string) => {
-        await recordTurnMeta(session, {
-          action: outcome.action,
-          target: outcome.target,
-          target2: outcome.target2,
-          result,
-          ...(error ? { error } : {}),
-          ...(step > 1 ? { step } : {}),
-        });
-      };
-
-      if (session.cancelRequested) {
-        send({ cancelled: true, ...(step > 1 ? { step } : {}) });
-        await noteMeta('cancelled');
-        return { reply, outcome, result: { ...zero, cancelled: true } };
-      }
-      if (outcome.action === 'none') {
-        send({ action: 'none', ...(step > 1 ? { step } : {}) });
-        await noteMeta('applied');
-        return { reply, outcome, result: { ...zero, ok: true, appliedAction: 'none' } };
-      }
-      if (outcome.action === 'continue') {
-        // Accepted for forward-compatibility; the server's multi-action loop
-        // drives continuations itself, so this tag means "nothing to do".
-        send({ action: 'none', ...(step > 1 ? { step } : {}) });
-        await noteMeta('applied');
-        return { reply, outcome, result: { ...zero, ok: true, appliedAction: 'none' } };
-      }
-
-      let appliedTarget: number | null = null;
-      let error: string | null = null;
-      let applied = false;
-
-      if (outcome.action === 'delete-at') {
-        // Delete needs no ```lyx block: walk, verify, select, delete the
-        // text, then merge the leftover empty paragraph away.
-        const gotoResult = await gotoParagraph(session, outcome.target, 'rewrite');
-        if (gotoResult.error) {
-          error = gotoResult.error;
-        } else {
-          const deleted = await session.lyx.deleteSelection();
-          if (deleted) {
-            await session.lyx.mergeAwayParagraph();
-            send({ applied: 'delete-at', target: outcome.target, ...(step > 1 ? { step } : {}) });
-            applied = true;
-          } else {
-            error = `LyX could not delete paragraph [p${outcome.target}].`;
-          }
-        }
-      } else if (outcome.action === 'merge') {
-        // Merge needs no ```lyx block: walk + verify + collapse to the end
-        // of [pN], then delete-forward merges [p(N+1)] into it.
-        const result = await mergeParagraph(session, outcome.target, outcome.target2);
-        if (result.error) {
-          error = result.error;
-        } else {
-          send({ applied: 'merge', target: outcome.target, target2: outcome.target2, ...(step > 1 ? { step } : {}) });
-          applied = true;
-        }
-      } else if (outcome.action === 'move') {
-        // Move needs no ```lyx block: capture the paragraph via the
-        // clipboard, delete it, then re-paste at the adjusted destination.
-        const result = await moveParagraph(session, outcome.target, outcome.target2);
-        if (result.error) {
-          error = result.error;
-        } else {
-          send({ applied: 'move', target: outcome.target, target2: outcome.target2, ...(step > 1 ? { step } : {}) });
-          applied = true;
-        }
-      } else {
-        // A write action: position the cursor, then paste.
-        if (!outcome.body) {
-          error = `Agent chose [ACTION: ${outcome.action}] but returned no \`\`\`lyx block.`;
-        } else {
-          let positionError: string | null = null;
-          let target = outcome.target;
-          if (outcome.action === 'rewrite' && !selection.hasSelection) {
-            positionError = 'Agent chose [ACTION: rewrite] but LyX has no active selection.';
-          } else if (outcome.action === 'insert' && selection.hasSelection) {
-            // A selection is active: paste would REPLACE it. The agent chose
-            // plain insert, not rewrite — collapse the selection so the
-            // user's text survives and the paste lands at the cursor.
-            await session.lyx.collapseSelection();
-          } else if (outcome.action === 'insert-top') {
-            const moved = await session.lyx.beginOfDocument();
-            if (!moved) {
-              positionError = 'Could not move the cursor to the start of the document (buffer-begin failed).';
-            } else {
-              // buffer-begin lands INSIDE the first paragraph: a paste there
-              // would merge into it and drop the pasted layout. Break the
-              // paragraph first so the paste lands in a fresh empty paragraph.
-              await session.lyx.breakParagraph();
-            }
-          } else if (outcome.action === 'rewrite-at') {
-            const gotoResult = await gotoParagraph(session, outcome.target, 'rewrite');
-            target = gotoResult.target;
-            positionError = gotoResult.error;
-          } else if (outcome.action === 'insert-after') {
-            const gotoResult = await gotoParagraph(session, outcome.target, 'insert-after');
-            target = gotoResult.target;
-            positionError = gotoResult.error;
-          } else if (outcome.action === 'insert-before') {
-            // Insert-before pN = insert-after p(N-1), reusing the fully
-            // verified insert-after choreography (walk, verify, collapse,
-            // break a fresh paragraph). For p1 it degenerates to the
-            // insert-top choreography; the reported target stays pN.
-            if (outcome.target === 1) {
-              const moved = await session.lyx.beginOfDocument();
-              if (!moved) {
-                positionError = 'Could not move the cursor to the start of the document (buffer-begin failed).';
-              } else {
-                await session.lyx.breakParagraph();
-              }
-            } else {
-              const gotoResult = await gotoParagraph(session, (outcome.target ?? 0) - 1, 'insert-after');
-              positionError = gotoResult.error;
-            }
-          }
-          if (positionError) {
-            error = positionError;
-          } else {
-            const header = (await currentHeader(session)) ?? FALLBACK_HEADER;
-            const doc = assemblePasteDocument(header, outcome.body);
-            const written = await session.clipboard.writeLyxDocumentVerified(doc, outcome.body);
-            if (!written) {
-              error =
-                'The .lyx payload could not be written to the clipboard; ' +
-                'nothing was pasted. Please try again.';
-            } else {
-              await session.lyx.paste(); // replaces the active selection if any
-              send({ applied: outcome.action, target, ...(step > 1 ? { step } : {}) });
-              applied = true;
-              appliedTarget = target;
-            }
-          }
-        }
-      }
-
-      if (error) {
-        send({ error, ...(step > 1 ? { step } : {}) });
-        await noteMeta('error', error);
-        return { reply, outcome, result: { ...zero, error } };
-      }
-      if (!applied) {
-        // Addressed actions without a successful paste still count as the
-        // turn's outcome; treat a missing application as an error so the
-        // loop does not silently spin.
-        const fallback = 'The document action could not be applied.';
-        send({ error: fallback, ...(step > 1 ? { step } : {}) });
-        await noteMeta('error', fallback);
-        return { reply, outcome, result: { ...zero, error: fallback } };
-      }
-      await noteMeta('applied');
-      return {
-        reply,
-        outcome,
-        result: {
-          ok: true,
-          cancelled: false,
-          error: null,
-          appliedAction: outcome.action,
-          appliedTarget: appliedTarget ?? outcome.target,
-          appliedTarget2: outcome.target2,
-          appliedCount: step,
-        },
-      };
-    }
-
-    try {
-      await refreshActiveDocument(session);
-      // Save-consent gate: the save below overwrites the file on disk with
-      // the assistant's edits. In a VCS working tree the previous state is
-      // recoverable; outside one it is not, so the user must have accepted
-      // that condition for THIS document path first (modal in the panel UI;
-      // the client retries after POSTing /save-consent).
-      if (
-        session.documentPath &&
-        !(await isVersionControlled(session.documentPath)) &&
-        !session.saveConsent.has(session.documentPath)
-      ) {
-        res.status(409).json({
-          error: 'This document is not under version control. Accept that the assistant saves changes to the file before sending a message.',
-          code: 'save-consent-required',
-          documentPath: session.documentPath,
-        });
-        return;
-      }
-      // Read path per architecture: save the buffer first so the outline
-      // and body parsed from disk match the live document. Only for saved
-      // buffers — buffer-write on an untitled buffer opens a Save As dialog.
-      if (session.documentPath) await saveDocument(session);
-      // Audit B4: the clipboard is both write channel and verification
-      // channel — every choreography clobbers the user's clipboard. Save
-      // the pre-run TEXT flavor (non-text flavors cannot be preserved by
-      // the adapter) and restore it when the run ends.
-      const savedClipboardText = await session.clipboard.readText().catch(() => '');
-      restoreClipboardText = async () => {
-        await session.clipboard.writeText(savedClipboardText).catch(() => {
-          /* restoration is best-effort; never break the stream */
-        });
-      };
-      const contextText = await buildContextBlock(session);
-      const selection = await readSelection(session);
-      // SSE frames keep the session's activity clock fresh (idle GC, B2).
-      const rawSend = startSse(res);
-      const send: Send = (obj) => {
-        session.lastActive = Date.now();
-        rawSend(obj);
-      };
-      session.cancelRequested = false;
-
-      // Attachments are consumed by this message (chat-app semantics).
-      const attachments = session.attachments;
-      session.attachments = [];
-
-      const historyPrefix = buildHistoryPrefix(session, conversationKey(session));
-      const initialPrompt = buildAutoPrompt(contextText, selection, message, attachments, historyPrefix);
-      // The replayed (pre-restart) turns are in this prompt now, so the
-      // agent knows them; only turns recorded from here on are new to it.
-      // Without clearing, a second message after a restart would replay
-      // the same history again.
-      if (historyPrefix) {
-        session.historyHandoff.delete(conversationKey(session));
-      }
-
-      const completed: string[] = [];
-      let step = 0;
-      let stoppedReason: 'done' | 'none' | 'cancelled' | 'error' | 'limit' = 'done';
-
-      while (step < MAX_ACTIONS_PER_MESSAGE) {
-        step += 1;
-        if (session.cancelRequested) {
-          send({ cancelled: true });
-          stoppedReason = 'cancelled';
-          break;
-        }
-        // The first step uses the normal prompt; continuations get fresh
-        // document context because paragraph addresses shift after edits.
-        let prompt: string;
-        let stepSelection = selection;
-        if (step === 1) {
-          prompt = initialPrompt;
-        } else {
-          await refreshActiveDocument(session);
-          if (session.documentPath) await saveDocument(session);
-          const freshContext = await buildContextBlock(session);
-          stepSelection = await readSelection(session);
-          prompt = buildContinuationPrompt(freshContext, stepSelection, message, completed);
-        }
-        const { outcome, result } = await promptAndApply(prompt, step, stepSelection, send, message);
-        turnRecorded = true;
-
-        if (result.cancelled) {
-          stoppedReason = 'cancelled';
-          break;
-        }
-        if (result.error) {
-          stoppedReason = 'error';
-          break;
-        }
-        if (outcome.action === 'none' || outcome.action === 'continue') {
-          stoppedReason = 'none';
-          break;
-        }
-        // A document edit landed: record what was done and continue.
-        completed.push(describeAction(outcome));
-        send({ appliedStep: result.appliedCount, action: outcome.action, target: result.appliedTarget, target2: result.appliedTarget2 });
-      }
-
-      if (step >= MAX_ACTIONS_PER_MESSAGE && stoppedReason === 'done') {
-        stoppedReason = 'limit';
-        send({ text: `\nStopped after ${MAX_ACTIONS_PER_MESSAGE} document edits (safety limit). Send "continue" to apply more edits.` });
-      }
-      send({ stopped: stoppedReason, appliedCount: completed.length });
-      send({ done: true });
-      // History writes are debounced in the shared store; flush before the
-      // stream closes so a completed run is always on disk when the UI
-      // sees `done`.
-      await storeFor(session).flush().catch(() => { /* never break the stream */ });
-      await restoreClipboardText();
-      res.end();
-    } catch (err) {
-      const message2 = err instanceof Error ? err.message : String(err);
-      logError('[api] message/stream', err);
-      if (!res.headersSent) {
-        res.status(err instanceof LyxPipeError ? 503 : 500).json({ error: message2 });
-      } else {
-        sseFail(res, err);
-      }
-      // Persist the failure on the recorded turn so it survives a restart.
-      if (turnRecorded) {
-        await recordTurnMeta(session, {
-          action: lastAction, target: lastTarget, target2: lastTarget2,
-          result: lastAction === 'none' ? 'applied' : 'error',
-          error: message2,
-        }).catch(() => { /* logging must never break the request path */ });
-        await storeFor(session).flush().catch(() => { /* logging must never break the request path */ });
-        await restoreClipboardText().catch(() => { /* best-effort */ });
-      }
-    }
-  });
-
-  // --- undo ------------------------------------------------------------
-
-  app.post(
-    '/api/session/:id/undo',
-    wrap(async (req, res) => {
-      const session = getSession(req.params['id']);
-      await refreshActiveDocument(session);
-      await session.lyx.undo();
-      res.json({ ok: true });
-    }),
-  );
+/**
+ * The LyX backend: pipe + clipboard + verified paste choreographies
+ * behind the core contract. The helper functions below are the
+ * pre-B2-lift server's helpers, operating on the core session whose
+ * `state` carries this app's per-session data.
+ */
+function createLyxBackend(
+  options: ServerOptions & {
+    agentFactory?: (settings: AgentSettings) => AgentRunner;
+    lyxFactory?: () => LyxServerClient;
+  },
+): CompanionBackend<LyxState, ActionOutcome> {
 
   // --- helpers -----------------------------------------------------------
 
-  function param(id: string | string[] | undefined): string {
-    return Array.isArray(id) ? (id[0] ?? '') : (id ?? '');
-  }
 
-  function getSession(id: string | string[] | undefined): Session {
-    const session = sessions.get(param(id));
-    if (!session) throw new Error('Unknown session');
-    return session;
-  }
 
   /** Re-read the active document path from LyX and track it. */
-  async function refreshActiveDocument(session: Session): Promise<string | null> {
-    const path = await session.lyx.getFilename();
-    session.documentPath = path;
+  async function refreshActiveDocument(session: CompanionSession<LyxState>): Promise<string | null> {
+    const path = await session.state.lyx.getFilename();
+    session.state.documentPath = path;
     if (path) {
       session.knownDocuments.add(path);
-      await ensureConversation(session, path);
+      await session.ensureConversation( path);
     } else {
-      await ensureConversation(session, UNSAVED_KEY);
+      await session.ensureConversation( UNSAVED_KEY);
     }
     return path;
   }
 
-  function conversationKey(session: Session): string {
-    return session.documentPath ?? UNSAVED_KEY;
+  function conversationKey(session: CompanionSession<LyxState>): string {
+    return session.state.documentPath ?? UNSAVED_KEY;
   }
 
   /**
@@ -893,99 +259,26 @@ export function createServer(options: ServerOptions & {
    * (sessionInfo) never observe a half-loaded turn list — the
    * fire-and-forget version raced and returned empty history.
    */
-  const storeBySession = new WeakMap<Session, ConversationStore>();
-  function storeFor(session: Session): ConversationStore {
-    let store = storeBySession.get(session);
-    if (!store) {
-      store = createConversationStore({
-        historyDir: options.historyDir,
-        logError,
-        conversations: session.conversations,
-        historyHandoff: session.historyHandoff,
-        keyOf: () => session.documentPath ?? UNSAVED_KEY,
-        replayOptions: LYX_REPLAY_OPTIONS,
-      });
-      storeBySession.set(session, store);
-    }
-    return store;
-  }
 
-  async function ensureConversation(session: Session, key: string): Promise<Turn[]> {
-    return storeFor(session).ensure(key);
-  }
 
-  /**
-   * Render the turns the agent has not seen (pre-restart history) as a
-   * compact context block. Empty string when the agent already knows the
-   * whole conversation.
-   */
-  function buildHistoryPrefix(session: Session, key: string): string {
-    return storeFor(session).buildHistoryPrefix(key);
-  }
 
-  async function recordTurn(session: Session, user: string, assistant: string) {
-    return storeFor(session).recordTurn(user, assistant);
-  }
 
-  /**
-   * Record one step of a multi-action run WITHOUT a matching user turn: the
-   * user asked once, the app applied several edits to the document. UI and
-   * history see each outcome, but the conversation log keeps the original
-   * request as the user turn.
-   */
-  async function recordActionStep(session: Session, assistant: string, step: number) {
-    return storeFor(session).recordActionStep(assistant, step);
-  }
 
-  /**
-   * Record the outcome of the action the assistant proposed in the LAST
-   * turn of the conversation (the one just recorded by recordTurn), so a
-   * failed or successful document action survives an app restart and is
-   * visible when the history is reloaded.
-   */
-  async function recordTurnMeta(session: Session, meta: TurnMeta): Promise<void> {
-    return storeFor(session).recordTurnMeta(meta);
-  }
 
-  /**
-   * GET response body. By default the expensive parts are skipped: the
-   * panel's refresh chain calls this on every post-send / focus /
-   * keystroke burst and never displays the outline. `outline: true`
-   * (session creation, `?outline=1`) reads and parses the document.
-   */
-  async function sessionInfo(session: Session, opts: { outline?: boolean } = {}) {
-    const docPath = await refreshActiveDocument(session);
-    let outline = '';
-    let layout = '';
-    try {
-      layout = await session.lyx.getLayout();
-      if (opts.outline) {
-        const ctx = await readDocumentContext(session);
-        outline = renderOutline(ctx.outline);
-      }
-    } catch {
-      /* document may be unsaved; outline unavailable */
-    }
-    return {
-      sessionId: session.id,
-      documentPath: docPath,
-      documents: [...session.knownDocuments],
-      versionControlled: docPath ? await isVersionControlled(docPath) : null,
-      layout,
-      outline,
-      lyxMode: session.lyx.mode,
-      conversation: session.conversations.get(conversationKey(session)) ?? [],
-    };
-  }
+
+
+
+
+
 
   /**
    * Save the buffer AND invalidate the document snapshot: the file is
    * about to change on disk, and filesystem timestamps can be too coarse
    * (same-tick writes) to detect rapid successive saves via mtime alone.
    */
-  async function saveDocument(session: Session): Promise<void> {
-    session.docSnapshot = null;
-    await session.lyx.save();
+  async function saveDocument(session: CompanionSession<LyxState>): Promise<void> {
+    session.state.docSnapshot = null;
+    await session.state.lyx.save();
   }
 
   /**
@@ -995,8 +288,8 @@ export function createServer(options: ServerOptions & {
    * saveDocument); mtime covers external changes. stat() is cheap; the
    * full read + parse is what we avoid repeating 3-4 times per step.
    */
-  async function readDocumentSnapshot(session: Session): Promise<DocumentSnapshot> {
-    const filePath = session.documentPath;
+  async function readDocumentSnapshot(session: CompanionSession<LyxState>): Promise<DocumentSnapshot> {
+    const filePath = session.state.documentPath;
     if (!filePath) throw new Error('Document is not saved on disk.');
     let mtimeMs: number;
     try {
@@ -1004,7 +297,7 @@ export function createServer(options: ServerOptions & {
     } catch {
       throw new Error(`Cannot read ${filePath}`);
     }
-    const cached = session.docSnapshot;
+    const cached = session.state.docSnapshot;
     if (cached && cached.path === filePath && cached.mtimeMs === mtimeMs) {
       return cached;
     }
@@ -1015,15 +308,15 @@ export function createServer(options: ServerOptions & {
       raw,
       ctx: buildDocumentContext(raw),
     };
-    session.docSnapshot = snapshot;
+    session.state.docSnapshot = snapshot;
     return snapshot;
   }
 
-  async function readDocumentContext(session: Session) {
+  async function readDocumentContext(session: CompanionSession<LyxState>) {
     return (await readDocumentSnapshot(session)).ctx;
   }
 
-  async function currentHeader(session: Session): Promise<string | null> {
+  async function currentHeader(session: CompanionSession<LyxState>): Promise<string | null> {
     try {
       // Reuses the session's document snapshot (see readDocumentSnapshot).
       const ctx = await readDocumentContext(session);
@@ -1033,16 +326,16 @@ export function createServer(options: ServerOptions & {
     }
   }
 
-  async function buildContextBlock(session: Session): Promise<string> {
+  async function buildContextBlock(session: CompanionSession<LyxState>): Promise<string> {
     try {
       const [ctx, layout] = await Promise.all([
         readDocumentContext(session),
-        session.lyx.getLayout(),
+        session.state.lyx.getLayout(),
       ]);
       const head =
         `Document context\n` +
         `================\n` +
-        `File: ${session.documentPath}\n` +
+        `File: ${session.state.documentPath}\n` +
         `Text class: ${ctx.textclass ?? 'unknown'}\n` +
         `LyX format: ${ctx.formatVersion ?? 'unknown'}\n` +
         `Cursor paragraph layout: ${layout || 'unknown'}\n\n` +
@@ -1065,44 +358,44 @@ export function createServer(options: ServerOptions & {
         contextText +
         `The document is LARGE (${ctx.body.length} chars), so only the outline above is\n` +
         `attached. To see the exact text of any paragraph, read or search the saved\n` +
-        `file "${session.documentPath}" with your file tools — it is the exact live\n` +
+        `file "${session.state.documentPath}" with your file tools — it is the exact live\n` +
         `document, and it was saved moments ago. The [pN] ids correspond to the\n` +
         `\\begin_layout blocks of the body in document order (inset inner layouts count\n` +
         `too), so you can locate paragraph [pN] by counting \\begin_layout occurrences.\n`
       );
     } catch (e) {
       return (
-        `Document context\n================\nFile: ${session.documentPath ?? UNSAVED_KEY}\n` +
+        `Document context\n================\nFile: ${session.state.documentPath ?? UNSAVED_KEY}\n` +
         `No .lyx file context available (document unsaved?): ${(e as Error).message}\n`
       );
     }
   }
 
-  async function readSelection(session: Session) {
-    const stats = await session.lyx.getSelectionStats();
+  async function readSelectionFor(session: CompanionSession<LyxState>) {
+    const stats = await session.state.lyx.getSelectionStats();
     let hasSelection = stats[0] > 0;
     let lyxBody: string | null = null;
     let text: string | null = null;
     let layout: string | null = null;
     if (hasSelection) {
-      const copied = await session.lyx.copySelection();
+      const copied = await session.state.lyx.copySelection();
       if (copied) {
         // Wait until the x-lyx payload lands on the clipboard (the copy
         // LFUN is dispatched asynchronously in LyX's event loop).
-        const doc = await pollUntil(() => session.clipboard.readLyxDocument(), {
+        const doc = await pollUntil(() => session.state.clipboard.readLyxDocument(), {
           timeoutMs: TIMINGS.clipboardPayloadPollMs,
           intervalMs: TIMINGS.pollIntervalMs,
         });
         if (doc) {
           lyxBody = extractBodyLayouts(doc) ?? doc;
-          text = await session.clipboard.readText();
+          text = await session.state.clipboard.readText();
         }
       } else {
         // Stats claimed a selection but LyX refused to copy (stale/weird
         // state); report no selection instead of trusting a stale clipboard.
         hasSelection = false;
       }
-      layout = await session.lyx.tryRequest('server-get-layout');
+      layout = await session.state.lyx.tryRequest('server-get-layout');
     }
     return { hasSelection, stats, lyxBody, text, layout };
   }
@@ -1119,7 +412,7 @@ export function createServer(options: ServerOptions & {
    *   lands in it with its own layout (never merges into [pN]).
    */
   async function gotoParagraph(
-    session: Session,
+    session: CompanionSession<LyxState>,
     target: number | null,
     mode: 'rewrite' | 'insert-after',
   ): Promise<{ target: number | null; error: string | null; payload: string | null }> {
@@ -1133,7 +426,7 @@ export function createServer(options: ServerOptions & {
     const fail = async (error: string): Promise<{ target: number | null; error: string; payload: null }> => {
       // Our paragraph-select may have selected the wrong paragraph; a
       // selection persists in LyX and would pollute later commands.
-      await session.lyx.clearSelection();
+      await session.state.lyx.clearSelection();
       return { target, error, payload: null };
     };
     let ctx;
@@ -1151,27 +444,27 @@ export function createServer(options: ServerOptions & {
     if (!entry) {
       return fail(`Paragraph [p${target}] does not exist (document has ${ctx.outline.length}).`);
     }
-    const moved = await session.lyx.beginOfDocument();
+    const moved = await session.state.lyx.beginOfDocument();
     if (!moved) return fail('buffer-begin failed.');
     let ok = true;
-    for (let i = 1; i < target && ok; i++) ok = await session.lyx.paragraphDown();
+    for (let i = 1; i < target && ok; i++) ok = await session.state.lyx.paragraphDown();
     if (!ok) {
       return fail(`Could not reach paragraph [p${target}] (paragraph-down failed).`);
     }
-    const selected = await session.lyx.paragraphSelect();
+    const selected = await session.state.lyx.paragraphSelect();
     if (!selected) return fail('paragraph-select failed.');
     // Verify the target against the SAVED file: copy the selection and
     // compare its raw .lyx markup with the file's paragraph (see
     // verifyParagraphSelection — a mis-targeted paste never happens).
-    const copied = await session.lyx.copySelection();
+    const copied = await session.state.lyx.copySelection();
     if (!copied) {
       return fail('Could not copy the selected paragraph for verification.');
     }
-    const payload = await pollUntil(() => session.clipboard.readLyxDocument(), {
+    const payload = await pollUntil(() => session.state.clipboard.readLyxDocument(), {
       timeoutMs: TIMINGS.clipboardPayloadPollMs,
       intervalMs: TIMINGS.pollIntervalMs,
     });
-    const clipboardText = payload === null ? await session.clipboard.readText() : null;
+    const clipboardText = payload === null ? await session.state.clipboard.readText() : null;
     const verify = verifyParagraphSelection({
       payload,
       clipboardText,
@@ -1190,11 +483,11 @@ export function createServer(options: ServerOptions & {
       // Collapse the selection to the end of [pN] and break a fresh empty
       // paragraph below it; the paste then merges into that empty
       // paragraph and keeps its own layout.
-      const collapsed = await session.lyx.collapseSelectionForward();
+      const collapsed = await session.state.lyx.collapseSelectionForward();
       if (!collapsed) {
         return fail(`Could not move the cursor to the end of [p${target}].`);
       }
-      const broke = await session.lyx.breakParagraph();
+      const broke = await session.state.lyx.breakParagraph();
       if (!broke) {
         return fail(`Could not create a new paragraph below [p${target}].`);
       }
@@ -1211,7 +504,7 @@ export function createServer(options: ServerOptions & {
    * paragraph keeps [pN]'s layout; one undo reverts the merge.
    */
   async function mergeParagraph(
-    session: Session,
+    session: CompanionSession<LyxState>,
     n: number | null,
     m: number | null,
   ): Promise<{ target2: number | null; error: string | null }> {
@@ -1241,11 +534,11 @@ export function createServer(options: ServerOptions & {
     }
     const gotoResult = await gotoParagraph(session, n, 'rewrite');
     if (gotoResult.error) return fail(gotoResult.error);
-    const collapsed = await session.lyx.collapseSelectionForward();
+    const collapsed = await session.state.lyx.collapseSelectionForward();
     if (!collapsed) {
       return fail(`Could not move the cursor to the end of paragraph [p${n}].`);
     }
-    const merged = await session.lyx.mergeWithNextParagraph();
+    const merged = await session.state.lyx.mergeWithNextParagraph();
     if (!merged) {
       return fail(`LyX could not merge paragraph [p${n}] with [p${m}].`);
     }
@@ -1266,7 +559,7 @@ export function createServer(options: ServerOptions & {
    *    choreographies keep its layout).
    */
   async function moveParagraph(
-    session: Session,
+    session: CompanionSession<LyxState>,
     from: number | null,
     to: number | null,
   ): Promise<{ target2: number | null; error: string | null }> {
@@ -1301,20 +594,20 @@ export function createServer(options: ServerOptions & {
     //    the clipboard (gotoParagraph captured the payload).
     const gotoResult = await gotoParagraph(session, from, 'rewrite');
     if (gotoResult.error) return fail(gotoResult.error);
-    const copied = gotoResult.payload ?? (await session.clipboard.readLyxDocument());
+    const copied = gotoResult.payload ?? (await session.state.clipboard.readLyxDocument());
     const body = copied ? extractBodyLayouts(copied) : null;
     if (!body) {
-      await session.lyx.clearSelection();
+      await session.state.lyx.clearSelection();
       return fail(`Could not read paragraph [p${from}] from the clipboard; nothing was moved.`);
     }
 
     // 2. Delete [pN].
-    const deleted = await session.lyx.deleteSelection();
+    const deleted = await session.state.lyx.deleteSelection();
     if (!deleted) {
-      await session.lyx.clearSelection();
+      await session.state.lyx.clearSelection();
       return fail(`LyX could not delete paragraph [p${from}]; nothing was moved.`);
     }
-    await session.lyx.mergeAwayParagraph();
+    await session.state.lyx.mergeAwayParagraph();
 
     // 3. Keep the file on disk in sync (see the doc comment).
     await saveDocument(session);
@@ -1322,11 +615,11 @@ export function createServer(options: ServerOptions & {
     // 4. Position at the adjusted destination, then paste.
     const dest = to === 0 ? 0 : to < from ? to : to - 1;
     if (dest === 0) {
-      const moved = await session.lyx.beginOfDocument();
+      const moved = await session.state.lyx.beginOfDocument();
       if (!moved) return fail('Could not move the cursor to the start of the document (buffer-begin failed).');
       // buffer-begin lands INSIDE the first paragraph; break first so the
       // paste lands in a fresh empty paragraph and keeps its layout.
-      const broke = await session.lyx.breakParagraph();
+      const broke = await session.state.lyx.breakParagraph();
       if (!broke) return fail('Could not create a paragraph at the top of the document.');
     } else {
       const gotoDest = await gotoParagraph(session, dest, 'insert-after');
@@ -1337,7 +630,7 @@ export function createServer(options: ServerOptions & {
     }
     const header = (await currentHeader(session)) ?? FALLBACK_HEADER;
     const doc = assemblePasteDocument(header, body);
-    const written = await session.clipboard.writeLyxDocumentVerified(doc, body);
+    const written = await session.state.clipboard.writeLyxDocumentVerified(doc, body);
     if (!written) {
       return fail(
         'The .lyx payload could not be written to the clipboard; the paragraph ' +
@@ -1346,10 +639,362 @@ export function createServer(options: ServerOptions & {
     }
     // The clipboard write above is verified by read-back, so the payload is
     // already globally visible — no settle wait is needed before the paste.
-    await session.lyx.paste();
+    await session.state.lyx.paste();
     return { target2: to, error: null };
   }
-  return app;
+
+  return {
+    acp: { appName: 'lyx-acp-assist', writerName: 'LyX' },
+    mapStatus: (err) => (err instanceof LyxPipeError ? 503 : 500),
+    promptTimeoutMs: TIMINGS.promptTimeoutMs,
+    replayOptions: LYX_REPLAY_OPTIONS,
+
+    async createSessionState({ knownDocuments }) {
+      // Tests may inject a fake LyX pipe client so the whole multi-action
+      // loop can be exercised without live processes. The write-only
+      // fallback's filename resolution sees the session's known-documents
+      // set grow over its lifetime (same set instance).
+      const lyx = options.lyxFactory
+        ? options.lyxFactory()
+        : new LyxServerClient({
+            fallbacks: createWriteOnlyFallbacks(options.clipboard, () => knownDocuments),
+          });
+      await lyx.start();
+      if (lyx.mode === 'write-only') {
+        console.warn(
+          'LyXServer pipe is deaf (LyX resets every .out connection; see ' +
+            'AGENTS.md "Live-test debugging trail"). Running in write-only ' +
+            'fallback mode: commands work, replies are substituted from ' +
+            'the window title, session file, and clipboard.',
+        );
+      }
+      return {
+        lyx,
+        clipboard: new LyxClipboard(options.clipboard),
+        documentPath: null,
+        docSnapshot: null,
+        saveConsent: new Set(),
+        restoreClipboard: async () => {},
+      };
+    },
+
+    teardownSession(state) {
+      state.lyx.stop();
+    },
+
+    conversationKey(session) {
+      return session.state.documentPath ?? UNSAVED_KEY;
+    },
+
+    async statusSummary() {
+      const probe = new LyxServerClient();
+      return { lyxPipeAvailable: probe.isAvailable() };
+    },
+
+    async documents(session) {
+      const active = await refreshActiveDocument(session);
+      return {
+        active,
+        versionControlled: active ? await isVersionControlled(active) : null,
+        documents: [...session.knownDocuments],
+      };
+    },
+
+    /**
+     * Switch LyX's active tab/window to the given document (it must be
+     * already open). The pipe has no "list buffers" LFUN, so switching is
+     * done via file-open, which activates an already-open buffer.
+     */
+    async switchDocument(session, target) {
+      await session.state.lyx.request('file-open', target);
+      // Wait until LyX actually switched (bounded poll instead of a fixed
+      // sleep); on timeout we fall through and report whatever is active.
+      await pollUntil(async () => (await session.state.lyx.getFilename()) === target, {
+        timeoutMs: TIMINGS.documentSwitchPollMs,
+        intervalMs: 50,
+      });
+      const active = await refreshActiveDocument(session);
+      return {
+        active,
+        versionControlled: active ? await isVersionControlled(active) : null,
+        documents: [...session.knownDocuments],
+      };
+    },
+
+    async selection(session) {
+      return await readSelectionFor(session);
+    },
+
+    async undo(session) {
+      await refreshActiveDocument(session);
+      await session.state.lyx.undo();
+      return { ok: true };
+    },
+
+    async sessionInfo(session, opts) {
+      const docPath = await refreshActiveDocument(session);
+      let outline = '';
+      let layout = '';
+      try {
+        layout = await session.state.lyx.getLayout();
+        if (opts.outline) {
+          const ctx = await readDocumentContext(session);
+          outline = renderOutline(ctx.outline);
+        }
+      } catch {
+        /* document may be unsaved; outline unavailable */
+      }
+      return {
+        sessionId: session.id,
+        documentPath: docPath,
+        documents: [...session.knownDocuments],
+        versionControlled: docPath ? await isVersionControlled(docPath) : null,
+        layout,
+        outline,
+        lyxMode: session.state.lyx.mode,
+        conversation: session.conversations.get(session.state.documentPath ?? UNSAVED_KEY) ?? [],
+      };
+    },
+
+    async readStep(session, step): Promise<ReadStepResult<LyxStepData>> {
+      await refreshActiveDocument(session);
+      if (step === 1) {
+        // Save-consent gate: the save below overwrites the file on disk
+        // with the assistant's edits. In a VCS working tree the previous
+        // state is recoverable; outside one it is not, so the user must
+        // have accepted that condition for THIS document path first
+        // (modal in the panel UI; the client retries after POSTing
+        // /save-consent).
+        const docPath = session.state.documentPath;
+        if (
+          docPath &&
+          !(await isVersionControlled(docPath)) &&
+          !session.state.saveConsent.has(docPath)
+        ) {
+          return {
+            blocked: {
+              status: 409,
+              body: {
+                error: 'This document is not under version control. Accept that the assistant saves changes to the file before sending a message.',
+                code: 'save-consent-required',
+                documentPath: docPath,
+              },
+            },
+          };
+        }
+        // Read path per architecture: save the buffer first so the outline
+        // and body parsed from disk match the live document. Only for saved
+        // buffers — buffer-write on an untitled buffer opens a Save As
+        // dialog.
+        if (session.state.documentPath) await saveDocument(session);
+        // Audit B4: the clipboard is both write channel and verification
+        // channel — every choreography clobbers the user's clipboard. Save
+        // the pre-run TEXT flavor (non-text flavors cannot be preserved by
+        // the adapter) and restore it when the run ends (see afterRun).
+        const savedClipboardText = await session.state.clipboard.readText().catch(() => '');
+        session.state.restoreClipboard = async () => {
+          await session.state.clipboard.writeText(savedClipboardText).catch(() => {
+            /* restoration is best-effort; never break the stream */
+          });
+        };
+      } else {
+        if (session.state.documentPath) await saveDocument(session);
+      }
+      const contextText = await buildContextBlock(session);
+      const selection = await readSelectionFor(session);
+      return { data: { contextText, selection } };
+    },
+
+    async buildAutoPrompt(_session, stepData, message, attachments, historyPrefix) {
+      const s = stepData as LyxStepData;
+      return buildAutoPrompt(s.contextText, s.selection, message, attachments, historyPrefix);
+    },
+
+    async buildContinuationPrompt(_session, stepData, originalMessage, completed) {
+      const s = stepData as LyxStepData;
+      return buildContinuationPrompt(s.contextText, s.selection, originalMessage, completed);
+    },
+
+    parseAction(_session, reply) {
+      return parseAction(reply);
+    },
+
+    /**
+     * The LyX-only VRP step: validate the ```lyx markup and, when it has
+     * problems, prompt the agent once with a corrective retry. Returns
+     * the reply to record and re-parse (the retried one when it ran).
+     */
+    async retryReply(session, outcome, reply, send, step) {
+      if (!session.cancelRequested && outcome.action !== 'none' && outcome.action !== 'continue' && outcome.body) {
+        const problems = findMarkupProblems(outcome.body);
+        if (problems.length > 0) {
+          const retry = buildMarkupRetryPrompt(outcome.action, problems);
+          return await session.agent.prompt(session.id, [{ type: 'text', text: retry }], {
+            onChunk: (chunk) => send({ text: `\n${chunk}`, ...(step > 1 ? { step } : {}) }),
+            onToolCall: (tool) => send({ tool }),
+            // Same budget as the main prompt (audit B8: this call had NO
+            // timeoutMs, so a stuck retry could hang the stream).
+            timeoutMs: TIMINGS.promptTimeoutMs,
+          });
+        }
+      }
+      return reply;
+    },
+
+    async applyAction(session, outcome, stepData, step): Promise<AppliedResult> {
+      const selection = (stepData as LyxStepData).selection;
+      const fail = (error: string): AppliedResult => ({ ok: false, error, description: '' });
+
+      if (outcome.action === 'delete-at') {
+        // Delete needs no ```lyx block: walk, verify, select, delete the
+        // text, then merge the leftover empty paragraph away.
+        const gotoResult = await gotoParagraph(session, outcome.target, 'rewrite');
+        if (gotoResult.error) return fail(gotoResult.error);
+        const deleted = await session.state.lyx.deleteSelection();
+        if (!deleted) {
+          return fail(`LyX could not delete paragraph [p${outcome.target}].`);
+        }
+        await session.state.lyx.mergeAwayParagraph();
+        return {
+          ok: true,
+          description: describeAction(outcome),
+          target: outcome.target,
+          target2: outcome.target2,
+        };
+      }
+      if (outcome.action === 'merge') {
+        // Merge needs no ```lyx block: walk + verify + collapse to the end
+        // of [pN], then delete-forward merges [p(N+1)] into it.
+        const result = await mergeParagraph(session, outcome.target, outcome.target2);
+        if (result.error) return fail(result.error);
+        return {
+          ok: true,
+          description: describeAction(outcome),
+          target: outcome.target,
+          target2: outcome.target2,
+        };
+      }
+      if (outcome.action === 'move') {
+        // Move needs no ```lyx block: capture the paragraph via the
+        // clipboard, delete it, then re-paste at the adjusted destination.
+        const result = await moveParagraph(session, outcome.target, outcome.target2);
+        if (result.error) return fail(result.error);
+        return {
+          ok: true,
+          description: describeAction(outcome),
+          target: outcome.target,
+          target2: outcome.target2,
+        };
+      }
+
+      // A write action: position the cursor, then paste.
+      if (!outcome.body) {
+        return fail(`Agent chose [ACTION: ${outcome.action}] but returned no \`\`\`lyx block.`);
+      }
+      let positionError: string | null = null;
+      let target = outcome.target;
+      if (outcome.action === 'rewrite' && !selection.hasSelection) {
+        positionError = 'Agent chose [ACTION: rewrite] but LyX has no active selection.';
+      } else if (outcome.action === 'insert' && selection.hasSelection) {
+        // A selection is active: paste would REPLACE it. The agent chose
+        // plain insert, not rewrite — collapse the selection so the
+        // user's text survives and the paste lands at the cursor.
+        await session.state.lyx.collapseSelection();
+      } else if (outcome.action === 'insert-top') {
+        const moved = await session.state.lyx.beginOfDocument();
+        if (!moved) {
+          positionError = 'Could not move the cursor to the start of the document (buffer-begin failed).';
+        } else {
+          // buffer-begin lands INSIDE the first paragraph: a paste there
+          // would merge into it and drop the pasted layout. Break the
+          // paragraph first so the paste lands in a fresh empty paragraph.
+          await session.state.lyx.breakParagraph();
+        }
+      } else if (outcome.action === 'rewrite-at') {
+        const gotoResult = await gotoParagraph(session, outcome.target, 'rewrite');
+        target = gotoResult.target;
+        positionError = gotoResult.error;
+      } else if (outcome.action === 'insert-after') {
+        const gotoResult = await gotoParagraph(session, outcome.target, 'insert-after');
+        target = gotoResult.target;
+        positionError = gotoResult.error;
+      } else if (outcome.action === 'insert-before') {
+        // Insert-before pN = insert-after p(N-1), reusing the fully
+        // verified insert-after choreography (walk, verify, collapse,
+        // break a fresh paragraph). For p1 it degenerates to the
+        // insert-top choreography; the reported target stays pN.
+        if (outcome.target === 1) {
+          const moved = await session.state.lyx.beginOfDocument();
+          if (!moved) {
+            positionError = 'Could not move the cursor to the start of the document (buffer-begin failed).';
+          } else {
+            await session.state.lyx.breakParagraph();
+          }
+        } else {
+          const gotoResult = await gotoParagraph(session, (outcome.target ?? 0) - 1, 'insert-after');
+          positionError = gotoResult.error;
+        }
+      }
+      if (positionError) return fail(positionError);
+      const header = (await currentHeader(session)) ?? FALLBACK_HEADER;
+      const doc = assemblePasteDocument(header, outcome.body);
+      const written = await session.state.clipboard.writeLyxDocumentVerified(doc, outcome.body);
+      if (!written) {
+        return fail(
+          'The .lyx payload could not be written to the clipboard; ' +
+            'nothing was pasted. Please try again.',
+        );
+      }
+      await session.state.lyx.paste(); // replaces the active selection if any
+      return {
+        ok: true,
+        description: describeAction(outcome),
+        target,
+        target2: outcome.target2,
+      };
+    },
+
+    frame(_session, ctx) {
+      const stepField = ctx.step > 1 ? { step: ctx.step } : {};
+      switch (ctx.kind) {
+        case 'afterParse':
+          // Near-miss action tags (typos like "[AACTION:") are
+          // auto-corrected by the tolerant parser; tell the panel so the
+          // user sees it.
+          return ctx.outcome.tagNote ? { tagNote: ctx.outcome.tagNote, ...stepField } : null;
+        case 'none':
+          return { action: 'none', ...stepField };
+        case 'applied': {
+          const outcome = ctx.outcome;
+          return {
+            applied: outcome.action,
+            target: ctx.applied?.target ?? outcome.target ?? null,
+            ...(outcome.target2 !== null && outcome.target2 !== undefined
+              ? { target2: outcome.target2 }
+              : {}),
+            ...stepField,
+          };
+        }
+        case 'appliedStep':
+          return {
+            appliedStep: ctx.step,
+            action: ctx.outcome.action,
+            target: ctx.applied?.target ?? ctx.outcome.target ?? null,
+            target2: ctx.applied?.target2 ?? ctx.outcome.target2 ?? null,
+          };
+      }
+    },
+
+    metaExtras(_session, outcome) {
+      return { target2: outcome.target2 };
+    },
+
+    async afterRun(session) {
+      // Audit B4: best-effort restore of the user's pre-run clipboard
+      // text; a no-op until readStep(1) saved something.
+      await session.state.restoreClipboard();
+    },
+  };
 }
 
 // --- agent action parsing / prompt building -------------------------------
@@ -1891,3 +1536,4 @@ const FALLBACK_HEADER = [
   '\\language american',
   '\\end_header',
 ].join('\n');
+
