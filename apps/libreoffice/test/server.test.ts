@@ -259,6 +259,41 @@ describe('server message loop (fake agent + fake bridge)', () => {
     await reader.cancel();
   });
 
+  it('closes the push channel when the session is torn down', async () => {
+    // DELETE (or the idle GC) must END the open SSE response: the panel's
+    // fetch-stream loop reconnects and discovers the session is gone,
+    // instead of dangling on a channel that will never deliver a frame.
+    const created = (await (
+      await fetch(`${baseUrl}/api/session`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: 'Bearer ' + API_TOKEN },
+        body: JSON.stringify({}),
+      })
+    ).json()) as { sessionId: string };
+    const channel = await fetch(`${baseUrl}/api/session/${created.sessionId}/events`, {
+      headers: { authorization: 'Bearer ' + API_TOKEN },
+    });
+    expect(channel.status).toBe(200);
+    const reader = channel.body!.getReader();
+    const decoder = new TextDecoder();
+    let sawConnected = false;
+    for (let i = 0; i < 10 && !sawConnected; i++) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (decoder.decode(value, { stream: true }).includes('"connected"')) sawConnected = true;
+    }
+    expect(sawConnected).toBe(true);
+
+    const del = await fetch(`${baseUrl}/api/session/${created.sessionId}`, {
+      method: 'DELETE',
+      headers: { authorization: 'Bearer ' + API_TOKEN },
+    });
+    expect(del.ok).toBe(true);
+    // The channel response ENDS once the session is torn down.
+    const { done } = await reader.read();
+    expect(done).toBe(true);
+  });
+
   it('recovers a stale bridge record without a manual reconnect (B3)', async () => {
     // The session pins a record that has gone dead (bridge restarted from
     // the LO sidebar: new port + token). Every call on it fails like a

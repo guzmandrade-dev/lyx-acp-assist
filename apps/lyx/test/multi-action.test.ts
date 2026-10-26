@@ -96,6 +96,22 @@ class FakeAgent implements AgentRunner {
 }
 
 /**
+ * An agent whose EVERY prompt fails — the step-1 failure case: no turn is
+ * recorded, but readStep(1) already saved the user's clipboard text.
+ */
+class FailingAgent implements AgentRunner {
+  prompts: string[] = [];
+  async start() {}
+  stop() {}
+  async createSession() {}
+  cancel() {}
+  async prompt(_sessionId: string, content: ContentBlock[]): Promise<string> {
+    this.prompts.push(content.map((block) => (block.type === 'text' ? block.text : '')).join('\n'));
+    throw new Error('agent connection lost');
+  }
+}
+
+/**
  * In-memory LyXServerClient stand-in. Only the LFUNs the message loop uses
  * are implemented; verification reads go through the raw clipboard stub.
  */
@@ -224,6 +240,9 @@ const rawClipboard: RawClipboard = {
   },
   async writeText(text) {
     (globalThis as { __clipText?: string }).__clipText = text;
+    // Observability for the B4 restore tests: count restore writes.
+    const g = globalThis as { __clipTextWrites?: number };
+    g.__clipTextWrites = (g.__clipTextWrites ?? 0) + 1;
   },
   async clear() {
     (globalThis as { __clipDoc?: string }).__clipDoc = '';
@@ -242,10 +261,11 @@ interface Harness {
 async function startHarness(
   replies: string[],
   lyxHooks: { onPaste?: () => Promise<void> } = {},
+  agentOverride?: AgentRunner,
 ): Promise<Harness> {
   const doc = await writeFakeDoc();
   const lyx = fakeLyx(doc, lyxHooks);
-  const agent = new FakeAgent(replies);
+  const agent = agentOverride ?? new FakeAgent(replies);
   const app = createServer({
     apiToken: API_TOKEN, panelConfig: PANEL_CONFIG,
     clipboard: rawClipboard,
@@ -306,6 +326,30 @@ describe('multi-action runs over the message stream', () => {
       body: JSON.stringify({ message: 'chat only' }),
     });
     await readSse(res);
+    expect((globalThis as { __clipText?: string }).__clipText).toBe('user copied this');
+  });
+
+  it('restores the user clipboard text when the agent fails before the first turn (B4)', async () => {
+    // Regression: readStep(1) saves the clipboard text BEFORE the first
+    // agent prompt. A step-1 agent failure records no turn; the restore
+    // must still run (it used to be gated on the recorded turn).
+    const harness = await startHarness([], {}, new FailingAgent());
+    cleanups.push(async () => {
+      await new Promise<void>((resolve) => harness.server.close(() => resolve()));
+      await fs.rm(harness.doc.dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    });
+    (globalThis as { __clipText?: string }).__clipText = 'user copied this';
+    (globalThis as { __clipTextWrites?: number }).__clipTextWrites = 0;
+    const res = await fetch(`${harness.base}/api/session/${harness.sessionId}/message/stream`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + API_TOKEN },
+      body: JSON.stringify({ message: 'chat only' }),
+    });
+    const frames = await readSse(res);
+    expect(frames.some((f) => typeof f.error === 'string' && f.error.includes('agent connection lost'))).toBe(true);
+    // The document was untouched and no choreography ran — the only
+    // clipboard write is the end-of-run restore.
+    expect((globalThis as { __clipTextWrites?: number }).__clipTextWrites).toBe(1);
     expect((globalThis as { __clipText?: string }).__clipText).toBe('user copied this');
   });
 

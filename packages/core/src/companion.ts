@@ -300,8 +300,17 @@ export function createCompanionServer<TState>(
   const sessions = new Map<string, CompanionSession<TState>>();
   /** Push-event watchers per session id (stopped on teardown). */
   const eventWatchers = new Map<string, () => void>();
-  /** Panel subscribers of the per-session push channel. */
-  const eventListeners = new Map<string, Set<(frame: unknown) => void>>();
+  /**
+   * Panel subscribers of the per-session push channel. `end` closes the
+   * SSE response so a torn-down session's panel reconnects and discovers
+   * the session is gone (an open channel would otherwise sit unread until
+   * the panel's next interaction).
+   */
+  interface EventSubscriber {
+    send: (frame: unknown) => void;
+    end: () => void;
+  }
+  const eventListeners = new Map<string, Set<EventSubscriber>>();
   const logError = createLogError(options.logDir);
   const wrap: WrapFn = createWrap({ logError, mapStatus: backend.mapStatus });
 
@@ -310,6 +319,15 @@ export function createCompanionServer<TState>(
     backend.teardownSession?.(session.state);
     eventWatchers.get(session.id)?.();
     eventWatchers.delete(session.id);
+    // Close the panel's push channels so their fetch-stream loops
+    // reconnect (and see the session is gone) instead of dangling open.
+    for (const sub of eventListeners.get(session.id) ?? []) {
+      try {
+        sub.end();
+      } catch {
+        /* a dead subscriber must not break the others */
+      }
+    }
     eventListeners.delete(session.id);
   }
 
@@ -401,15 +419,14 @@ export function createCompanionServer<TState>(
       // Server-push watcher (audit Track D: the LO bridge /events
       // long-poll). Frames go to the panel's /events SSE channel.
       if (backend.watchEvents) {
-        let watchers = eventWatchers;
-        watchers.set(
+        eventWatchers.set(
           id,
           backend.watchEvents(session, (frame) => {
             const listeners = eventListeners.get(id);
             if (!listeners) return;
-            for (const send of [...listeners]) {
+            for (const sub of [...listeners]) {
               try {
-                send(frame);
+                sub.send(frame);
               } catch {
                 /* a dead subscriber must not break the others */
               }
@@ -501,11 +518,12 @@ export function createCompanionServer<TState>(
       listeners = new Set();
       eventListeners.set(session.id, listeners);
     }
-    listeners.add(send);
+    const sub: EventSubscriber = { send, end: () => res.end() };
+    listeners.add(sub);
     session.lastActive = Date.now();
     send({ connected: true });
     req.on('close', () => {
-      listeners?.delete(send);
+      listeners?.delete(sub);
     });
   });
 
@@ -734,10 +752,15 @@ export function createCompanionServer<TState>(
         await storeFor(session).flush().catch(() => {
           /* logging must never break the request path */
         });
-        await backend.afterRun?.(session).catch(() => {
-          /* best-effort */
-        });
       }
+      // End-of-run hook even when the run failed before the first turn
+      // was recorded: the backend saved its pre-run state in readStep(1)
+      // BEFORE the first agent prompt (audit B4: the LyX clipboard text),
+      // so a step-1 agent failure must still restore it. afterRun is a
+      // no-op until the backend saved something.
+      await backend.afterRun?.(session).catch(() => {
+        /* best-effort */
+      });
     }
   });
 

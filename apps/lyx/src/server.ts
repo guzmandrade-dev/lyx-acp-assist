@@ -237,7 +237,7 @@ function createLyxBackend(
     session.state.documentPath = path;
     if (path) {
       session.knownDocuments.add(path);
-      await session.ensureConversation( path);
+      await session.ensureConversation(path);
     } else {
       await session.ensureConversation( UNSAVED_KEY);
     }
