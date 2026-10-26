@@ -836,3 +836,42 @@ composerRefreshSelection true, theme null = the Fresh Office palette).
 Also (Track D start): writer/calc/impress parsers now share core
 `createParseActionTag`; the attachment prompt block comes from core
 `buildAttachmentBlock`.
+
+## Track D mechanical dedup (2026-10-26)
+
+The audit's small Track D factories all live in `@acp-assist/core` now
+(commit `a494936`); this app consumes five of them:
+
+- `extractAttachmentText` (server.ts) is `createAttachmentExtractor({
+  extensions: [...], envVar: 'LO_MARKITDOWN' })` — the extension list
+  (includes odt/fodt) is regex-equivalent to the old TEXTUAL_FILE; the
+  env var is read per call, as before.
+- The route `wrap` is core `createWrap({ logError, mapStatus })`;
+  `BridgeError` maps to 503.
+- writer.ts / impress.ts share core `preview()` (modules/markdown.ts
+  re-exports it); impress pins its 100-char default at the call sites
+  (core's default is Writer's 120).
+- The three `buildActionInstructions` blocks assemble via core
+  `actionInstructions({ actions, contentFormat, undoMode, leadRules,
+  rules, rePrompt })` — the shared frame (header, none line, tag-last
+  rule, LIVE-document/undo rule, multi-edit rule) lives once in core.
+  Output was verified BYTE-IDENTICAL to the previous per-module prose.
+- Bridge-side: nothing (acpbridge.py untouched this round).
+
+Gates re-run in full: LO 76/76, LyX 146/146, core 20/20, panel 6/6,
+typechecks clean; bridge e2e **47/47** + mechanics **13/13** against
+live LibreOffice (fresh oxt install into the scratch profile, accept
+socket, bridge dispatched via bridge_ctl.py); live vibe-acp run through
+the standalone companion: a Writer insert-after applied through the
+refactored server (UNO-verified: p7 "Track D refactor verified live."),
+then Undo reverted it.
+
+NOTE (live run): after `client_validate.py` leaves docs open, the LAST
+activated document can steal back "active" between requests — always
+re-check `/status` (or documents/switch + verify) before driving an
+agent edit against a specific document.
+
+Remaining for Track D: the B2 lift itself (backend contract in core,
+LO createServer lifted with the backend injected, the LyX write path
+as an adapter, unified message/stream loop, LO session GC, /events
+consumption; root next-steps.md section 2 + 3 Track D).

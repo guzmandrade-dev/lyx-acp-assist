@@ -1075,3 +1075,30 @@ theme 'theme-lyx' (the Warm Parchment palette lives in the shared CSS as
 Also (Track D start): all four action-tag parsers now share core
 `createParseActionTag` (the B5 layering + captures); LyX's parseAction
 keeps only its vocabulary + outcome shaping.
+
+## Track D mechanical dedup (2026-10-26)
+
+The audit's small Track D factories all live in `@acp-assist/core` now
+(commit `a494936`); this app consumes three of them:
+
+- `extractAttachmentText` (server.ts) is `createAttachmentExtractor({
+  extensions: [...], envVar: 'LYX_MARKITDOWN' })` — the extension list
+  (includes tex/lyx/sty/cls) is regex-equivalent to the old TEXTUAL_FILE;
+  the env var is read per call, as before.
+- The route `wrap` is core `createWrap({ logError, mapStatus })`; LyX
+  maps `LyxPipeError` to 503.
+- `isVersionControlled` moved from `apps/lyx/src/vcs.ts` to core
+  (`vcs.ts`): the save-consent gate's VCS-ancestor detection is
+  app-agnostic; LO may gain save-consent later.
+
+Gates re-run in full: LyX 146/146, LO 76/76, core 20/20, panel 6/6,
+typechecks clean; LO bridge e2e 47/47 + mechanics 13/13 (fresh oxt,
+scratch profile, live LO) + a live vibe-acp run through the LO
+standalone (Writer insert-after applied, UNO-verified, Undo reverted).
+LyX live remains blocked by the upstream pipe bug — mocked suite only.
+
+Remaining for Track D: the B2 lift itself (backend contract in core,
+LO createServer lifted with the backend injected, the LyX write path
+as an adapter — do not regress the LyX choreographies — unified
+message/stream loop, LO session GC, /events consumption; root
+next-steps.md section 2 + 3 Track D).
