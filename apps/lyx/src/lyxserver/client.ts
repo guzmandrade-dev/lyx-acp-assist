@@ -116,6 +116,8 @@ export class LyxServerClient extends EventEmitter {
 
   private shuttingDown = false;
   private waiters = new Set<Waiter>();
+  /** Per-func request serialization (audit B11 — see request()). */
+  private requestQueue = new Map<string, Promise<unknown>>();
 
   private inFd: number | null = null;
   private helloPending = false;
@@ -306,6 +308,18 @@ export class LyxServerClient extends EventEmitter {
       // overridden wrappers below instead.
       return `INFO:${this.clientName}:${func}:`;
     }
+    // Audit B11: replies match by client:func ONLY (the wire protocol has
+    // no request id), so two overlapping same-func requests would
+    // cross-resolve — one reply would release the wrong waiter and the
+    // other would time out. Serialize per func; different funcs still
+    // overlap freely (their wait keys differ).
+    const tail = this.requestQueue.get(func) ?? Promise.resolve();
+    const run = tail.then(() => this.roundTrip(func, arg, timeoutMs));
+    this.requestQueue.set(func, run.catch(() => undefined));
+    return run;
+  }
+
+  private async roundTrip(func: string, arg: string, timeoutMs?: number): Promise<string> {
     const timeout = timeoutMs ?? this.timeoutMs;
     // Note: do NOT consume previously-unmatched replies here. The Windows
     // pipe broadcasts duplicates, and stale duplicates of earlier requests

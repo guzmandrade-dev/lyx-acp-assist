@@ -37,6 +37,19 @@ describe.skipIf(process.platform !== 'win32')('LyxServerClient against mock LyX'
     expect(await client.getLayout()).toBe('Standard');
   });
 
+  it('serializes overlapping same-func requests (B11)', async () => {
+    // Replies match by client:func only; without per-func serialization
+    // two overlapping same-func requests cross-resolve (one reply releases
+    // both waiters' race, the other times out).
+    const { client } = await startMock([{ layout: 'Standard', text: 'Hello mock' }]);
+    const [a, b] = await Promise.all([
+      client.request('server-get-filename', '', 2000),
+      client.request('server-get-filename', '', 2000),
+    ]);
+    expect(a).toContain('INFO:');
+    expect(b).toContain('INFO:');
+  });
+
   it('reports empty selection stats and tolerates a disabled copy', async () => {
     const { client } = await startMock([{ layout: 'Standard', text: 'Hello mock' }]);
     expect(await client.getSelectionStats()).toEqual([0, 0, 0]);
