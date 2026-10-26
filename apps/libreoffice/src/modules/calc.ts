@@ -10,24 +10,22 @@
  */
 
 import type { BridgeClient, BridgeDocument, CalcInfo, CalcSelection } from '../bridge/client.js';
-import { extractContentBlock, parseTsvBlock, ACTION_HEADER, actionTagNote, lastFencedMatch, lastNonEmptyLine } from './markdown.js';
+import { extractContentBlock, parseTsvBlock, actionTagNote, createParseActionTag } from './markdown.js';
 import type { ActionOutcome, AppliedAction, AgentAction, ModuleAdapter, SelectionInfo } from './types.js';
 
-/** Last-tag grammar: [ACTION: name] or [ACTION: name B2] (A1 anchor). The
- * header tolerates tag typos ("[AACTION:"), reported via tagNote. */
-const CALC_TAG = new RegExp(
-  `${ACTION_HEADER}\\s*(write-cells|insert-rows|insert-cols|rewrite|none|continue)(?:\\s+([A-Za-z]{1,4}[1-9][0-9]{0,6}))?\\s*\\]`,
-  'gi',
-);
+/** Grammar: [ACTION: name] or [ACTION: name B2] (A1 anchor). The header
+ * tolerates tag typos ("[AACTION:"), reported via tagNote; the B5 layered
+ * resolution lives in the core factory. */
+const parseTag = createParseActionTag({
+  actions: 'write-cells|insert-rows|insert-cols|rewrite|none|continue',
+  targetPattern: '(?:\\s+([A-Za-z]{1,4}[1-9][0-9]{0,6}))?',
+});
 
 /** Parse an agent reply against the Calc vocabulary. */
 export function parseCalcAction(reply: string): ActionOutcome {
-  // Audit B5: last non-empty line first; a tag inside a content fence
-  // still counts (live-observed); bare prose never does.
-  const tags = [...lastNonEmptyLine(reply).matchAll(CALC_TAG)];
-  const m = tags[tags.length - 1] ?? lastFencedMatch(reply, CALC_TAG) ?? undefined;
-  const action = ((m?.[1] ?? 'none').toLowerCase() as AgentAction);
-  const address = m?.[2] ? m[2].toUpperCase() : null;
+  const tag = parseTag(reply);
+  const action = tag.action as AgentAction;
+  const address = tag.target ? tag.target.toUpperCase() : null;
   const contentActions: AgentAction[] = ['write-cells', 'rewrite'];
   const needsContent = contentActions.includes(action);
   const rawBlock = needsContent ? extractContentBlock(reply, 'calc') : null;
@@ -37,7 +35,7 @@ export function parseCalcAction(reply: string): ActionOutcome {
     address,
     block: null,
     grid: needsContent && rawBlock !== null ? parseTsvBlock(rawBlock) : null,
-    tagNote: actionTagNote(m?.[0], `[ACTION: ${action}${address ? ` ${address}` : ''}]`),
+    tagNote: actionTagNote(tag.rawTag ?? undefined, `[ACTION: ${action}${address ? ` ${address}` : ''}]`),
   };
 }
 

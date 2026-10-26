@@ -35,13 +35,12 @@ import { isVersionControlled } from './vcs.js';
 import {
   AcpClient,
   UNSAVED_KEY,
-  ACTION_HEADER,
-  lastFencedMatch,
-  lastNonEmptyLine,
+  createParseActionTag,
   createAgentSettings,
   createConversationStore,
   createLogError,
   extractAttachmentText as coreExtractAttachmentText,
+  buildAttachmentBlock,
   formatHistoryReplay as coreFormatHistoryReplay,
   listKnownDocuments as coreListKnownDocuments,
   registerAttachmentRoutes,
@@ -1390,23 +1389,26 @@ interface ActionOutcome {
 /**
  * Extract the trailing [ACTION: ...] tag and the ```lyx block from a reply.
  * The header tolerates tag typos ("[AACTION:", doubled letters) and a
- * missing colon — tagNote reports the auto-correction.
+ * missing colon — tagNote reports the auto-correction. The regex itself
+ * is assembled by the core factory (see parseTag below).
  */
-const ACTION_TAG_RE = new RegExp(
-  `${ACTION_HEADER}\\s*(continue|merge|move|delete-at|rewrite-at|insert-before|insert-after|insert-top|rewrite|insert|none)(?:\\s+p(\\d+))?(?:\\s+(?:to\\s+)?p(\\d+))?\\s*\\]`,
-  'i',
-);
+
+/**
+ * Grammar: [ACTION: name pN (to )?pM] — the LyX vocabulary with two
+ * paragraph targets (move). The B5 layered resolution and capture
+ * extraction live in the core factory.
+ */
+const parseTag = createParseActionTag({
+  actions: 'continue|merge|move|delete-at|rewrite-at|insert-before|insert-after|insert-top|rewrite|insert|none',
+  targetPattern: '(?:\\s+p(\\d+))?',
+  target2Pattern: '(?:\\s+(?:to\\s+)?p(\\d+))?',
+});
 
 export function parseAction(reply: string): ActionOutcome {
-  // Audit B5: the reply's LAST non-empty line is the only authoritative
-  // tag position — a quoted example mid-reply must never win over a real
-  // trailing tag. Fallback (live-observed 2026-10-24): a tag left INSIDE
-  // the content fence still counts; bare prose never does.
-  const m =
-    lastNonEmptyLine(reply).match(ACTION_TAG_RE) ?? lastFencedMatch(reply, ACTION_TAG_RE);
-  const action = ((m?.[1] ?? 'none').toLowerCase() as AgentAction);
-  const target = m?.[2] ? Number.parseInt(m[2], 10) : null;
-  const target2 = m?.[3] ? Number.parseInt(m[3], 10) : null;
+  const tag = parseTag(reply);
+  const action = tag.action as AgentAction;
+  const target = tag.target !== null ? Number.parseInt(tag.target, 10) : null;
+  const target2 = tag.target2 !== null ? Number.parseInt(tag.target2, 10) : null;
   // `continue` is accepted for forward-compatibility but is not a document
   // edit: the server's multi-action loop drives continuations itself.
   const body = action === 'none' || action === 'continue' ? null : extractBodyLayouts(reply);
@@ -1414,8 +1416,8 @@ export function parseAction(reply: string): ActionOutcome {
     `[ACTION: ${action}${target !== null ? ` p${target}` : ''}${target2 !== null ? ` p${target2}` : ''}]`;
   // "move p3 to p5" is accepted grammar, not a typo: compare with the
   // optional "to" stripped so it is not reported as an auto-correction.
-  const rawTag = m?.[0]?.trim();
-  const tagNote = rawTag !== undefined && rawTag.replace(/\s+to\s+/i, ' ') !== canonical ? rawTag : null;
+  const tagNote =
+    tag.rawTag !== null && tag.rawTag.replace(/\s+to\s+/i, ' ') !== canonical ? tag.rawTag : null;
   return { action, body, target, target2, tagNote };
 }
 
@@ -1594,32 +1596,7 @@ export function buildAutoPrompt(
   }
   if (historyPrefix) parts.push(historyPrefix);
   parts.push('', 'User message:', message);
-  if (attachments.length > 0) {
-    parts.push(
-      '',
-      'Attached files (reference material the user attached for this ' +
-        'message; the ACTIVE document you may edit is only the one ' +
-        'described above — never write into the attachments):',
-    );
-    for (const att of attachments) {
-      parts.push('', `--- ${att.name} (stored at: ${att.path}) ---`);
-      if (att.text) {
-        parts.push(
-          '[Excerpt below may be TRUNCATED. If you cannot find something ' +
-            'in it, read or search the FULL stored file at the path above ' +
-            'with your file tools before concluding it is absent. When ' +
-            'searching, use short distinctive substrings — the user may ' +
-            'misspell or translate terms.]',
-        );
-        parts.push(att.text);
-      } else {
-        parts.push(
-          '[No text could be extracted on the app side. The file is at the ' +
-            'path above; read it yourself if you have file-reading tools.]',
-        );
-      }
-    }
-  }
+  parts.push(...buildAttachmentBlock(attachments));
   return parts.join('\n');
 }
 

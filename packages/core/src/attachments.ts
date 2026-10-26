@@ -8,6 +8,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import type { Attachment } from './types.js';
 
 export const ATTACHMENT_TEXT_LIMIT = 40_000;
 
@@ -91,4 +92,36 @@ function runCommand(command: string, timeoutMs: number): Promise<string> {
       else reject(new Error(`exit ${code}: ${err.slice(0, 200)}`));
     });
   });
+}
+/**
+ * Audit Track D: the attachment prompt section, character-identical in
+ * both apps' buildAutoPrompt — extracted here once.
+ */
+export function buildAttachmentBlock(attachments: Attachment[]): string[] {
+  if (attachments.length === 0) return [];
+  const parts: string[] = [
+    '',
+    'Attached files (reference material the user attached for this ' +
+      'message; the ACTIVE document you may edit is only the one ' +
+      'described above — never write into the attachments):',
+  ];
+  for (const att of attachments) {
+    parts.push('', `--- ${att.name} (stored at: ${att.path}) ---`);
+    if (att.text) {
+      parts.push(
+        '[Excerpt below may be TRUNCATED. If you cannot find something ' +
+          'in it, read or search the FULL stored file at the path above ' +
+          'with your file tools before concluding it is absent. When ' +
+          'searching, use short distinctive substrings — the user may ' +
+          'misspell or translate terms.]',
+      );
+      parts.push(att.text);
+    } else {
+      parts.push(
+        '[No text could be extracted on the app side. The file is at the ' +
+          'path above; read it yourself if you have file-reading tools.]',
+      );
+    }
+  }
+  return parts;
 }

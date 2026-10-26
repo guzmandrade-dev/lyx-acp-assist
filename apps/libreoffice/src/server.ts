@@ -31,7 +31,7 @@ import { calcAdapter, parseCalcAction } from './modules/calc.js';
 import { impressAdapter, parseImpressAction } from './modules/impress.js';
 import { genericAdapter } from './modules/generic.js';
 import type { ModuleAdapter, AgentAction, ActionOutcome, SelectionInfo } from './modules/types.js';
-import { extractContentBlock, parseContentBlock, ACTION_HEADER, actionTagNote, lastFencedMatch, lastNonEmptyLine } from './modules/markdown.js';
+import { extractContentBlock, parseContentBlock, actionTagNote, createParseActionTag } from './modules/markdown.js';
 import {
   AcpClient,
   UNSAVED_KEY,
@@ -39,6 +39,7 @@ import {
   createConversationStore,
   createLogError,
   extractAttachmentText as coreExtractAttachmentText,
+  buildAttachmentBlock,
   formatHistoryReplay as coreFormatHistoryReplay,
   listKnownDocuments,
   registerAttachmentRoutes,
@@ -757,22 +758,19 @@ export function createServer(options: ServerOptions & {
 
 // --- action parsing -----------------------------------------------------------
 
-/** Tag grammar: [ACTION: name] or [ACTION: name pN], with a ```writer block.
+/** Grammar: [ACTION: name] or [ACTION: name pN], with a ```writer block.
  * The header tolerates tag typos ("[AACTION:", doubled letters) and a
- * missing colon — tagNote reports the auto-correction. */
-const ACTION_TAG_RE = new RegExp(
-  `${ACTION_HEADER}\\s*(delete-at|rewrite-at|insert-after|insert-top|rewrite|insert|none|continue)(?:\\s+p(\\d+))?\\s*\\]`,
-  'gi',
-);
+ * missing colon — tagNote reports the auto-correction. The B5 layered
+ * resolution and capture extraction live in the core factory. */
+const parseTag = createParseActionTag({
+  actions: 'delete-at|rewrite-at|insert-after|insert-top|rewrite|insert|none|continue',
+  targetPattern: '(?:\\s+p(\\d+))?',
+});
 
 export function parseAction(reply: string): ActionOutcome {
-  // Audit B5: the reply's LAST non-empty line is the only authoritative
-  // tag position; fallback (live-observed 2026-10-24): a tag left INSIDE
-  // a content fence still counts; bare prose never does.
-  const tags = [...lastNonEmptyLine(reply).matchAll(ACTION_TAG_RE)];
-  const m = tags[tags.length - 1] ?? lastFencedMatch(reply, ACTION_TAG_RE) ?? undefined;
-  const action = ((m?.[1] ?? 'none').toLowerCase() as AgentAction);
-  const target = m?.[2] ? Number.parseInt(m[2], 10) : null;
+  const tag = parseTag(reply);
+  const action = tag.action as AgentAction;
+  const target = tag.target !== null ? Number.parseInt(tag.target, 10) : null;
   const contentActions: AgentAction[] = ['insert', 'insert-top', 'insert-after', 'rewrite', 'rewrite-at'];
   const needsContent = contentActions.includes(action);
   const rawBlock = needsContent ? extractContentBlock(reply) : null;
@@ -782,7 +780,7 @@ export function parseAction(reply: string): ActionOutcome {
     address: null,
     block: needsContent ? (rawBlock !== null ? parseContentBlock(rawBlock) : null) : null,
     grid: null,
-    tagNote: actionTagNote(m?.[0], `[ACTION: ${action}${target !== null ? ` p${target}` : ''}]`),
+    tagNote: actionTagNote(tag.rawTag ?? undefined, `[ACTION: ${action}${target !== null ? ` p${target}` : ''}]`),
   };
 }
 
@@ -838,32 +836,7 @@ export function buildAutoPrompt(
   if (selBlock) parts.push(selBlock);
   if (historyPrefix) parts.push(historyPrefix);
   parts.push('', 'User message:', message);
-  if (attachments.length > 0) {
-    parts.push(
-      '',
-      'Attached files (reference material the user attached for this ' +
-        'message; the ACTIVE document you may edit is only the one ' +
-        'described above — never write into the attachments):',
-    );
-    for (const att of attachments) {
-      parts.push('', `--- ${att.name} (stored at: ${att.path}) ---`);
-      if (att.text) {
-        parts.push(
-          '[Excerpt below may be TRUNCATED. If you cannot find something ' +
-            'in it, read or search the FULL stored file at the path above ' +
-            'with your file tools before concluding it is absent. When ' +
-            'searching, use short distinctive substrings — the user may ' +
-            'misspell or translate terms.]',
-        );
-        parts.push(att.text);
-      } else {
-        parts.push(
-          '[No text could be extracted on the app side. The file is at the ' +
-            'path above; read it yourself if you have file-reading tools.]',
-        );
-      }
-    }
-  }
+  parts.push(...buildAttachmentBlock(attachments));
   return parts.join('\n');
 }
 

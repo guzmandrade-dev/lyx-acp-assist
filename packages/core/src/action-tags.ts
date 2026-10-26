@@ -51,6 +51,52 @@ export function lastFencedMatch(reply: string, tagRe: RegExp): RegExpMatchArray 
 }
 
 /**
+ * Audit Track D: factory for the apps' action-tag parsers. The four
+ * near-identical parsers (LyX, LO writer, calc, impress) differ only in
+ * vocabulary and target grammar; the B5 layered resolution (last
+ * non-empty line, then inside a fence, never bare prose) and the capture
+ * extraction live HERE once.
+ *
+ * `actions` is a pipe-separated alternation, longest-first when actions
+ * share prefixes (e.g. `rewrite-at|rewrite`). `targetPattern` /
+ * `target2Pattern` are OPTIONAL non-capturing-outer groups whose FIRST
+ * capture group is the target (e.g. `(?:\s+p(\d+))?`).
+ */
+export interface ActionTagGrammar {
+  actions: string;
+  targetPattern?: string;
+  target2Pattern?: string;
+}
+
+export interface ParsedActionTag {
+  /** Lowercased action name ('none' when no tag matched). */
+  action: string;
+  /** Raw first-target capture, or null. Callers parse to their own type. */
+  target: string | null;
+  /** Raw second-target capture, or null (LyX move). */
+  target2: string | null;
+  /** The matched raw tag text (trimmed), or null. */
+  rawTag: string | null;
+}
+
+export function createParseActionTag(grammar: ActionTagGrammar): (reply: string) => ParsedActionTag {
+  const re = new RegExp(
+    `${ACTION_HEADER}\\s*(${grammar.actions})` +
+      `${grammar.targetPattern ?? ''}${grammar.target2Pattern ?? ''}\\s*\\]`,
+    'i',
+  );
+  return (reply: string) => {
+    const m = lastNonEmptyLine(reply).match(re) ?? lastFencedMatch(reply, re);
+    return {
+      action: (m?.[1] ?? 'none').toLowerCase(),
+      target: m?.[2] ?? null,
+      target2: m?.[3] ?? null,
+      rawTag: m?.[0]?.trim() ?? null,
+    };
+  };
+}
+
+/**
  * Auto-correction note for one matched action tag: null when the raw tag
  * is the canonical form, otherwise the raw tag text so the UI can show
  * what was corrected.

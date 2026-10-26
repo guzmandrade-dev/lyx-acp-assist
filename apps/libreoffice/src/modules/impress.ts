@@ -12,15 +12,16 @@
  */
 
 import type { BridgeClient, BridgeDocument, SlidesSelectionShape } from '../bridge/client.js';
-import { extractContentBlock, ACTION_HEADER, ACTION_TAG_LINE, actionTagNote, lastFencedMatch, lastNonEmptyLine } from './markdown.js';
+import { extractContentBlock, ACTION_TAG_LINE, actionTagNote, createParseActionTag } from './markdown.js';
 import type { ActionOutcome, AppliedAction, ModuleAdapter, SelectionInfo } from './types.js';
 
-/** Last-tag grammar: [ACTION: name] or [ACTION: name sN]. The header
- * tolerates tag typos ("[AACTION:"), reported via tagNote. */
-const IMPRESS_TAG = new RegExp(
-  `${ACTION_HEADER}\\s*(rewrite-slide|insert-after|rewrite|none|continue)(?:\\s+s([0-9]+))?\\s*\\]`,
-  'gi',
-);
+/** Grammar: [ACTION: name] or [ACTION: name sN]. The header tolerates tag
+ * typos ("[AACTION:"), reported via tagNote; the B5 layered resolution
+ * lives in the core factory. */
+const parseTag = createParseActionTag({
+  actions: 'rewrite-slide|insert-after|rewrite|none|continue',
+  targetPattern: '(?:\\s+s([0-9]+))?',
+});
 
 const CONTENT_ACTIONS = ['rewrite', 'rewrite-slide', 'insert-after'];
 
@@ -34,12 +35,9 @@ function blockLines(block: string): string[] {
 
 /** Parse an agent reply against the Impress vocabulary. */
 export function parseImpressAction(reply: string): ActionOutcome {
-  // Audit B5: last non-empty line first; a tag inside a content fence
-  // still counts (live-observed); bare prose never does.
-  const tags = [...lastNonEmptyLine(reply).matchAll(IMPRESS_TAG)];
-  const m = tags[tags.length - 1] ?? lastFencedMatch(reply, IMPRESS_TAG) ?? undefined;
-  const action = ((m?.[1] ?? 'none').toLowerCase()) as ActionOutcome['action'];
-  const target = m?.[2] ? Number.parseInt(m[2], 10) : null;
+  const tag = parseTag(reply);
+  const action = tag.action as ActionOutcome['action'];
+  const target = tag.target !== null ? Number.parseInt(tag.target, 10) : null;
   const needsContent = CONTENT_ACTIONS.includes(action);
   const rawBlock = needsContent ? extractContentBlock(reply, 'impress') : null;
   const lines = needsContent && rawBlock !== null ? blockLines(rawBlock) : null;
@@ -54,7 +52,7 @@ export function parseImpressAction(reply: string): ActionOutcome {
         ? lines.map((text) => ({ style: null, runs: [{ text }] }))
         : null,
     grid: null,
-    tagNote: actionTagNote(m?.[0], `[ACTION: ${action}${target !== null ? ` s${target}` : ''}]`),
+    tagNote: actionTagNote(tag.rawTag ?? undefined, `[ACTION: ${action}${target !== null ? ` s${target}` : ''}]`),
   };
 }
 
