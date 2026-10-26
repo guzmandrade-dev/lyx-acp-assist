@@ -310,6 +310,15 @@ body {
   color: var(--text-on-accent);
   cursor: pointer;
   transition: background var(--duration-fast) var(--ease-out);
+  /* The global button rule pins height: 28px, which clips the label when
+     the status row squeezes this pill and "Install bridge…" wraps. Let the
+     pill grow instead, and keep flex from shrinking it — the plain status
+     text next to it wraps first. */
+  height: auto;
+  min-height: 28px;
+  flex-shrink: 0;
+  line-height: var(--leading-normal);
+  text-align: center;
 }
 .install-btn:hover { background: var(--accent-strong-hover); border-color: var(--accent-strong-hover); }
 .install-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
