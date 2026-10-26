@@ -645,12 +645,15 @@ export function createServer(options: ServerOptions & {
 /** Tag grammar: [ACTION: name] or [ACTION: name pN], with a ```writer block.
  * The header tolerates tag typos ("[AACTION:", doubled letters) and a
  * missing colon — tagNote reports the auto-correction. */
+const ACTION_TAG_RE = new RegExp(
+  `${ACTION_HEADER}\\s*(delete-at|rewrite-at|insert-after|insert-top|rewrite|insert|none|continue)(?:\\s+p(\\d+))?\\s*\\]`,
+  'gi',
+);
+
 export function parseAction(reply: string): ActionOutcome {
   // The agent sometimes echoes tags while explaining; the LAST tag is the
   // operative one (the instructions demand it be the reply's last line).
-  const tags = [...reply.matchAll(
-    new RegExp(`${ACTION_HEADER}\\s*(delete-at|rewrite-at|insert-after|insert-top|rewrite|insert|none|continue)(?:\\s+p(\\d+))?\\s*\\]`, 'gi'),
-  )];
+  const tags = [...reply.matchAll(ACTION_TAG_RE)];
   const m = tags[tags.length - 1];
   const action = ((m?.[1] ?? 'none').toLowerCase() as AgentAction);
   const target = m?.[2] ? Number.parseInt(m[2], 10) : null;

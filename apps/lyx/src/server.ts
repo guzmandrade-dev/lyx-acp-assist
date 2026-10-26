@@ -1217,10 +1217,13 @@ interface ActionOutcome {
  * The header tolerates tag typos ("[AACTION:", doubled letters) and a
  * missing colon — tagNote reports the auto-correction.
  */
+const ACTION_TAG_RE = new RegExp(
+  `${ACTION_HEADER}\\s*(continue|merge|move|delete-at|rewrite-at|insert-before|insert-after|insert-top|rewrite|insert|none)(?:\\s+p(\\d+))?(?:\\s+(?:to\\s+)?p(\\d+))?\\s*\\]`,
+  'i',
+);
+
 export function parseAction(reply: string): ActionOutcome {
-  const m = reply.match(
-    new RegExp(`${ACTION_HEADER}\\s*(continue|merge|move|delete-at|rewrite-at|insert-before|insert-after|insert-top|rewrite|insert|none)(?:\\s+p(\\d+))?(?:\\s+(?:to\\s+)?p(\\d+))?\\s*\\]`, 'i'),
-  );
+  const m = reply.match(ACTION_TAG_RE);
   const action = ((m?.[1] ?? 'none').toLowerCase() as AgentAction);
   const target = m?.[2] ? Number.parseInt(m[2], 10) : null;
   const target2 = m?.[3] ? Number.parseInt(m[3], 10) : null;

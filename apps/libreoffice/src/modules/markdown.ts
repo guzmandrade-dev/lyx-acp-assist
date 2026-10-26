@@ -204,8 +204,15 @@ export function parseContentBlock(block: string): BlockParagraph[] {
  * contains none. The LAST fence wins — some agents echo the block while
  * explaining; like action tags, the final one is the operative content.
  */
+/** Compiled fence regexes per language, reused across replies. */
+const contentBlockRes = new Map<string, RegExp>();
+
 export function extractContentBlock(reply: string, lang: string = 'writer'): string | null {
-  const re = new RegExp('```' + lang + '\\s*\\n([\\s\\S]*?)```', 'gi');
+  let re = contentBlockRes.get(lang);
+  if (!re) {
+    re = new RegExp('```' + lang + '\\s*\\n([\\s\\S]*?)```', 'gi');
+    contentBlockRes.set(lang, re);
+  }
   const fences = [...reply.matchAll(re)];
   const last = fences[fences.length - 1];
   return last?.[1] ?? null;
