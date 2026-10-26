@@ -57,60 +57,187 @@ function runProcess(
   });
 }
 
-function ps(command: string, input?: string): Promise<string> {
-  return runProcess('powershell', ['-NoProfile', '-STA', '-Command', command], input).then(
-    (r) => {
-      if (r.code !== 0) throw new Error(`PowerShell exit ${r.code}: ${r.stderr.slice(0, 300)}`);
-      return r.stdout;
-    },
-  );
-}
-
 // --- windows ---------------------------------------------------------------
 
-const WIN_WRITE_PS = `
+/**
+ * One long-lived PowerShell host for all clipboard operations, instead of
+ * a fresh `powershell -STA` + Add-Type per call (~200-600ms each; a
+ * verified paste + probeSelection in write-only mode is 4+ spawns).
+ *
+ * Protocol: Node writes ONE JSON line per command
+ * (`{"op":"write"|"readFormat"|"readText"|"clear", ...}`); the host answers
+ * with one line: `OK`, `ERR <message>`, `NONE`, or `DATA <base64>`.
+ *
+ * Stdin is read with SYNC `[Console]::In.ReadLine()` — live-verified
+ * (2026-10-26 spike): unlike the documented `ReadLineAsync()` pitfall
+ * (which blocks PS 5.1's success stream when spawned from Node), the sync
+ * ReadLine loop streams one response per command. The host exits by itself
+ * when stdin closes (parent exit), so nothing lingers.
+ */
+const WIN_HOST_PS = `
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
-$in = [Console]::In.ReadToEnd() | ConvertFrom-Json
-$doc = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($in.lyx))
-$data = New-Object System.Windows.Forms.DataObject
-$bytes = [Text.Encoding]::UTF8.GetBytes($doc)
-$stream = New-Object System.IO.MemoryStream
-$stream.Write($bytes, 0, $bytes.Length)
-$stream.Position = 0
-$data.SetData('${LYX_FORMAT}', $stream)
-if ($in.text) {
-  $data.SetText([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($in.text)))
+while($true){
+  $line = [Console]::In.ReadLine()
+  if ($line -eq $null) { break }
+  try {
+    $req = $line | ConvertFrom-Json
+    switch ($req.op) {
+      'write' {
+        $doc = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($req.lyx))
+        $data = New-Object System.Windows.Forms.DataObject
+        $bytes = [Text.Encoding]::UTF8.GetBytes($doc)
+        $stream = New-Object System.IO.MemoryStream
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Position = 0
+        $data.SetData('${LYX_FORMAT}', $stream)
+        if ($req.text) {
+          $data.SetText([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($req.text)))
+        }
+        [System.Windows.Forms.Clipboard]::SetDataObject($data, $true)
+        Write-Output 'OK'
+      }
+      'readFormat' {
+        $d = [System.Windows.Forms.Clipboard]::GetDataObject()
+        if ($d -eq $null -or -not $d.GetDataPresent('${LYX_FORMAT}')) {
+          Write-Output 'NONE'
+        } else {
+          $stream = $d.GetData('${LYX_FORMAT}')
+          $stream.Position = 0
+          $reader = New-Object System.IO.StreamReader($stream, [Text.Encoding]::UTF8)
+          $doc = $reader.ReadToEnd()
+          Write-Output ('DATA ' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($doc)))
+        }
+      }
+      'readText' {
+        $t = [System.Windows.Forms.Clipboard]::GetText()
+        Write-Output ('DATA ' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($t)))
+      }
+      'clear' {
+        [System.Windows.Forms.Clipboard]::Clear()
+        Write-Output 'OK'
+      }
+      default { Write-Output ('ERR unknown op ' + $req.op) }
+    }
+  } catch {
+    Write-Output ('ERR ' + $_.Exception.Message)
+  }
+  [Console]::Out.Flush()
 }
-[System.Windows.Forms.Clipboard]::SetDataObject($data, $true)
-Write-Output 'OK'
 `;
 
-const WIN_READ_FORMAT_PS = `
-$ErrorActionPreference = 'Stop'
-Add-Type -AssemblyName System.Windows.Forms
-$d = [System.Windows.Forms.Clipboard]::GetDataObject()
-if ($d -eq $null -or -not $d.GetDataPresent('${LYX_FORMAT}')) { Write-Output 'NONE'; exit }
-$stream = $d.GetData('${LYX_FORMAT}')
-$stream.Position = 0
-$reader = New-Object System.IO.StreamReader($stream, [Text.Encoding]::UTF8)
-$doc = $reader.ReadToEnd()
-Write-Output ([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($doc)))
-`;
+interface HostState {
+  child: import('node:child_process').ChildProcess;
+  stdoutBuffer: string;
+  pending: ((line: string) => void) | null;
+  startup: Promise<void>;
+}
 
-const WIN_READ_TEXT_PS = `
-$ErrorActionPreference = 'Stop'
-Add-Type -AssemblyName System.Windows.Forms
-$t = [System.Windows.Forms.Clipboard]::GetText()
-Write-Output ([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($t)))
-`;
+/** Lazily spawned, crash-resilient PowerShell host (one per app process). */
+const psHost: { state: HostState | null } = { state: null };
 
-const WIN_CLEAR_PS = `
-$ErrorActionPreference = 'Stop'
-Add-Type -AssemblyName System.Windows.Forms
-[System.Windows.Forms.Clipboard]::Clear()
-Write-Output 'OK'
-`;
+function startPsHost(): HostState {
+  const child = spawn('powershell', ['-NoProfile', '-STA', '-Command', WIN_HOST_PS], {
+    windowsHide: true,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  // Never keep the app alive for an idle clipboard host; the host also
+  // exits on its own when stdin closes at process exit.
+  child.unref();
+  // The stdio streams are net.Socket when piped; unref them so an idle
+  // host cannot hold the parent's event loop open either.
+  const unrefStream = (s: unknown) => (s as { unref?: () => void } | null)?.unref?.();
+  unrefStream(child.stdin);
+  unrefStream(child.stdout);
+  unrefStream(child.stderr);
+  const state: HostState = {
+    child,
+    stdoutBuffer: '',
+    pending: null,
+    startup: new Promise<void>((resolve, reject) => {
+      child.once('error', reject);
+      // The host signals readiness implicitly: Add-Type completes before
+      // the first ReadLine. Resolve once the process is alive.
+      if (child.pid) resolve();
+      else child.once('spawn', () => resolve());
+    }),
+  };
+  child.stdout?.setEncoding('utf8');
+  child.stdout?.on('data', (chunk: string) => {
+    state.stdoutBuffer += chunk;
+    let idx: number;
+    while ((idx = state.stdoutBuffer.indexOf('\n')) >= 0) {
+      const line = state.stdoutBuffer.slice(0, idx).replace(/\r$/, '');
+      state.stdoutBuffer = state.stdoutBuffer.slice(idx + 1);
+      const resolve = state.pending;
+      if (resolve) {
+        state.pending = null;
+        resolve(line);
+      }
+    }
+  });
+  child.on('close', () => {
+    const resolve = state.pending;
+    state.pending = null;
+    if (psHost.state === state) psHost.state = null;
+    resolve?.('ERR host exited');
+  });
+  child.on('error', () => {
+    const resolve = state.pending;
+    state.pending = null;
+    if (psHost.state === state) psHost.state = null;
+    resolve?.('ERR host failed');
+  });
+  return state;
+}
+
+/** Ref/unref the host + its stdio (see psHostCommand for why). */
+function setHostRefs(state: HostState, active: boolean): void {
+  const op = active ? 'ref' : 'unref';
+  (state.child as unknown as { ref?: () => void; unref?: () => void })[op]?.();
+  for (const s of [state.child.stdin, state.child.stdout, state.child.stderr]) {
+    (s as unknown as { ref?: () => void; unref?: () => void })?.[op]?.();
+  }
+}
+
+/**
+ * Send one command to the persistent host and await its response line.
+ * Serialized (one in flight) — clipboard operations are sequential by
+ * nature. Respawn transparently if the host died.
+ *
+ * While a command is pending the host handles are ref'd (the in-flight
+ * operation keeps the process alive until it settles); when idle they are
+ * unref'd again so a persistent host never holds the app open at exit.
+ * The host exits by itself when stdin closes at process exit.
+ */
+async function psHostCommand(request: Record<string, unknown>): Promise<string> {
+  let state = psHost.state;
+  if (!state) {
+    state = startPsHost();
+    psHost.state = state;
+  }
+  await state.startup;
+  if (state.pending) {
+    throw new Error('PowerShell clipboard host is busy (concurrent clipboard operations)');
+  }
+  return new Promise<string>((resolve, reject) => {
+    setHostRefs(state!, true);
+    const settle = (fn: () => void) => {
+      state!.pending = null;
+      setHostRefs(state!, false);
+      fn();
+    };
+    state!.pending = (line) => {
+      settle(() => {
+        if (line.startsWith('ERR ')) reject(new Error(line.slice(5).slice(0, 300)));
+        else resolve(line);
+      });
+    };
+    state!.child.stdin?.write(`${JSON.stringify(request)}\n`, 'utf8', (e) => {
+      if (e) settle(() => reject(e as Error));
+    });
+  });
+}
 
 function windowsClipboard(): RawClipboard {
   return {
@@ -120,31 +247,31 @@ function windowsClipboard(): RawClipboard {
     },
     async readFormat(format) {
       if (format !== LYX_FORMAT) return null;
-      const out = await ps(WIN_READ_FORMAT_PS);
-      const trimmed = out.trim();
-      if (trimmed === 'NONE') return null;
-      return Buffer.from(trimmed, 'base64');
+      const line = await psHostCommand({ op: 'readFormat' });
+      if (line === 'NONE') return null;
+      if (!line.startsWith('DATA ')) throw new Error(`Unexpected host reply: ${line.slice(0, 100)}`);
+      return Buffer.from(line.slice(5), 'base64');
     },
     async write(formats) {
       const lyx = formats[LYX_FORMAT];
       if (typeof lyx === 'string' || !lyx) {
         throw new Error(`Windows adapter writes raw bytes for ${LYX_FORMAT}`);
       }
-      const payload = {
-        lyx: lyx.toString('base64'),
-        text:
-          formats['text/plain'] === undefined
-            ? undefined
-            : Buffer.from(String(formats['text/plain']), 'utf8').toString('base64'),
-      };
-      await ps(WIN_WRITE_PS, JSON.stringify(payload));
+      const request: Record<string, unknown> = { op: 'write', lyx: lyx.toString('base64') };
+      if (formats['text/plain'] !== undefined) {
+        request['text'] = Buffer.from(String(formats['text/plain']), 'utf8').toString('base64');
+      }
+      const line = await psHostCommand(request);
+      if (line !== 'OK') throw new Error(`Unexpected host reply: ${line.slice(0, 100)}`);
     },
     async readText() {
-      const out = await ps(WIN_READ_TEXT_PS);
-      return Buffer.from(out.trim(), 'base64').toString('utf8');
+      const line = await psHostCommand({ op: 'readText' });
+      if (!line.startsWith('DATA ')) throw new Error(`Unexpected host reply: ${line.slice(0, 100)}`);
+      return Buffer.from(line.slice(5), 'base64').toString('utf8');
     },
     async clear() {
-      await ps(WIN_CLEAR_PS);
+      const line = await psHostCommand({ op: 'clear' });
+      if (line !== 'OK') throw new Error(`Unexpected host reply: ${line.slice(0, 100)}`);
     },
   };
 }
