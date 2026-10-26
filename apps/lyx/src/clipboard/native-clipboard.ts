@@ -77,6 +77,18 @@ function runProcess(
 const WIN_HOST_PS = `
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
+function Invoke-WithClipRetry([scriptblock]$action) {
+  # Opening the clipboard fails transiently while another process holds it
+  # (the editor mid-copy, a clipboard manager, another LyX instance). The
+  # contention window is short — retry briefly before surfacing an error
+  # (live-reported 2026-10-26: GetText failed the whole message with
+  # "Requested Clipboard operation did not succeed").
+  $last = $null
+  for ($i = 0; $i -lt 10; $i++) {
+    try { return & $action } catch { $last = $_; Start-Sleep -Milliseconds 30 }
+  }
+  throw $last
+}
 while($true){
   $line = [Console]::In.ReadLine()
   if ($line -eq $null) { break }
@@ -94,7 +106,7 @@ while($true){
         if ($req.text) {
           $data.SetText([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($req.text)))
         }
-        [System.Windows.Forms.Clipboard]::SetDataObject($data, $true)
+        Invoke-WithClipRetry { [System.Windows.Forms.Clipboard]::SetDataObject($data, $true) }
         Write-Output 'OK'
       }
       'writeText' {
@@ -102,11 +114,11 @@ while($true){
         if ($req.text) {
           $data.SetText([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($req.text)))
         }
-        [System.Windows.Forms.Clipboard]::SetDataObject($data, $true)
+        Invoke-WithClipRetry { [System.Windows.Forms.Clipboard]::SetDataObject($data, $true) }
         Write-Output 'OK'
       }
       'readFormat' {
-        $d = [System.Windows.Forms.Clipboard]::GetDataObject()
+        $d = Invoke-WithClipRetry { [System.Windows.Forms.Clipboard]::GetDataObject() }
         if ($d -eq $null -or -not $d.GetDataPresent('${LYX_FORMAT}')) {
           Write-Output 'NONE'
         } else {
@@ -118,11 +130,11 @@ while($true){
         }
       }
       'readText' {
-        $t = [System.Windows.Forms.Clipboard]::GetText()
+        $t = Invoke-WithClipRetry { [System.Windows.Forms.Clipboard]::GetText() }
         Write-Output ('DATA ' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($t)))
       }
       'clear' {
-        [System.Windows.Forms.Clipboard]::Clear()
+        Invoke-WithClipRetry { [System.Windows.Forms.Clipboard]::Clear() }
         Write-Output 'OK'
       }
       default { Write-Output ('ERR unknown op ' + $req.op) }
@@ -237,7 +249,7 @@ async function psHostCommand(request: Record<string, unknown>): Promise<string> 
     };
     state!.pending = (line) => {
       settle(() => {
-        if (line.startsWith('ERR ')) reject(new Error(line.slice(5).slice(0, 300)));
+        if (line.startsWith('ERR ')) reject(new Error(line.slice(4).slice(0, 300)));
         else resolve(line);
       });
     };

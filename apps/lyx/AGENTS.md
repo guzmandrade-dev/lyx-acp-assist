@@ -981,6 +981,15 @@ probes (real PowerShell + real Windows clipboard) rather than LyX.
   output, not just the exit code. Live-probed: warm ops ~1.7ms each
   (was a 200-600ms spawn per op); `pipe-config.ts`'s window-title read
   still spawns per call (same host pattern would fit it later).
+  (3) **Clipboard contention retry (live-found 2026-10-26)**: opening the
+  clipboard fails transiently while another process holds it (the
+  editor mid-copy, a clipboard manager, a second LyX instance) — a
+  `readText` mid-selection killed a whole message with "Requested
+  Clipboard operation did not succeed". Every clipboard-touching op in
+  the host now retries 10×/30ms before surfacing the error (and the
+  Node-side ERR decode was off by one — `slice(4)`, not `slice(5)`; it
+  ate the "E" of "Exception"). Live-probed against an 80%-duty-cycle
+  OpenClipboard hammer: 0 hard failures over 50 write+read pairs.
 - **sessionInfo outline is opt-in**: `GET /api/session/:id` skips the
   full document read unless `?outline=1`; the session-creation response
   includes it. The core session route passes the flag; the panel's
