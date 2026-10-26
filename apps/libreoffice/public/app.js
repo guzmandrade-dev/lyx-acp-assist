@@ -1174,9 +1174,9 @@ async function send() {
       addSystemMessage(`error: ${e.message}`, true);
     }
   } finally {
-    await refreshStatus();
-    await refreshDocuments();
-    await refreshSelection();
+    // The three refreshes are independent — run them in parallel instead
+    // of serially after every message.
+    await Promise.allSettled([refreshStatus(), refreshDocuments(), refreshSelection()]);
   }
 }
 

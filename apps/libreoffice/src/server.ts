@@ -17,6 +17,7 @@ import {
   BridgeClient,
   BridgeError,
   discoverBridges,
+  type BridgeDocument,
 } from './bridge/client.js';
 import {
   findUnopkg,
@@ -44,7 +45,7 @@ import {
   startSse,
   sseFail,
   MAX_ACTIONS_PER_MESSAGE,
-  sleep,
+  pollUntil,
   type ConversationStore,
 } from '@acp-assist/core';
 import type {
@@ -313,7 +314,15 @@ export function createServer(options: ServerOptions & {
         return;
       }
       await session.bridge.activate(target);
-      await sleep(200);
+      // Wait until the switch actually landed (bounded poll instead of a
+      // fixed sleep); on timeout fall through and report what is active.
+      await pollUntil(
+        async () => {
+          const st = await session.bridge.status();
+          return st.active && (st.url === target || st.title === target);
+        },
+        { timeoutMs: 2000, intervalMs: 50 },
+      );
       const active = await refreshActiveDocument(session);
       res.json({ active, documents: [...session.knownDocuments] });
     }),
@@ -325,7 +334,7 @@ export function createServer(options: ServerOptions & {
     '/api/session/:id/selection',
     wrap(async (req, res) => {
       const session = getSession(req.params['id']);
-      const sel = await readSelection(session);
+      const sel = readSelection(await session.bridge.document());
       const words = sel.text ? sel.text.trim().split(/\s+/).length : 0;
       res.json({ ...sel, stats: [words] });
     }),
@@ -364,11 +373,14 @@ export function createServer(options: ServerOptions & {
     let lastAddress: string | null = null;
 
     try {
-      await refreshActiveDocument(session);
+      // ONE /document read serves the whole step: session bookkeeping
+      // (active/module/url — /document carries everything /status does),
+      // context building, and the selection.
       const doc = await session.bridge.document();
+      await refreshFromDocument(session, doc);
       const adapter = adapterFor(doc.module);
       const contextText = adapter.buildContextBlock(doc, doc.url || null);
-      const selection = await readSelection(session);
+      const selection = readSelection(doc);
       const send = startSse(res);
       session.cancelRequested = false;
 
@@ -384,6 +396,11 @@ export function createServer(options: ServerOptions & {
       const completed: string[] = [];
       let step = 0;
       let stoppedReason: 'done' | 'none' | 'cancelled' | 'error' | 'limit' = 'done';
+      // The step's document read + selection: fetched ONCE per step and
+      // reused for the continuation prompt AND the action application
+      // (previously re-read 3 more times via readSelection/applyAction).
+      let stepDoc = doc;
+      let stepSel = selection;
 
       while (step < MAX_ACTIONS_PER_MESSAGE) {
         step += 1;
@@ -396,13 +413,13 @@ export function createServer(options: ServerOptions & {
         if (step === 1) {
           prompt = initialPrompt;
         } else {
-          await refreshActiveDocument(session);
-          const freshDoc = await session.bridge.document();
-          const freshSel = await readSelection(session);
+          stepDoc = await session.bridge.document();
+          await refreshFromDocument(session, stepDoc);
+          stepSel = readSelection(stepDoc);
           prompt = buildContinuationPrompt(
-            adapter.buildContextBlock(freshDoc, freshDoc.url || null),
+            adapter.buildContextBlock(stepDoc, stepDoc.url || null),
             adapter,
-            freshSel,
+            stepSel,
             message,
             completed,
           );
@@ -452,8 +469,7 @@ export function createServer(options: ServerOptions & {
         }
 
         try {
-          const freshDoc = step === 1 ? doc : await session.bridge.document();
-          const applied = await adapter.applyAction(session.bridge, freshDoc, await readSelection(session), outcome);
+          const applied = await adapter.applyAction(session.bridge, stepDoc, stepSel, outcome);
           send({
             applied: outcome.action,
             target: outcome.target,
@@ -534,13 +550,32 @@ export function createServer(options: ServerOptions & {
   /** Re-read the active document from the bridge and track it. */
   async function refreshActiveDocument(session: Session): Promise<string | null> {
     const st = await session.bridge.status();
-    if (!st.active) {
+    return refreshFromStatus(session, st.active, st.url ?? '', st.title ?? '', st.module ?? 'unknown');
+  }
+
+  /**
+   * Same bookkeeping as refreshActiveDocument, but from an already-fetched
+   * `/document` payload (it carries active/module/title/url too) — avoids
+   * the extra `/status` round-trip in the message loop.
+   */
+  async function refreshFromDocument(session: Session, doc: BridgeDocument): Promise<string | null> {
+    return refreshFromStatus(session, doc.active, doc.url ?? '', doc.title ?? '', doc.module ?? 'unknown');
+  }
+
+  async function refreshFromStatus(
+    session: Session,
+    active: boolean,
+    url: string,
+    title: string,
+    module: string,
+  ): Promise<string | null> {
+    if (!active) {
       session.activeDoc = null;
       await ensureConversation(session, UNSAVED_KEY);
       return null;
     }
-    session.activeDoc = { url: st.url ?? '', title: st.title ?? '', module: st.module ?? 'unknown' };
-    const key = st.url || st.title || UNSAVED_KEY;
+    session.activeDoc = { url, title, module };
+    const key = url || title || UNSAVED_KEY;
     if (key !== UNSAVED_KEY) session.knownDocuments.add(key);
     await ensureConversation(session, key);
     return key;
@@ -624,8 +659,12 @@ export function createServer(options: ServerOptions & {
     };
   }
 
-  async function readSelection(session: Session): Promise<SelectionInfo> {
-    const doc = await session.bridge.document();
+  /**
+   * Extract the SelectionInfo from an already-fetched `/document` payload
+   * (pure — no extra bridge round-trip; the document was read once per
+   * step by the caller).
+   */
+  function readSelection(doc: BridgeDocument): SelectionInfo {
     const texts = doc.selection ?? null;
     const text = texts && texts.length > 0 && typeof texts[0] === 'string'
       ? (texts as string[]).join('\n')
