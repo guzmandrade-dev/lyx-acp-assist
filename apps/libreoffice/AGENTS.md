@@ -714,3 +714,47 @@ frame sequence and replayed histories.
   rebuilds the gitignored .oxt from extension/ via scripts/package-oxt.py) →
   per-OS electron-builder builds → draft release on v* tags, artifacts
   include the .oxt. Never pushed; untested against GitHub.
+
+## Track A performance fixes (2026-10-26)
+
+Audit-driven hot-path fixes (root `next-steps.md` section 3). Gates run
+in full: mocked 72/72 + typechecks, bridge e2e **47/47** + mechanics
+**13/13** against live LibreOffice 26.8 (fresh oxt install into the
+scratch profile, accept socket, `bridge_ctl.py start`), and a live
+vibe-acp run through the standalone companion (Writer insert-after
+applied through the bridge, landed in the live document, one-click undo
+reverted it — same flow as the 2026-10-22 validation).
+
+- **Companion: ONE `/document` read per message step** (`src/server.ts`)
+  — was 5-6 (status + document + readSelection's internal document +
+  applyAction's document + readSelection again). `/document` carries
+  active/module/title/url, so `refreshFromDocument()` replaces the
+  separate `/status` call in the loop; `readSelection(doc)` is now a
+  PURE function of the fetched doc; applyAction reuses the step's doc
+  + selection.
+- **Companion: documents/switch polls `/status`** until the target is
+  active (2s cap) instead of `sleep(200)`; `pollUntil()` comes from
+  `@acp-assist/core`.
+- **Companion: `sessionInfo` outline is opt-in** (`?outline=1`, or the
+  session-creation response) — skips the full `/document` read on the
+  panel's refresh chain.
+- **Panel: streaming render throttled to one full render per 100ms**
+  (was a full re-render per SSE chunk, O(n²)); the post-message refresh
+  chain runs its three refreshes in parallel.
+- **Bridge (`extension/acpbridge.py`)**:
+  - Writer `/document` enumerates ONCE — preview mode truncates the
+    already-collected strings (`_preview_paragraphs`); normalization
+    (\r\n→\n) happens BEFORE truncation so both paths are identical.
+  - Impress `/document`: `_current_page_index` computed once per deck
+    read (was per slide — O(slides²) crossings);
+    `_impress_selection` collects all shape wrappers in ONE pass and
+    caches the target's kind (pyuno `==` on collected wrappers is pure
+    Python — no further UNO crossings).
+  - Writer `/edit` uses a REQUEST-LOCAL paragraph list (`paras_pre`)
+    for the existence check + target lookup, and ONE fresh post-delete
+    walk (`paras_post`) for the probe-11 empty-paragraph cleanup;
+    `_nth_paragraph` is GONE (a delete-at walked the doc up to 4×).
+  - Calc values trim keeps a running size (was O(rows²) re-sums).
+  - The `AsyncCallback` service is resolved once and cached
+    (`_async_callback()`, same in acppanel's status refresh) — was
+    `createInstanceWithContext` per HTTP request.

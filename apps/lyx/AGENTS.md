@@ -930,3 +930,60 @@ the selection -> `buffer-write`. Insert-at-cursor and undo also wired.
   - Verified end-to-end: packaged exe starts, serves the UI, `/api/status`
     reports the live LyX pipe, remote debugging (--remote-debugging-port)
     confirms the renderer loads our URL.
+## Track A performance fixes (2026-10-26)
+
+Audit-driven hot-path fixes (root `next-steps.md` section 3). All gated
+on the mocked suite + typechecks; live LyX testing still blocked by the
+upstream pipe bug, so clipboard/pipe behavior was verified by live OS
+probes (real PowerShell + real Windows clipboard) rather than LyX.
+
+- **Document snapshot (`src/server.ts`)**: the server caches a parsed
+  snapshot `{path, mtimeMs, raw, ctx}` on the Session; every app-driven
+  save goes through `saveDocument()` which nulls the snapshot BEFORE
+  saving — mtime alone is NOT a safe invalidation (same-tick writes
+  share a filesystem timestamp; the 10-edit safety-limit test caught
+  this). mtime mismatch still covers external changes. One parse per
+  step (context build, paragraph walk, verification, header all reuse
+  it); a move choreography parses twice instead of five times.
+- **Poll-verify, not fixed sleeps**: `pollUntil()` (in `@acp-assist/core`
+  `history.ts`) — documents/switch polls `getFilename` (2s cap),
+  copy→read polls the clipboard payload (500ms cap). The 100ms
+  pre-paste sleeps are GONE: `writeLyxDocumentVerified` reads the
+  payload back, so it is globally visible and the sleep guarded nothing.
+  The write-only graces in `client.ts` (`request`/`probeSelection`)
+  remain fixed sleeps.
+- **Persistent PowerShell clipboard host (`src/clipboard/native-clipboard.ts`)**:
+  ONE long-lived `powershell -NoProfile -STA` process serves all
+  clipboard ops over a JSON line protocol (op in: write/readFormat/
+  readText/clear; one line out: OK / ERR / NONE / DATA <base64>).
+  PITFALL CORRECTION: the earlier "never read stdin in spawned PS
+  helpers" rule is specific to `[Console]::In.ReadLineAsync()` — SYNC
+  `[Console]::In.ReadLine()` in a loop streams one response per
+  command from Node (live-probed). Two real pitfalls found instead:
+  (1) host handles must be REF'd while a command is pending — an
+  all-unref'd host drains the Node event loop during PowerShell's
+  ~1.5s boot and Node exits (code 13, unsettled await) before the
+  response arrives; idle hosts are unref'd again and die on stdin
+  close at process exit. (2) `npm run build`'s tsc EMITS despite type
+  errors unless `--noEmitOnError` — check for `error TS` in build
+  output, not just the exit code. Live-probed: warm ops ~1.7ms each
+  (was a 200-600ms spawn per op); `pipe-config.ts`'s window-title read
+  still spawns per call (same host pattern would fit it later).
+- **sessionInfo outline is opt-in**: `GET /api/session/:id` skips the
+  full document read unless `?outline=1`; the session-creation response
+  includes it. The core session route passes the flag; the panel's
+  refresh chain uses the light GET.
+- **Panel streaming render (`public/app.js`)**: SSE text chunks coalesce
+  into one full fence-aware render at most every 100ms
+  (`LIVE_RENDER_MS`); `appliedStep`/done/error/abort render immediately
+  and cancel the pending timer; the abort path renders once more so a
+  stopped bubble keeps everything streamed. Previously every chunk
+  re-rendered the whole accumulated reply (O(n²)).
+- **`unconsumed` reply buffer deleted** from `LyxServerClient`
+  (unmatched lines are deliberately dropped — the pipe-client rule).
+- **`findClassLayouts` memoized per textclass**; **`hasFormulaInset`**
+  short-circuit walk replaces the JSON.stringify scan; action-tag
+  regexes hoisted to module constants.
+- **History persistence is debounced** (`@acp-assist/core`
+  conversations store): 500ms per-key trailing debounce + `flush()`;
+  the stream loop flushes at `{done:true}` and in the error path.
