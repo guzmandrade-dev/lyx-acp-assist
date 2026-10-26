@@ -10,7 +10,7 @@
  */
 
 import type { BridgeClient, BridgeDocument, CalcInfo, CalcSelection } from '../bridge/client.js';
-import { extractContentBlock, parseTsvBlock, ACTION_HEADER, actionTagNote } from './markdown.js';
+import { extractContentBlock, parseTsvBlock, ACTION_HEADER, actionTagNote, lastFencedMatch, lastNonEmptyLine } from './markdown.js';
 import type { ActionOutcome, AppliedAction, AgentAction, ModuleAdapter, SelectionInfo } from './types.js';
 
 /** Last-tag grammar: [ACTION: name] or [ACTION: name B2] (A1 anchor). The
@@ -22,8 +22,10 @@ const CALC_TAG = new RegExp(
 
 /** Parse an agent reply against the Calc vocabulary. */
 export function parseCalcAction(reply: string): ActionOutcome {
-  const tags = [...reply.matchAll(CALC_TAG)];
-  const m = tags[tags.length - 1];
+  // Audit B5: last non-empty line first; a tag inside a content fence
+  // still counts (live-observed); bare prose never does.
+  const tags = [...lastNonEmptyLine(reply).matchAll(CALC_TAG)];
+  const m = tags[tags.length - 1] ?? lastFencedMatch(reply, CALC_TAG) ?? undefined;
   const action = ((m?.[1] ?? 'none').toLowerCase() as AgentAction);
   const address = m?.[2] ? m[2].toUpperCase() : null;
   const contentActions: AgentAction[] = ['write-cells', 'rewrite'];

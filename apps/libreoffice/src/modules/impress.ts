@@ -12,7 +12,7 @@
  */
 
 import type { BridgeClient, BridgeDocument, SlidesSelectionShape } from '../bridge/client.js';
-import { extractContentBlock, ACTION_HEADER, ACTION_TAG_LINE, actionTagNote } from './markdown.js';
+import { extractContentBlock, ACTION_HEADER, ACTION_TAG_LINE, actionTagNote, lastFencedMatch, lastNonEmptyLine } from './markdown.js';
 import type { ActionOutcome, AppliedAction, ModuleAdapter, SelectionInfo } from './types.js';
 
 /** Last-tag grammar: [ACTION: name] or [ACTION: name sN]. The header
@@ -34,8 +34,10 @@ function blockLines(block: string): string[] {
 
 /** Parse an agent reply against the Impress vocabulary. */
 export function parseImpressAction(reply: string): ActionOutcome {
-  const tags = [...reply.matchAll(IMPRESS_TAG)];
-  const m = tags[tags.length - 1];
+  // Audit B5: last non-empty line first; a tag inside a content fence
+  // still counts (live-observed); bare prose never does.
+  const tags = [...lastNonEmptyLine(reply).matchAll(IMPRESS_TAG)];
+  const m = tags[tags.length - 1] ?? lastFencedMatch(reply, IMPRESS_TAG) ?? undefined;
   const action = ((m?.[1] ?? 'none').toLowerCase()) as ActionOutcome['action'];
   const target = m?.[2] ? Number.parseInt(m[2], 10) : null;
   const needsContent = CONTENT_ACTIONS.includes(action);

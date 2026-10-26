@@ -368,6 +368,28 @@ describe('history replay after restart', () => {
 });
 
 describe('agent action parsing', () => {
+  it('ignores quoted tags mid-reply; only the last non-empty line carries the tag (B5)', () => {
+    const quoted = parseAction(
+      'To insert a paragraph you would write:\n[ACTION: insert-after p2]\nbut this request is just an explanation.',
+    );
+    expect(quoted.action).toBe('none');
+    expect(quoted.body).toBeNull();
+
+    const last = parseAction(
+      'Explanation quoting "[ACTION: rewrite-at p1]" as an example.\n[ACTION: none]',
+    );
+    expect(last.action).toBe('none');
+    expect(last.tagNote).toBeNull();
+
+    // Live-observed tolerance (2026-10-24): a tag left INSIDE the content
+    // fence with no trailing tag line still counts.
+    const fenced = parseAction(
+      '```lyx\n\\begin_layout Standard\nX\n\\end_layout\n[ACTION: rewrite-at p1]\n```',
+    );
+    expect(fenced.action).toBe('rewrite-at');
+    expect(fenced.target).toBe(1);
+  });
+
   it('parses the action tag and lyx block from a reply', async () => {
     const rewrite = parseAction(
       'Rewritten:\n```lyx\n\\begin_layout Standard\nBetter text\n\\end_layout\n```\n[ACTION: rewrite]',

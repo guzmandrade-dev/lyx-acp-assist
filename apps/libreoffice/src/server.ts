@@ -30,7 +30,7 @@ import { calcAdapter, parseCalcAction } from './modules/calc.js';
 import { impressAdapter, parseImpressAction } from './modules/impress.js';
 import { genericAdapter } from './modules/generic.js';
 import type { ModuleAdapter, AgentAction, ActionOutcome, SelectionInfo } from './modules/types.js';
-import { extractContentBlock, parseContentBlock, ACTION_HEADER, actionTagNote } from './modules/markdown.js';
+import { extractContentBlock, parseContentBlock, ACTION_HEADER, actionTagNote, lastFencedMatch, lastNonEmptyLine } from './modules/markdown.js';
 import {
   AcpClient,
   UNSAVED_KEY,
@@ -713,10 +713,11 @@ const ACTION_TAG_RE = new RegExp(
 );
 
 export function parseAction(reply: string): ActionOutcome {
-  // The agent sometimes echoes tags while explaining; the LAST tag is the
-  // operative one (the instructions demand it be the reply's last line).
-  const tags = [...reply.matchAll(ACTION_TAG_RE)];
-  const m = tags[tags.length - 1];
+  // Audit B5: the reply's LAST non-empty line is the only authoritative
+  // tag position; fallback (live-observed 2026-10-24): a tag left INSIDE
+  // a content fence still counts; bare prose never does.
+  const tags = [...lastNonEmptyLine(reply).matchAll(ACTION_TAG_RE)];
+  const m = tags[tags.length - 1] ?? lastFencedMatch(reply, ACTION_TAG_RE) ?? undefined;
   const action = ((m?.[1] ?? 'none').toLowerCase() as AgentAction);
   const target = m?.[2] ? Number.parseInt(m[2], 10) : null;
   const contentActions: AgentAction[] = ['insert', 'insert-top', 'insert-after', 'rewrite', 'rewrite-at'];

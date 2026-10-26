@@ -20,6 +20,24 @@ const writerDoc = (paragraphs: Array<[string, string]>, extra: Partial<BridgeDoc
 });
 
 describe('parseAction', () => {
+  it('ignores quoted tags mid-reply; only the last non-empty line carries the tag (B5)', () => {
+    // Writer, Calc, and Impress vocabularies all restrict to the last
+    // non-empty line.
+    const quoted = parseAction(
+      'You could write [ACTION: insert-after p2] to add a paragraph.\nThis was just an example.',
+    );
+    expect(quoted.action).toBe('none');
+
+    const calc = parseCalcAction(
+      'Example: [ACTION: write-cells B2] would set B2.\nHope that helps!',
+    );
+    expect(calc.action).toBe('none');
+
+    const final = parseAction('Explanation.\n[ACTION: none]');
+    expect(final.action).toBe('none');
+    expect(final.tagNote).toBeNull();
+  });
+
   it('parses a plain prose reply as none', () => {
     expect(parseAction('Just an answer.')).toEqual({
       action: 'none',

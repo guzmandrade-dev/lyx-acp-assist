@@ -8,11 +8,11 @@
  */
 
 import type { BlockParagraph, BlockRun } from '../bridge/client.js';
-import { ACTION_HEADER, actionTagNote } from '@acp-assist/core';
+import { ACTION_HEADER, actionTagNote, lastFencedMatch, lastNonEmptyLine } from '@acp-assist/core';
 
 // Shared with the LyX app via @acp-assist/core; re-exported here so the
 // module adapters keep their single markdown.js import point.
-export { ACTION_HEADER, actionTagNote };
+export { ACTION_HEADER, actionTagNote, lastFencedMatch, lastNonEmptyLine };
 
 /**
  * Line-level action-tag test with the tolerant header: tags are

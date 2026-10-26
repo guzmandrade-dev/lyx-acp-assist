@@ -33,6 +33,8 @@ import {
   AcpClient,
   UNSAVED_KEY,
   ACTION_HEADER,
+  lastFencedMatch,
+  lastNonEmptyLine,
   createAgentSettings,
   createConversationStore,
   createLogError,
@@ -1315,7 +1317,12 @@ const ACTION_TAG_RE = new RegExp(
 );
 
 export function parseAction(reply: string): ActionOutcome {
-  const m = reply.match(ACTION_TAG_RE);
+  // Audit B5: the reply's LAST non-empty line is the only authoritative
+  // tag position — a quoted example mid-reply must never win over a real
+  // trailing tag. Fallback (live-observed 2026-10-24): a tag left INSIDE
+  // the content fence still counts; bare prose never does.
+  const m =
+    lastNonEmptyLine(reply).match(ACTION_TAG_RE) ?? lastFencedMatch(reply, ACTION_TAG_RE);
   const action = ((m?.[1] ?? 'none').toLowerCase() as AgentAction);
   const target = m?.[2] ? Number.parseInt(m[2], 10) : null;
   const target2 = m?.[3] ? Number.parseInt(m[3], 10) : null;
