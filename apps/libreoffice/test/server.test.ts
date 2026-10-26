@@ -5,7 +5,7 @@ import path from 'node:path';
 import http from 'node:http';
 import type { Server } from 'node:http';
 import { createServer, type AgentRunner, type AgentSettings } from '../src/server.js';
-import { BridgeClient, type BridgeDocument, type EditPayload, type BridgeStatus, type BridgeDocumentEntry } from '../src/bridge/client.js';
+import { BridgeClient, BridgeError, type BridgeDocument, type EditPayload, type BridgeStatus, type BridgeDocumentEntry } from '../src/bridge/client.js';
 
 /** Fixed API bearer token (audit B1) for these HTTP-level tests. */
 const API_TOKEN = 'test-api-token';
@@ -132,8 +132,7 @@ describe('server message loop (fake agent + fake bridge)', () => {
   const publicDir = path.join(os.tmpdir(), 'lo-acp-test-public');
   const historyDir = path.join(os.tmpdir(), 'lo-acp-test-history');
 
-  it('requires the API bearer token and a loopback Host (audit B1)', async () => {
-    const noAuth = await fetch(`${baseUrl}/api/status`);
+  it('requires the API bearer token and a loopback Host (audit B1)', async () => {    const noAuth = await fetch(`${baseUrl}/api/status`);
     expect(noAuth.status).toBe(401);
     const wrong = await fetch(`${baseUrl}/api/status`, { headers: { authorization: 'Bearer nope' } });
     expect(wrong.status).toBe(401);
@@ -185,6 +184,62 @@ describe('server message loop (fake agent + fake bridge)', () => {
   afterAll(async () => {
     httpServer.close();
     await fs.rm(historyDir, { recursive: true, force: true });
+  });
+
+  it('recovers a stale bridge record without a manual reconnect (B3)', async () => {
+    // The session pins a record that has gone dead (bridge restarted from
+    // the LO sidebar: new port + token). Every call on it fails like a
+    // dead port; recovery must swap in the live bridge and retry once.
+    class StaleBridge extends FakeBridge {
+      override status(): Promise<BridgeStatus> {
+        return Promise.reject(new BridgeError('bridge unreachable (dead port)'));
+      }
+      override document(): Promise<BridgeDocument> {
+        return Promise.reject(new BridgeError('bridge unreachable (dead port)'));
+      }
+    }
+    const fresh = new FakeBridge();
+    // Isolated history dir: this fake bridge serves the same doc URL as
+    // the suite's shared one, and the recorded turns must not leak into
+    // the other tests' conversation assertions.
+    const b3History = path.join(os.tmpdir(), 'lo-acp-test-history-b3');
+    const app = createServer({
+      apiToken: API_TOKEN, publicDir,
+      historyDir: b3History,
+      agentFactory: fakeAgent(['All good. [ACTION: none]']),
+      bridgeFactory: () => new StaleBridge() as unknown as BridgeClient,
+      recoverBridge: () => Promise.resolve(fresh as unknown as BridgeClient),
+    });
+    const srv = app.listen(0, '127.0.0.1');
+    await new Promise<void>((r) => srv.on('listening', r));
+    const addr = srv.address() as { port: number };
+    const url = `http://127.0.0.1:${addr.port}`;
+    try {
+      const headers = { 'content-type': 'application/json', authorization: 'Bearer ' + API_TOKEN };
+      // Session creation (sessionInfo -> status) and the message stream
+      // (document read) both hit the stale record first and must succeed
+      // via the swap.
+      const created = await fetch(`${url}/api/session`, { method: 'POST', headers });
+      expect(created.status).toBe(200);
+      const session = (await created.json()) as { sessionId: string };
+      const res = await fetch(`${url}/api/session/${session.sessionId}/message/stream`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ message: 'hello' }),
+      });
+      const text = await res.text();
+      const frames: Record<string, unknown>[] = [];
+      for (const raw of text.split('\n\n')) {
+        if (!raw.startsWith('data: ')) continue;
+        try { frames.push(JSON.parse(raw.slice(6))); } catch { /* skip */ }
+      }
+      expect(frames.some((f) => f.stopped === 'none')).toBe(true);
+      expect(frames[frames.length - 1]).toEqual({ done: true });
+      expect(frames.some((f) => typeof f.error === 'string')).toBe(false);
+    } finally {
+      srv.close();
+      await fs.rm(b3History, { recursive: true, force: true });
+    }
   });
 
   it('runs a multi-action loop: edit, continuation, then none', async () => {

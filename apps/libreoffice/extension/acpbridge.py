@@ -140,11 +140,22 @@ def _async_callback():
 
 
 class BridgeSelListener(unohelper.Base, XSelectionChangeListener):
+    """Selection-change -> /events feed. Holds its controller so it can
+    drop the dead reference from _REGISTERED in disposing (controllers
+    die with their documents; audit B7 — the set used to leak them)."""
+
+    def __init__(self, ctrl):
+        self.ctrl = ctrl
+
     def selectionChanged(self, event):
         _record_event("selection-changed")
 
     def disposing(self, source):
-        pass
+        _REGISTERED.discard(self.ctrl)
+        try:
+            _REGISTERED.discard(source)
+        except Exception:
+            pass
 
 
 def _module_of(doc):
@@ -183,7 +194,7 @@ def _ensure_listener(doc):
     if ctrl is None or ctrl in _REGISTERED:
         return
     _REGISTERED.add(ctrl)
-    ctrl.addSelectionChangeListener(BridgeSelListener())
+    ctrl.addSelectionChangeListener(BridgeSelListener(ctrl))
 
 
 def _view_cursor_style(doc):

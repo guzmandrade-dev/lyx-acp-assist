@@ -97,6 +97,11 @@ export interface ServerOptions {
   /** Test hook: replace the real unopkg run. */
   installBridge?: (unopkgPath: string, oxtPath: string) => Promise<InstallResult>;
   /**
+   * Test hook: how a stale bridge is recovered (default: pickBridge).
+   * See createHealingBridge (audit B3).
+   */
+  recoverBridge?: (failed: BridgeClient) => Promise<BridgeClient>;
+  /**
    * API bearer token (audit B1). Generated at boot when absent; exposed as
    * `app.locals.apiToken` for the companion record writers / dev tools.
    */
@@ -240,9 +245,6 @@ export function createServer(options: ServerOptions & {
         env: requested?.env ?? persisted.env ?? {},
       };
 
-      const bridge = options.bridgeFactory
-        ? options.bridgeFactory()
-        : await pickBridge();
       const agent: AgentRunner = options.agentFactory
         ? options.agentFactory(settings)
         : new AcpClient({
@@ -255,7 +257,9 @@ export function createServer(options: ServerOptions & {
       const id = randomUUID();
       const session: Session = {
         id,
-        bridge,
+        bridge: options.bridgeFactory
+          ? createHealingBridge(options.bridgeFactory())
+          : createHealingBridge(await pickBridge()),
         agent,
         conversations: new Map(),
         historyHandoff: new Map(),
@@ -288,6 +292,36 @@ export function createServer(options: ServerOptions & {
       );
     }
     return new BridgeClient(bridges[0]!);
+  }
+
+  /**
+   * Audit B3: a session pinned its bridge record forever — restarting the
+   * bridge from the LO sidebar (new port + token) broke the session until
+   * a manual reconnect. This proxy wraps EVERY bridge call: on a
+   * BridgeError it re-discovers once (default pickBridge), swaps the
+   * target, and retries once. Non-bridge errors pass straight through,
+   * and the fake-bridge tests are unaffected (their errors are not
+   * BridgeErrors).
+   */
+  function createHealingBridge(initial: BridgeClient): BridgeClient {
+    let target = initial;
+    const recover = options.recoverBridge ?? pickBridge;
+    return new Proxy(initial, {
+      get(_t, prop) {
+        const value = Reflect.get(target, prop, target);
+        if (typeof value !== 'function') return value;
+        return async (...args: unknown[]) => {
+          try {
+            return await (value as (...a: unknown[]) => unknown).apply(target, args);
+          } catch (e) {
+            if (!(e instanceof BridgeError)) throw e;
+            target = await recover(target);
+            const fresh = Reflect.get(target, prop, target);
+            return (fresh as (...a: unknown[]) => unknown).apply(target, args);
+          }
+        };
+      },
+    }) as BridgeClient;
   }
 
   registerSessionRoutes(app, wrap, {
