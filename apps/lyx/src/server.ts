@@ -25,6 +25,7 @@ import {
   splitTopLevelLayouts,
   normalizeMarkupBlock,
   findMarkupProblems,
+  type DocumentContext,
 } from './lyx/context.js';
 import { CHAT_KNOWLEDGE } from './lyx/knowledge.js';
 import { isVersionControlled } from './vcs.js';
@@ -80,6 +81,14 @@ const OUTLINE_ONLY_BODY_LIMIT = 16_000;
  */
 
 
+/** Parsed document snapshot (see Session.docSnapshot). */
+export interface DocumentSnapshot {
+  path: string;
+  mtimeMs: number;
+  raw: string;
+  ctx: DocumentContext;
+}
+
 export interface Session {
   id: string;
   lyx: LyxServerClient;
@@ -99,6 +108,14 @@ export interface Session {
   documentPath: string | null;
   /** Set when the client asks to stop the current generation. */
   cancelRequested: boolean;
+  /**
+   * Parsed document snapshot, cached per (path, mtimeMs). One request
+   * parses the document ONCE: every save() bumps the file's mtime, so the
+   * snapshot invalidates itself whenever the document actually changed
+   * (see readDocumentSnapshot). Previously each step parsed the file
+   * 3-4 times (context build, paragraph walk, verification, header).
+   */
+  docSnapshot?: DocumentSnapshot | null;
   /**
    * Document paths whose save conditions the user accepted this session
    * (save-consent gate; only asked for documents outside version control).
@@ -637,7 +654,7 @@ export function createServer(options: ServerOptions & {
       // Read path per architecture: save the buffer first so the outline
       // and body parsed from disk match the live document. Only for saved
       // buffers — buffer-write on an untitled buffer opens a Save As dialog.
-      if (session.documentPath) await session.lyx.save();
+      if (session.documentPath) await saveDocument(session);
       const contextText = await buildContextBlock(session);
       const selection = await readSelection(session);
       const send = startSse(res);
@@ -676,7 +693,7 @@ export function createServer(options: ServerOptions & {
           prompt = initialPrompt;
         } else {
           await refreshActiveDocument(session);
-          if (session.documentPath) await session.lyx.save();
+          if (session.documentPath) await saveDocument(session);
           const freshContext = await buildContextBlock(session);
           stepSelection = await readSelection(session);
           prompt = buildContinuationPrompt(freshContext, stepSelection, message, completed);
@@ -869,18 +886,54 @@ export function createServer(options: ServerOptions & {
     };
   }
 
-  async function readDocumentContext(session: Session) {
-    return buildDocumentContext(await readDocumentRaw(session));
+  /**
+   * Save the buffer AND invalidate the document snapshot: the file is
+   * about to change on disk, and filesystem timestamps can be too coarse
+   * (same-tick writes) to detect rapid successive saves via mtime alone.
+   */
+  async function saveDocument(session: Session): Promise<void> {
+    session.docSnapshot = null;
+    await session.lyx.save();
   }
 
-  async function readDocumentRaw(session: Session): Promise<string> {
+  /**
+   * Read + parse the active document ONCE per (path, mtime): the snapshot
+   * is cached on the session and re-read only when the file changed on
+   * disk. Every app-driven save invalidates it explicitly (see
+   * saveDocument); mtime covers external changes. stat() is cheap; the
+   * full read + parse is what we avoid repeating 3-4 times per step.
+   */
+  async function readDocumentSnapshot(session: Session): Promise<DocumentSnapshot> {
     const filePath = session.documentPath;
     if (!filePath) throw new Error('Document is not saved on disk.');
-    return fs.readFile(filePath, 'utf8');
+    let mtimeMs: number;
+    try {
+      mtimeMs = (await fs.stat(filePath)).mtimeMs;
+    } catch {
+      throw new Error(`Cannot read ${filePath}`);
+    }
+    const cached = session.docSnapshot;
+    if (cached && cached.path === filePath && cached.mtimeMs === mtimeMs) {
+      return cached;
+    }
+    const raw = await fs.readFile(filePath, 'utf8');
+    const snapshot: DocumentSnapshot = {
+      path: filePath,
+      mtimeMs,
+      raw,
+      ctx: buildDocumentContext(raw),
+    };
+    session.docSnapshot = snapshot;
+    return snapshot;
+  }
+
+  async function readDocumentContext(session: Session) {
+    return (await readDocumentSnapshot(session)).ctx;
   }
 
   async function currentHeader(session: Session): Promise<string | null> {
     try {
+      // Reuses the session's document snapshot (see readDocumentSnapshot).
       const ctx = await readDocumentContext(session);
       return ctx.header || null;
     } catch {
@@ -994,8 +1047,11 @@ export function createServer(options: ServerOptions & {
     let ctx;
     let raw: string;
     try {
-      raw = await readDocumentRaw(session);
-      ctx = buildDocumentContext(raw);
+      // One parse per step: the snapshot cache means the context build and
+      // the header read of the same step reuse this parse.
+      const snap = await readDocumentSnapshot(session);
+      raw = snap.raw;
+      ctx = snap.ctx;
     } catch (e) {
       return fail(`Cannot address paragraphs: ${(e as Error).message}`);
     }
@@ -1169,7 +1225,7 @@ export function createServer(options: ServerOptions & {
     await session.lyx.mergeAwayParagraph();
 
     // 3. Keep the file on disk in sync (see the doc comment).
-    await session.lyx.save();
+    await saveDocument(session);
 
     // 4. Position at the adjusted destination, then paste.
     const dest = to === 0 ? 0 : to < from ? to : to - 1;
