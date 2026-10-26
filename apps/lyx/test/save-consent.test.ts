@@ -14,6 +14,10 @@ import { createServer, type AgentRunner } from '../src/server.js';
 import { isVersionControlled } from '../src/vcs.js';
 import type { LyxServerClient } from '../src/lyxserver/client.js';
 import type { RawClipboard } from '../src/clipboard/lyx-clipboard.js';
+import { PANEL_CONFIG } from '../src/panel-config.js';
+
+/** LyX panel config for the shared panel (Track C). */
+const TEST_PANEL_CONFIG = PANEL_CONFIG;
 
 /** Fixed API bearer token (audit B1) for these HTTP-level tests. */
 const API_TOKEN = 'test-api-token';
@@ -155,7 +159,7 @@ async function startHarness(withGit: boolean): Promise<Harness> {
   const lyx = fakeLyx(file);
   const agent = new FakeAgent(['Just prose.\n[ACTION: none]']);
   const app = createServer({
-    apiToken: API_TOKEN, publicDir: new URL('../public', import.meta.url).pathname.replace(/^\/(\w:)/, '$1'),
+    apiToken: API_TOKEN, panelConfig: PANEL_CONFIG,
     clipboard: rawClipboard,
     historyDir: dir,
     lyxFactory: () => lyx.client,

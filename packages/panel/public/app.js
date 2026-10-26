@@ -1,9 +1,30 @@
 'use strict';
 
+// --- panel config (Track C) --------------------------------------------
+// Injected same-origin into index.html together with the API token (see
+// @acp-assist/panel). Everything app-specific hangs off this object; the
+// file below is shared verbatim by both companion apps.
+//   appName:        'LyX' | 'LibreOffice' — user-facing strings
+//   appTitle:       window/empty-state title
+//   fenceRe:        fenced content-block language(s) the agent writes
+//   statusKey:      /api/status field reporting the editor connection
+//   statusMissing:  status line text when the editor is unreachable
+//   cursorTerm:     'layout' (LyX) | 'style' (LibreOffice)
+//   hasSaveConsent: LyX-only save-consent modal + VCS warning
+//   hasInstallFlow: LO-only one-click bridge installer
+//   composerRefreshSelection: refresh the selection on composer
+//                   interaction (LO: yes; LyX: NO — the selection read
+//                   clobbers the user's clipboard)
+const CONFIG = window.__ACP_PANEL_CONFIG__ ?? {};
+const APP = CONFIG.appName ?? 'LibreOffice';
+const FENCE_RE = CONFIG.fenceRe ?? '(?:writer|calc|impress)';
+const FENCE_STRIP_SRC = '```' + FENCE_RE + '\\s*\\n[\\s\\S]*?```\\s*';
+const FENCE_BLOCK_SRC = '```' + FENCE_RE + '\\s*\\n([\\s\\S]*?)```';
+
 let sessionId = null;
 let busy = false;
-let lyxBusy = false;
-let lyxPipeAvailable = false;
+let bridgeBusy = false;
+let bridgeAvailable = false;
 let currentAbort = null;
 let typingIndicator = null;
 let generationStart = 0;
@@ -25,35 +46,22 @@ const statusText = document.getElementById('status-text');
 const docEl = document.getElementById('doc');
 const selectionEl = document.getElementById('selection');
 const docSelect = document.getElementById('doc-select');
-const lyxSpinner = document.getElementById('lyx-spinner');
-const lyxBusyText = document.getElementById('lyx-busy-text');
+const editorSpinner = document.getElementById('bridge-spinner');
+const bridgeBusyText = document.getElementById('bridge-busy-text');
 const input = document.getElementById('input');
 const sendBtn = document.getElementById('send');
 const stopBtn = document.getElementById('stop');
 const undoBtn = document.getElementById('undo');
 const pinBtn = document.getElementById('pin');
 const reconnectBtn = document.getElementById('reconnect');
+const installBtn = document.getElementById('install-btn');
 const cmdEl = document.getElementById('agent-cmd');
 const attachBtn = document.getElementById('attach');
 const fileInput = document.getElementById('file-input');
 const chipsEl = document.getElementById('chips');
-const vcsWarnEl = document.getElementById('vcs-warn');
-const consentBackdrop = document.getElementById('save-consent-backdrop');
-const consentPathEl = document.getElementById('save-consent-path');
-const consentAcceptBtn = document.getElementById('save-consent-accept');
-const consentCancelBtn = document.getElementById('save-consent-cancel');
 let emptyEl = document.getElementById('empty');
 /** Document path whose conversation is currently rendered in the chat. */
 let chatDocKey = null;
-
-/** Save-consent state (server-enforced; mirrored here to warn early). */
-let activeDocPath = null;
-/** null = unknown/unsaved; otherwise whether the active doc is in a VCS. */
-let docVersionControlled = null;
-/** Document paths the user already accepted this session (client mirror). */
-const saveConsentPaths = new Set();
-/** Resolver of the open save-consent modal, null while closed. */
-let consentResolver = null;
 
 /** Attachment ids waiting to be sent with the next message. */
 const pendingAttachments = [];
@@ -111,12 +119,12 @@ function renderInlineFormatting(html) {
 function renderAssistantText(full, applied) {
   let text = full.replace(/\[ACTION:\s*[^\]]*\]/gi, '').trim();
   if (applied && applied !== 'none') {
-    text = text.replace(/```lyx\s*\n[\s\S]*?```\s*/g, '').trim();
+    text = text.replace(new RegExp(FENCE_STRIP_SRC, 'g'), '').trim();
   }
   if (!text) return '';
 
   const parts = [];
-  const regex = /```lyx\s*\n([\s\S]*?)```/g;
+  const regex = new RegExp(FENCE_BLOCK_SRC, 'g');
   let lastIndex = 0;
   let match;
   while ((match = regex.exec(text)) !== null) {
@@ -162,11 +170,17 @@ function renderConversation(turns) {
   hideEmpty();
   for (let i = 0; i < turns.length; i++) {
     const turn = turns[i];
-    const { div } = addMessage(turn.role, turn.content);
+    // Applied write actions strip their content block in the render (the
+    // live stream does the same); pass the persisted outcome through.
+    const appliedAction =
+      turn.role === 'assistant' && turn.meta?.result === 'applied' && turn.meta.action !== 'none'
+        ? turn.meta.action
+        : undefined;
+    const { div } = addMessage(turn.role, turn.content, { applied: appliedAction });
     // Restore a persisted action outcome (applied/error/cancelled) from a
     // previous app run, so failures are visible after a restart.
     if (turn.role === 'assistant' && turn.meta) {
-      // Remember the outcome so copy/quote strips the ```lyx block like the render does.
+      // Remember the outcome so copy/quote strips the ```writer block like the render does.
       div._applied = turn.meta.result === 'applied' ? turn.meta.action : null;
       // The [ACTION: none] summary step that closed a multi-action run is
       // persisted with result "applied", action "none"; replaying it with
@@ -188,6 +202,8 @@ function renderConversation(turns) {
                 : null,
           target: turn.meta.target ?? null,
           target2: turn.meta.target2 ?? null,
+          address: turn.meta.address ?? null,
+          module: turn.meta.module ?? null,
           cancelled: turn.meta.result === 'cancelled',
           error: turn.meta.result === 'error' ? turn.meta.error : null,
         });
@@ -209,10 +225,10 @@ function showEmpty() {
     logo.alt = '';
     const name = document.createElement('div');
     name.className = 'empty-name';
-    name.textContent = 'LyX ACP Assist';
+    name.textContent = CONFIG.appTitle ?? APP + ' ACP Assist';
     const hint = document.createElement('div');
     hint.textContent =
-      'Select text in LyX or type a request. The agent will reply here or write directly into the document.';
+      'Select text in ' + APP + ' or type a request. The agent will reply here or write directly into the document.';
     emptyEl.append(logo, name, hint);
   }
   // Re-append so the empty state is the LAST child: with flex:1 + margin
@@ -296,8 +312,8 @@ function updateScrollTicks() {
 // direct children only — streamed text lives deeper in the subtree). The
 // observer batches records, so the synchronous update runs once per
 // change batch — rAF is deliberately avoided because it is paused while
-// the panel window is hidden (user switched to LyX), which would leave
-// stale ticks behind.
+// the panel window is hidden (user switched to the editor), which would
+// leave stale ticks behind.
 new MutationObserver(updateScrollTicks).observe(chat, {
   childList: true,
   attributes: true,
@@ -316,7 +332,7 @@ const COPY_ICON = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" s
 
 /**
  * Plain-text form of a message for copy/quote: the raw turn content with
- * the action tag stripped (and, for applied write actions, the ```lyx block
+ * the action tag stripped (and, for applied write actions, the ```writer block
  * stripped too) — mirroring what renderAssistantText shows. Read from the
  * div at click time so streamed assistant messages quote their final text.
  */
@@ -325,7 +341,7 @@ function messagePlainText(div) {
   if (!div.classList.contains('assistant')) return raw;
   let text = raw.replace(/\[ACTION:\s*[^\]]*\]/gi, '').trim();
   if (div._applied && div._applied !== 'none') {
-    text = text.replace(/```lyx\s*\n[\s\S]*?```\s*/g, '').trim();
+    text = text.replace(new RegExp(FENCE_STRIP_SRC, 'g'), '').trim();
   }
   return text;
 }
@@ -514,56 +530,56 @@ function setStatusText(text) {
   else if (statusEl) statusEl.textContent = text;
 }
 
-// "Talking to LyX" indicator: shown while any request that dispatches into
-// LyX's pipe is in flight (documents, selection, switch, undo, and the
+// "talking to the editor" indicator: shown while any request that dispatches into
+// the editor's pipe is in flight (documents, selection, switch, undo, and the
 // pre-stream context read when sending a message). Counter-based so
 // overlapping requests keep it visible until the last one settles.
-let lyxRequestCount = 0;
-function lyxBusyStart() {
-  lyxRequestCount++;
-  if (lyxSpinner) lyxSpinner.hidden = false;
-  if (lyxBusyText) lyxBusyText.hidden = false;
+let bridgeRequestCount = 0;
+function bridgeBusyStart() {
+  bridgeRequestCount++;
+  if (editorSpinner) editorSpinner.hidden = false;
+  if (bridgeBusyText) bridgeBusyText.hidden = false;
 }
-function lyxBusyEnd() {
-  lyxRequestCount = Math.max(0, lyxRequestCount - 1);
-  if (lyxRequestCount === 0) {
-    if (lyxSpinner) lyxSpinner.hidden = true;
-    if (lyxBusyText) lyxBusyText.hidden = true;
+function bridgeBusyEnd() {
+  bridgeRequestCount = Math.max(0, bridgeRequestCount - 1);
+  if (bridgeRequestCount === 0) {
+    if (editorSpinner) editorSpinner.hidden = true;
+    if (bridgeBusyText) bridgeBusyText.hidden = true;
   }
 }
-async function withLyxBusy(promise) {
-  lyxBusyStart();
+async function withbridgeBusy(promise) {
+  bridgeBusyStart();
   try {
     return await promise;
   } finally {
-    lyxBusyEnd();
+    bridgeBusyEnd();
   }
 }
 
 function updateStatusClass() {
   if (!statusEl) return;
   let cls = 'status';
-  if (lyxBusy) cls += ' busy';
-  else if (lyxPipeAvailable) cls += ' ok';
+  if (bridgeBusy) cls += ' busy';
+  else if (bridgeAvailable) cls += ' ok';
   else cls += ' bad';
   statusEl.className = cls;
 }
 
-function setLyxBusyState(state) {
-  lyxBusy = state;
+function setbridgeBusyState(state) {
+  bridgeBusy = state;
   updateStatusClass();
   updateComposerState();
 }
 
 function maybeSetBusyFromError(e) {
   if (e && typeof e.message === 'string' && /timeout/i.test(e.message)) {
-    setLyxBusyState(true);
-    setStatusText('LyX is busy — dismiss any dialog in LyX');
+    setbridgeBusyState(true);
+    setStatusText(`${APP} is busy — dismiss any dialog in ${APP}`);
   }
 }
 
 function updateComposerState() {
-  const canSend = sessionId && !busy && !lyxBusy;
+  const canSend = sessionId && !busy && !bridgeBusy;
   sendBtn.disabled = !canSend;
   undoBtn.disabled = !sessionId || busy;
   attachBtn.disabled = !sessionId || busy;
@@ -598,37 +614,57 @@ async function api(path, init) {
   return body;
 }
 
-// --- save consent (documents outside version control) ----------------------
+// --- save consent (documents outside version control; LyX-only feature) ---
 //
 // The server saves the live document to disk on every message. When the
 // file is not inside a VCS working tree that overwrite is unrecoverable,
-// so the server refuses the message (409 save-consent-required) until the
-// user accepts the conditions for that document path, once per session.
+// so the server refuses the message (409 save-consent-required) until
+// the user accepts the conditions for that document path, once per
+// session. Inert when CONFIG.hasSaveConsent is false (LibreOffice never
+// writes the file — its edits are tracked changes in the live buffer).
+
+const vcsWarnEl = document.getElementById('vcs-warn');
+const consentBackdrop = document.getElementById('save-consent-backdrop');
+const consentPathEl = document.getElementById('save-consent-path');
+const consentAcceptBtn = document.getElementById('save-consent-accept');
+const consentCancelBtn = document.getElementById('save-consent-cancel');
+
+/** Save-consent state (server-enforced; mirrored here to warn early). */
+let activeDocPath = null;
+/** null = unknown/unsaved; otherwise whether the active doc is in a VCS. */
+let docVersionControlled = null;
+/** Document paths the user already accepted this session (client mirror). */
+const saveConsentPaths = new Set();
+/** Resolver of the open save-consent modal, null while closed. */
+let consentResolver = null;
+
+const HAS_SAVE_CONSENT = Boolean(CONFIG.hasSaveConsent) && Boolean(consentBackdrop);
 
 /** Track the active document + its VCS status; toggle the warning badge. */
 function setDocInfo(docPath, versionControlled) {
+  if (!HAS_SAVE_CONSENT) return;
   activeDocPath = docPath || null;
   docVersionControlled = versionControlled ?? null;
-  vcsWarnEl.hidden = !(activeDocPath && docVersionControlled === false);
+  if (vcsWarnEl) vcsWarnEl.hidden = !(activeDocPath && docVersionControlled === false);
 }
 
 /** Show the save-consent modal; resolves true when the user accepts. */
 function showSaveConsent(docPath) {
   return new Promise((resolve) => {
-    consentPathEl.textContent = docPath;
-    consentBackdrop.hidden = false;
-    consentAcceptBtn.focus();
+    if (consentPathEl) consentPathEl.textContent = docPath;
+    if (consentBackdrop) consentBackdrop.hidden = false;
+    consentAcceptBtn?.focus();
     consentResolver = (accepted) => {
-      consentBackdrop.hidden = true;
+      if (consentBackdrop) consentBackdrop.hidden = true;
       consentResolver = null;
       resolve(accepted);
     };
   });
 }
 
-consentAcceptBtn.addEventListener('click', () => consentResolver?.(true));
-consentCancelBtn.addEventListener('click', () => consentResolver?.(false));
-consentBackdrop.addEventListener('mousedown', (e) => {
+consentAcceptBtn?.addEventListener('click', () => consentResolver?.(true));
+consentCancelBtn?.addEventListener('click', () => consentResolver?.(false));
+consentBackdrop?.addEventListener('mousedown', (e) => {
   if (e.target === consentBackdrop) consentResolver?.(false);
 });
 document.addEventListener('keydown', (e) => {
@@ -653,6 +689,7 @@ async function requestSaveConsent(docPath) {
 
 /** Pre-send gate: warn before the user bubble, when the state is known. */
 async function ensureSaveConsent() {
+  if (!HAS_SAVE_CONSENT) return true;
   if (!activeDocPath || docVersionControlled !== false) return true;
   if (saveConsentPaths.has(activeDocPath)) return true;
   return requestSaveConsent(activeDocPath);
@@ -661,27 +698,83 @@ async function ensureSaveConsent() {
 async function refreshStatus() {
   try {
     const st = await api('/api/status');
-    lyxPipeAvailable = st.lyxPipeAvailable;
-    if (lyxPipeAvailable) {
-      setLyxBusyState(false);
-      setStatusText('LyX connected');
+    bridgeAvailable = Boolean(st[CONFIG.statusKey ?? 'bridgeAvailable']);
+    if (bridgeAvailable) {
+      setbridgeBusyState(false);
+      setStatusText(`${APP} connected`);
+      hideInstallButton();
     } else {
-      setStatusText('LyX pipe not found — open LyX with a document');
+      setStatusText(CONFIG.statusMissing ?? 'Bridge not found — open the editor and start it');
+      await refreshInstallable();
     }
     updateStatusClass();
   } catch {
-    // Our own Express API is unreachable — that is not a LyX dialog block.
-    lyxPipeAvailable = false;
-    lyxBusy = false;
+    // Our own Express API is unreachable — that is not an editor dialog block.
+    bridgeAvailable = false;
+    bridgeBusy = false;
     updateStatusClass();
     setStatusText('server unreachable — restart the app');
   }
 }
 
+// --- one-click bridge extension install --------------------------------
+
+let installBusy = false;
+
+/** Show the install button only when the server can actually run it
+ * (LO-only feature; the whole section is inert when hasInstallFlow is
+ * false — the button stays hidden and no preflight is ever sent). */
+async function refreshInstallable() {
+  if (!installBtn || !CONFIG.hasInstallFlow) return;
+  try {
+    const pre = await api('/api/bridge/install/preflight');
+    installBtn.hidden = !pre.canInstall;
+  } catch {
+    installBtn.hidden = true;
+  }
+}
+
+function hideInstallButton() {
+  if (installBtn) installBtn.hidden = true;
+}
+
+async function installBridgeExtension() {
+  if (installBusy || !installBtn || !CONFIG.hasInstallFlow) return;
+  // This touches the user's REAL LibreOffice profile — confirm first,
+  // stating the full blast radius (audit B9): the cache wipe is profile-
+  // wide, not extension-specific.
+  const okToRun = window.confirm(
+    'Install the ACP Assist bridge extension into your LibreOffice?\n' +
+    'This modifies your LibreOffice profile. Only the ACP Assist extension ' +
+    'is removed and re-added, but the extension-cache clear (uno_packages/cache ' +
+    'and uno_packages.pmap) covers ALL extensions in this profile — ' +
+    'LibreOffice rebuilds it on the next launch and re-registers them. ' +
+    'Close LibreOffice first if it is running.',
+  );
+  if (!okToRun) return;
+  installBusy = true;
+  installBtn.disabled = true;
+  setStatusText('Installing bridge extension…');
+  try {
+    const r = await api('/api/bridge/install', { method: 'POST' });
+    setStatusText(r.message || 'Extension installed. Restart LibreOffice, then use menu ACP Assist > Start bridge.');
+    hideInstallButton();
+  } catch (e) {
+    setStatusText(`Install failed: ${e.message ?? e}`);
+  } finally {
+    installBusy = false;
+    installBtn.disabled = false;
+  }
+}
+
+if (installBtn) {
+  installBtn.addEventListener('click', installBridgeExtension);
+}
+
 async function refreshSelection() {
   if (!sessionId || !selectionEl) return;
   try {
-    const r = await withLyxBusy(api(`/api/session/${sessionId}/selection`));
+    const r = await withbridgeBusy(api(`/api/session/${sessionId}/selection`));
     if (r.hasSelection && r.stats && r.stats[0] > 0) {
       selectionEl.textContent = `${r.stats[0]} words selected`;
       selectionEl.hidden = false;
@@ -709,7 +802,7 @@ function updateDocSelector(active, documents) {
 docSelect.addEventListener('change', async () => {
   if (!sessionId || busy) return;
   try {
-    const r = await withLyxBusy(
+    const r = await withbridgeBusy(
       api(`/api/session/${sessionId}/documents/switch`, {
         method: 'POST',
         body: JSON.stringify({ path: docSelect.value }),
@@ -732,14 +825,14 @@ docSelect.addEventListener('change', async () => {
 
 /**
  * Each document has its own conversation history. Track which document's
- * conversation is rendered; when LyX's active document changes (dropdown
- * switch, tab change in LyX, file open), reload that document's history.
+ * conversation is rendered; when the editor's active document changes (dropdown
+ * switch, tab change in the editor, file open), reload that document's history.
  * A no-op when the active document hasn't changed.
  */
 async function refreshChatForDocument(active) {
   const key = active ?? '(unsaved)';
   if (key === chatDocKey) return;
-  const info = await withLyxBusy(api(`/api/session/${sessionId}`));
+  const info = await withbridgeBusy(api(`/api/session/${sessionId}`));
   // The fetch re-reads the active document — trust its answer over the
   // caller's (possibly stale) snapshot.
   chatDocKey = info.documentPath ?? '(unsaved)';
@@ -749,7 +842,7 @@ async function refreshChatForDocument(active) {
 async function refreshDocuments() {
   if (!sessionId) return;
   try {
-    const r = await withLyxBusy(api(`/api/session/${sessionId}/documents`));
+    const r = await withbridgeBusy(api(`/api/session/${sessionId}/documents`));
     updateDocSelector(r.active, r.documents);
     setDocInfo(r.active, r.versionControlled);
     if (r.active) {
@@ -786,8 +879,8 @@ async function connect() {
     addMessage(
       'assistant',
       info.outline
-        ? `Connected. Cursor layout: ${info.layout}. The agent decides itself whether to reply or write into the document.`
-        : 'Connected to LyX (document unsaved — outline unavailable).',
+        ? `Connected. Cursor ${CONFIG.cursorTerm ?? 'style'}: ${info.layout}. The agent decides itself whether to reply or write into the document.`
+        : `Connected to ${APP} (document unsaved — outline unavailable).`,
     );
     hideEmpty();
   }
@@ -814,7 +907,7 @@ async function reconnect() {
     await connect();
   } catch (e) {
     maybeSetBusyFromError(e);
-    if (!lyxBusy) {
+    if (!bridgeBusy) {
       setStatusText(`failed to connect: ${e.message}`);
       statusEl.className = 'status bad';
     }
@@ -825,11 +918,12 @@ async function reconnect() {
   }
 }
 
-function renderFeedback(msgDiv, { applied, target, target2, cancelled, error, tagNote }) {
+function renderFeedback(msgDiv, { applied, target, target2, address, module, cancelled, error, tagNote }) {
   const feedback = document.createElement('div');
   let prefix = '';
   let undoLabel = 'Undo edit';
   let showUndo = false;
+  const slides = module === 'impress' || module === 'draw';
 
   if (error) {
     feedback.className = 'feedback error';
@@ -845,32 +939,50 @@ function renderFeedback(msgDiv, { applied, target, target2, cancelled, error, ta
     showUndo = true;
     switch (applied) {
       case 'insert':
-        prefix = 'Inserted at the cursor in LyX';
+        prefix = 'Inserted at the cursor in ${APP}';
         break;
       case 'insert-top':
         prefix = 'Inserted at the top of the document';
         undoLabel = 'Undo edit (×2)';
         break;
       case 'insert-after':
-        prefix = `Inserted after [p${target ?? '?'}] in LyX`;
+        prefix = slides
+          ? (target === 0
+              ? 'Inserted a new slide at the very start of the deck'
+              : `Inserted a new slide after s${target ?? '?'} in ${APP}`)
+          : `Inserted after [p${target ?? '?'}] in ${APP}`;
         break;
       case 'insert-before':
-        prefix = `Inserted before [p${target ?? '?'}] in LyX`;
+        prefix = `Inserted before [p${target ?? '?'}] in ${APP}`;
         break;
       case 'rewrite':
-        prefix = 'Replaced the selection in LyX';
+        prefix = slides
+          ? `Replaced the selected frame in ${APP}`
+          : 'Replaced the selection in ${APP}';
+        break;
+      case 'rewrite-slide':
+        prefix = `Replaced slide s${target ?? '?'} in ${APP}`;
+        break;
+      case 'write-cells':
+        prefix = `Wrote cells at ${address ?? 'the selection'} in ${APP}`;
+        break;
+      case 'insert-rows':
+        prefix = `Inserted a row above ${address ?? 'the selection'} in ${APP}`;
+        break;
+      case 'insert-cols':
+        prefix = `Inserted a column left of ${address ?? 'the selection'} in ${APP}`;
         break;
       case 'rewrite-at':
-        prefix = `Replaced [p${target ?? '?'}] in LyX`;
+        prefix = `Replaced [p${target ?? '?'}] in ${APP}`;
         break;
       case 'delete-at':
-        prefix = `Deleted [p${target ?? '?'}] from LyX`;
+        prefix = `Deleted [p${target ?? '.'}] from ${APP}`;
         break;
       case 'merge':
-        prefix = `Merged [p${target ?? '?'}] with [p${target2 ?? '?'}] in LyX`;
+        prefix = `Merged [p${target ?? '?'}] with [p${target2 ?? '?'}] in ${APP}`;
         break;
       case 'move':
-        prefix = `Moved [p${target ?? '?'}] to after [p${target2 ?? '?'}] in LyX`;
+        prefix = `Moved [p${target ?? '?'}] to after [p${target2 ?? '?'}] in ${APP}`;
         break;
       default:
         prefix = `Applied ${applied}`;
@@ -895,8 +1007,8 @@ function renderFeedback(msgDiv, { applied, target, target2, cancelled, error, ta
     btn.addEventListener('click', async () => {
       if (!sessionId || busy) return;
       try {
-        await withLyxBusy(api(`/api/session/${sessionId}/undo`, { method: 'POST' }));
-        addSystemMessage('Undo sent to LyX');
+        await withbridgeBusy(api(`/api/session/${sessionId}/undo`, { method: 'POST' }));
+        addSystemMessage(`Undo sent to ${APP}`);
       } catch (e) {
         addSystemMessage(`Undo failed: ${e.message}`, true);
       }
@@ -917,9 +1029,9 @@ async function streamMessage(message) {
   let res;
   try {
     // The response headers arrive only after the server has finished reading
-    // the document context from LyX (save + outline + selection), so this
-    // fetch window is exactly the "talking to LyX" phase.
-    res = await withLyxBusy(
+    // the document context from the editor (save + outline + selection), so this
+    // fetch window is exactly the "talking to the editor" phase.
+    res = await withbridgeBusy(
       fetch(`/api/session/${sessionId}/message/stream`, {
         method: 'POST',
         headers: {
@@ -931,6 +1043,20 @@ async function streamMessage(message) {
       }),
     );
   } catch (e) {
+    if (e.name === 'AbortError') {
+      // The user pressed Stop before the stream even started (the fetch
+      // was still waiting for response headers). Give the turn its
+      // "Stopped before applying" feedback instead of a silent bubble.
+      hideTyping();
+      generationStart = 0;
+      textDiv.innerHTML = '<p>(no response)</p>';
+      renderFeedback(div, {
+        applied: null, target: null, target2: null, address: null,
+        module: null, cancelled: true, error: null,
+      });
+      setBusy(false);
+      return { full: '', applied: null, cancelled: true, error: null };
+    }
     maybeSetBusyFromError(e);
     hideTyping();
     generationStart = 0;
@@ -941,7 +1067,7 @@ async function streamMessage(message) {
   if (!res.ok || !res.body) {
     const body = await res.json().catch(() => ({}));
     const err = new Error(body.error ?? `${res.status} ${res.statusText}`);
-    // Machine-readable save-consent refusal (see send()).
+    // Machine-readable save-consent refusal (LyX; see send()).
     err.code = body.code;
     err.documentPath = body.documentPath;
     maybeSetBusyFromError(err);
@@ -958,6 +1084,8 @@ async function streamMessage(message) {
   let applied = null;
   let target = null;
   let target2 = null;
+  let address = null;
+  let module = null;
   let tagNote = null;
   let cancelled = false;
   let error = null;
@@ -1039,10 +1167,10 @@ async function streamMessage(message) {
           applied = payload.applied;
           target = payload.target ?? null;
           target2 = payload.target2 ?? null;
-          div._applied = applied; // quote strips the ```lyx block like the render does
-        } else if (payload.tagNote) {
-          // Near-miss action tag auto-corrected by the server parser.
-          tagNote = payload.tagNote;
+          address = payload.address ?? null;
+          module = payload.module ?? null;
+          tagNote = payload.tagNote ?? null;
+          div._applied = applied; // quote strips the ```writer block like the render does
         } else if (payload.appliedStep) {
           // Boundary between two edits of one multi-action run: close the
           // current bubble (with its feedback) and start a fresh one below
@@ -1052,8 +1180,8 @@ async function streamMessage(message) {
           div._applied = applied;
           textDiv.innerHTML =
             renderAssistantText(full, applied) || (started ? '' : '<p>(no response)</p>');
-          renderFeedback(div, { applied, target, target2, cancelled, error, tagNote });
-          streamSteps.push({ div, textDiv, text: full, applied, target, target2, error, cancelled, tagNote });
+          renderFeedback(div, { applied, target, target2, address, module, cancelled, error, tagNote });
+          streamSteps.push({ div, textDiv, text: full, applied, target, target2, address, module, error, cancelled, tagNote });
           const next = addMessage('assistant', '');
           div = next.div;
           textDiv = next.textDiv;
@@ -1062,13 +1190,20 @@ async function streamMessage(message) {
           applied = null;
           target = null;
           target2 = null;
+          address = null;
+          module = null;
           tagNote = null;
           error = null;
           cancelled = false;
           full = '';
           started = false;
+        } else if (payload.tagNote) {
+          // LyX server shape: the near-miss tag note arrives as its own
+          // frame; LO attaches it to the applied/none frames. Handle both.
+          tagNote = payload.tagNote;
         } else if (payload.action === 'none') {
           applied = 'none';
+          tagNote = payload.tagNote ?? null;
         } else if (payload.cancelled) {
           cancelled = true;
         } else if (payload.stopped) {
@@ -1077,18 +1212,26 @@ async function streamMessage(message) {
       }
     }
   } catch (e) {
-    cancelLiveRender();
-    if (started) {
-      // Show everything streamed so far (abort/stop): the throttled
-      // render may be up to LIVE_RENDER_MS behind.
-      div._rawText = full;
-      textDiv.innerHTML = renderAssistantText(full, applied);
+    if (e.name === 'AbortError') {
+      // The user pressed Stop: the fetch was aborted client-side. Fall
+      // through to the final render so the turn gets its "Stopped before
+      // applying" feedback instead of a silent empty bubble.
+      cancelLiveRender();
+      cancelled = true;
+    } else {
+      cancelLiveRender();
+      if (started) {
+        // Show everything streamed so far: the throttled render may be
+        // up to LIVE_RENDER_MS behind.
+        div._rawText = full;
+        textDiv.innerHTML = renderAssistantText(full, applied);
+      }
+      maybeSetBusyFromError(e);
+      hideTyping();
+      generationStart = 0;
+      setBusy(false);
+      throw e;
     }
-    maybeSetBusyFromError(e);
-    hideTyping();
-    generationStart = 0;
-    setBusy(false);
-    throw e;
   }
 
   hideTyping();
@@ -1111,7 +1254,7 @@ async function streamMessage(message) {
     streamSteps.length > 0 && (applied === null || applied === 'none')
     && !cancelled && !error && !tagNote;
   if (!summaryContinuation) {
-    renderFeedback(div, { applied, target, target2, cancelled, error, tagNote });
+    renderFeedback(div, { applied, target, target2, address, module, cancelled, error, tagNote });
   }
   if (stopReason) {
     const appliedCount = streamSteps.filter((s) => s.applied && s.applied !== 'none').length + (applied && applied !== 'none' ? 1 : 0);
@@ -1143,12 +1286,13 @@ async function streamMessage(message) {
 }
 
 async function send() {
-  if (busy || !sessionId || lyxBusy || consentResolver) return;
+  if (busy || !sessionId || bridgeBusy || consentResolver) return;
   const message = input.value.trim();
   if (!message) return;
-  // Save-consent gate: warn before anything is sent when the active
-  // document is known to be outside version control. The server enforces
-  // the same gate (409 save-consent-required), which covers stale state.
+  // Save-consent gate (LyX): warn before anything is sent when the
+  // active document is known to be outside version control. The server
+  // enforces the same gate (409 save-consent-required), which covers
+  // stale state.
   if (!(await ensureSaveConsent())) {
     addSystemMessage(
       'Not sent: the document is not under version control. Accept saving to continue, or keep it in a Git repository.',
@@ -1166,7 +1310,7 @@ async function send() {
   } catch (e) {
     if (e.name === 'AbortError') {
       /* user stop — no extra message */
-    } else if (e.code === 'save-consent-required') {
+    } else if (HAS_SAVE_CONSENT && e.code === 'save-consent-required') {
       // Server-side gate (the client's VCS state was stale): ask now and
       // retry the same message once after acceptance.
       const docPath = e.documentPath ?? activeDocPath;
@@ -1185,9 +1329,9 @@ async function send() {
       addSystemMessage(`error: ${e.message}`, true);
     }
   } finally {
-    await refreshStatus();
-    await refreshDocuments();
-    await refreshSelection();
+    // The three refreshes are independent — run them in parallel instead
+    // of serially after every message.
+    await Promise.allSettled([refreshStatus(), refreshDocuments(), refreshSelection()]);
   }
 }
 
@@ -1276,34 +1420,32 @@ fileInput.addEventListener('change', async () => {
   input.focus();
 });
 
-// Refresh the LyX document tab only when the user interacts with the
-// composer — never on a timer. Every pipe LFUN dispatched into LyX makes
-// LyX snap its view back to the cursor, so even a 2s `server-get-filename`
-// poll breaks wheel-scrolling an unfocused LyX window (Windows scrolls
-// inactive windows under the cursor). The authoritative context is re-read
-// server-side when a message is sent.
-// IMPORTANT: composer interaction must NOT refresh the selection. Reading
-// the selection dispatches a `copy` LFUN that clears/overwrites the system
-// clipboard — wiping whatever the user copied (e.g. a LyX error from the
-// logs) to paste into the composer. The selection indicator updates on
-// send/document-switch instead; the server re-reads the real selection at
-// message-send time anyway.
-function refreshLyxContext() {
+// Refresh the editor context (active document tab + selection indicator) only
+// when the user interacts with the composer — never on a timer. Every pipe
+// command dispatched into the editor makes it snap its view back to the cursor, so
+// even a 2s status poll breaks wheel-scrolling an unfocused
+// editor window (Windows scrolls inactive windows under the cursor). The
+// authoritative context is re-read server-side when a message is sent.
+function refreshEditorContext() {
   if (!sessionId || busy) return;
   refreshDocuments();
+  // LyX deliberately does NOT refresh the selection on composer
+  // interaction: the selection read dispatches a `copy` LFUN that
+  // clears/overwrites the system clipboard — wiping whatever the user
+  // copied to paste into the composer (live-reported 2026-10-22).
+  if (CONFIG.composerRefreshSelection) refreshSelection();
 }
-let lyxContextRefreshTimer = null;
+let editorContextRefreshTimer = null;
 input.addEventListener('input', () => {
-  if (lyxContextRefreshTimer) clearTimeout(lyxContextRefreshTimer);
-  lyxContextRefreshTimer = setTimeout(refreshLyxContext, 400);
+  if (editorContextRefreshTimer) clearTimeout(editorContextRefreshTimer);
+  editorContextRefreshTimer = setTimeout(refreshEditorContext, 400);
 });
-input.addEventListener('focus', refreshLyxContext);
+input.addEventListener('focus', refreshEditorContext);
 
 // One document refresh per window focus: the pipe has no "list open
-// buffers" LFUN, so this is how tabs opened/switched in LyX get discovered
+// buffers" LFUN, so this is how tabs opened/switched in the editor get discovered
 // after an app restart. A single LFUN on a deliberate focus change — unlike
-// the old 2s poll, it never fires while the user scrolls an unfocused LyX
-// window (scrolling does not change focus). Documents only: refreshing the
+// the old 2s poll, it never fires while the user scrolls an unfocused editor window (scrolling does not change focus). Documents only: refreshing the
 // selection dispatches a `copy` LFUN that overwrites the system clipboard,
 // which we don't want on a passive window focus.
 window.addEventListener('focus', () => {
@@ -1332,8 +1474,8 @@ stopBtn.addEventListener('click', async () => {
 undoBtn.addEventListener('click', async () => {
   if (busy || !sessionId) return;
   try {
-    await withLyxBusy(api(`/api/session/${sessionId}/undo`, { method: 'POST' }));
-    addSystemMessage('Undo sent to LyX');
+    await withbridgeBusy(api(`/api/session/${sessionId}/undo`, { method: 'POST' }));
+    addSystemMessage(`Undo sent to ${APP}`);
   } catch (e) {
     addSystemMessage(`Undo failed: ${e.message}`, true);
   }
@@ -1341,12 +1483,12 @@ undoBtn.addEventListener('click', async () => {
 
 reconnectBtn.addEventListener('click', reconnect);
 
-let lyxFollowMode = false;
+let followMode = false;
 pinBtn.addEventListener('click', () => {
-  lyxFollowMode = !lyxFollowMode;
-  pinBtn.setAttribute('aria-pressed', String(lyxFollowMode));
-  pinBtn.title = lyxFollowMode
-    ? 'Float on top while LyX is focused'
+  followMode = !followMode;
+  pinBtn.setAttribute('aria-pressed', String(followMode));
+  pinBtn.title = followMode
+    ? `Float on top while ${APP} is focused`
     : 'Floating disabled';
   window.electron?.toggleAlwaysOnTop?.();
 });
@@ -1358,7 +1500,7 @@ function start() {
   stopBtn.style.display = '';
   fileInput.style.display = '';
   sendBtn.title = 'Send message (Enter)';
-  reconnectBtn.title = 'Reconnect: restart the agent session and re-read LyX';
+  reconnectBtn.title = 'Reconnect: restart the agent session and re-read the document';
   pinBtn.setAttribute('aria-pressed', 'false');
   pinBtn.title = 'Floating disabled';
   cmdEl.addEventListener('blur', saveSettings);
@@ -1372,7 +1514,7 @@ function start() {
   updateComposerState();
   connect().catch((e) => {
     maybeSetBusyFromError(e);
-    if (!lyxBusy) {
+    if (!bridgeBusy) {
       setStatusText(`failed to connect: ${e.message}`);
       statusEl.className = 'status bad';
     }

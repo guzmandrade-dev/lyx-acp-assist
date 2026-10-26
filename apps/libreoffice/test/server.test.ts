@@ -5,6 +5,7 @@ import path from 'node:path';
 import http from 'node:http';
 import type { Server } from 'node:http';
 import { createServer, type AgentRunner, type AgentSettings } from '../src/server.js';
+import { PANEL_CONFIG } from '../src/panel-config.js';
 import { BridgeClient, BridgeError, type BridgeDocument, type EditPayload, type BridgeStatus, type BridgeDocumentEntry } from '../src/bridge/client.js';
 
 /** Fixed API bearer token (audit B1) for these HTTP-level tests. */
@@ -158,10 +159,13 @@ describe('server message loop (fake agent + fake bridge)', () => {
       req.end();
     });
     expect(rebindingStatus).toBe(403);
-    // The panel index carries the token same-origin.
+    // The panel index references the CSP-safe boot script; the token +
+    // config live there.
     const index = await fetch(`${baseUrl}/`);
     expect(index.status).toBe(200);
-    expect(await index.text()).toContain('window.__ACP_TOKEN__');
+    expect(await index.text()).toContain('<script src="/panel-boot.js"></script>');
+    const boot = await fetch(`${baseUrl}/panel-boot.js`);
+    expect(await boot.text()).toContain('window.__ACP_TOKEN__');
   });
 
   beforeAll(async () => {
@@ -170,7 +174,7 @@ describe('server message loop (fake agent + fake bridge)', () => {
     await fs.rm(historyDir, { recursive: true, force: true });
     bridge = new FakeBridge();
     const app = createServer({
-      apiToken: API_TOKEN, publicDir,
+      apiToken: API_TOKEN, publicDir, panelConfig: PANEL_CONFIG,
       historyDir,
       agentFactory: fakeAgent([]),
       bridgeFactory: () => bridge,
@@ -204,7 +208,7 @@ describe('server message loop (fake agent + fake bridge)', () => {
     // the other tests' conversation assertions.
     const b3History = path.join(os.tmpdir(), 'lo-acp-test-history-b3');
     const app = createServer({
-      apiToken: API_TOKEN, publicDir,
+      apiToken: API_TOKEN, publicDir, panelConfig: PANEL_CONFIG,
       historyDir: b3History,
       agentFactory: fakeAgent(['All good. [ACTION: none]']),
       bridgeFactory: () => new StaleBridge() as unknown as BridgeClient,
@@ -250,7 +254,7 @@ describe('server message loop (fake agent + fake bridge)', () => {
     ];
     // Re-create the session with a scripted agent (per-test agent).
     const app = createServer({
-      apiToken: API_TOKEN, publicDir,
+      apiToken: API_TOKEN, publicDir, panelConfig: PANEL_CONFIG,
       historyDir,
       agentFactory: fakeAgent(scripted),
       bridgeFactory: () => new FakeBridge(),
@@ -349,7 +353,7 @@ describe('server message loop (fake agent + fake bridge)', () => {
       }
     })();
     const app = createServer({
-      apiToken: API_TOKEN, publicDir,
+      apiToken: API_TOKEN, publicDir, panelConfig: PANEL_CONFIG,
       historyDir,
       agentFactory: fakeAgent([
         'Writing the totals.\n```calc\nTotal\t=SUM(B2:B3)\n```\n[ACTION: write-cells C1]',
@@ -419,7 +423,7 @@ describe('server message loop (fake agent + fake bridge)', () => {
       }
     })();
     const app = createServer({
-      apiToken: API_TOKEN, publicDir,
+      apiToken: API_TOKEN, publicDir, panelConfig: PANEL_CONFIG,
       historyDir,
       agentFactory: fakeAgent([
         'Adding the slide.\n```impress\nConclusions\nShip it\nRest is history\n```\n[ACTION: insert-after s2]',
@@ -468,7 +472,7 @@ describe('server message loop (fake agent + fake bridge)', () => {
 
   it('undo routes through the bridge and reports when nothing is undoable', async () => {
     const app = createServer({
-      apiToken: API_TOKEN, publicDir,
+      apiToken: API_TOKEN, publicDir, panelConfig: PANEL_CONFIG,
       agentFactory: fakeAgent([]),
       bridgeFactory: () => {
         const b = new FakeBridge();
@@ -490,7 +494,7 @@ describe('server message loop (fake agent + fake bridge)', () => {
 
   it('refuses document actions for unsupported modules via the generic adapter', async () => {
     const app = createServer({
-      apiToken: API_TOKEN, publicDir,
+      apiToken: API_TOKEN, publicDir, panelConfig: PANEL_CONFIG,
       agentFactory: fakeAgent(['I will edit it.\n```writer\nNope\n```\n[ACTION: insert]']),
       bridgeFactory: () => {
         const b = new FakeBridge();
@@ -528,7 +532,7 @@ describe('bridge extension install routes', () => {
 
   async function makeApp(opts: Partial<Parameters<typeof createServer>[0]> = {}) {
     const app = createServer({
-      apiToken: API_TOKEN, publicDir,
+      apiToken: API_TOKEN, publicDir, panelConfig: PANEL_CONFIG,
       agentFactory: () => ({ start: async () => undefined, stop: () => undefined, createSession: async () => undefined, cancel: () => undefined, prompt: async () => '' }),
       bridgeFactory: () => new FakeBridge(),
       ...opts,

@@ -48,10 +48,10 @@ import {
   MAX_ACTIONS_PER_MESSAGE,
   pollUntil,
   createApiAuthGuard,
-  createPanelIndexHandler,
   generateApiToken,
   type ConversationStore,
 } from '@acp-assist/core';
+import { createPanelBootScript, createPanelIndexHandler, panelPublicDir, type PanelConfig } from '@acp-assist/panel';
 import type {
   AgentRunner,
   AgentSettings,
@@ -84,7 +84,18 @@ export interface Session {
 }
 
 export interface ServerOptions {
-  publicDir: string;
+  /**
+   * The SHARED panel package's public dir (defaults to panelPublicDir()).
+   * Track C: one panel, config-injected.
+   */
+  publicDir?: string;
+  /**
+   * Per-app asset overrides served BEFORE the shared panel dir (e.g. the
+   * app's own logo.svg).
+   */
+  assetsDir?: string;
+  /** Panel config (Track C): injected into the served index.html. */
+  panelConfig: PanelConfig;
   historyDir?: string;
   attachmentsDir?: string;
   logDir?: string;
@@ -122,9 +133,16 @@ export function createServer(options: ServerOptions & {
   // assets sit BEFORE the guard (not sensitive), all /api routes after.
   const apiToken = options.apiToken ?? generateApiToken();
   app.locals.apiToken = apiToken;
+  const publicDir = options.publicDir ?? panelPublicDir();
   app.use(express.json({ limit: '5mb' }));
-  app.get('/', createPanelIndexHandler(options.publicDir, apiToken));
-  app.use(express.static(options.publicDir, { maxAge: 0, etag: false, lastModified: false }));
+  app.get('/', createPanelIndexHandler(publicDir, { token: apiToken, config: options.panelConfig }));
+  // CSP-safe boot script (external same-origin): carries the token +
+  // panel config to the page.
+  app.get('/panel-boot.js', createPanelBootScript({ token: apiToken, config: options.panelConfig }));
+  if (options.assetsDir) {
+    app.use(express.static(options.assetsDir, { maxAge: 0, etag: false, lastModified: false }));
+  }
+  app.use(express.static(publicDir, { maxAge: 0, etag: false, lastModified: false }));
   app.use(createApiAuthGuard(apiToken));
 
   const sessions = new Map<string, Session>();

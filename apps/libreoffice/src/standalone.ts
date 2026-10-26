@@ -1,53 +1,44 @@
 /**
- * Standalone server entry (no Electron): serves the panel and the API on
- * a dynamic port (PORT env overrides). Used for development and for
- * driving the app end-to-end from scripts/tools.
+ * Standalone server entry (no Electron): serves the SHARED panel and the
+ * API on a dynamic port (PORT env overrides). Used for development and
+ * for driving the app end-to-end from scripts/tools.
  */
 
 import path from 'node:path';
-import fs from 'node:fs';
-import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createServer } from './server.js';
+import { createStandaloneServer } from '@acp-assist/panel';
 import { writeCompanionRecord, removeCompanionRecord } from './bridge/client.js';
+import { PANEL_CONFIG } from './panel-config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const publicDir = path.join(__dirname, '..', 'public');
-if (!fs.existsSync(path.join(publicDir, 'index.html'))) {
-  throw new Error(`public dir not found at ${publicDir}`);
-}
-const dataDir = path.join(os.tmpdir(), 'lo-acp-assist-dev');
-const server = createServer({
-  publicDir,
-  historyDir: path.join(dataDir, 'history'),
-  attachmentsDir: path.join(dataDir, 'attachments'),
-  logDir: path.join(dataDir, 'logs'),
-  settingsDir: dataDir,
-  // Dev run: the packaged extension built from extension/.
-  oxtPath: path.join(__dirname, '..', 'acp-bridge.oxt'),
-});
-
-const port = process.env.PORT ? Number.parseInt(process.env.PORT, 10) : 0;
-const httpServer = server.listen(port, '127.0.0.1', () => {
-  const address = httpServer.address();
-  const actual = typeof address === 'object' && address ? address.port : port;
-  console.log(`LibreOffice ACP Assist dev server at http://127.0.0.1:${actual}`);
+createStandaloneServer({
+  appName: 'LibreOffice',
+  dataDirName: 'lo-acp-assist-dev',
+  // The app's own logo.svg (all other panel assets are shared).
+  assetsDir: path.join(__dirname, '..', 'public'),
+  createServer: (paths) =>
+    createServer({
+      publicDir: paths.publicDir,
+      assetsDir: paths.assetsDir,
+      panelConfig: PANEL_CONFIG,
+      historyDir: paths.historyDir,
+      attachmentsDir: paths.attachmentsDir,
+      logDir: paths.logDir,
+      settingsDir: paths.settingsDir,
+      // Dev run: the packaged extension built from extension/ at the repo root.
+      oxtPath: path.join(__dirname, '..', 'acp-bridge.oxt'),
+    }),
   // Discovery record for the in-LibreOffice status panel (dev mode: no
   // packaged exe, so "open companion" resolves to this URL in a browser).
-  writeCompanionRecord({
-    pid: process.pid,
-    port: actual,
-    url: `http://127.0.0.1:${actual}`,
-    exe: null,
-    token: (server.locals.apiToken as string) ?? '',
-  }).catch(() => undefined);
+  writeRecord: ({ url, port, token }) =>
+    writeCompanionRecord({
+      pid: process.pid,
+      port,
+      url,
+      exe: null,
+      token,
+    }),
+  removeRecord: () => removeCompanionRecord(),
 });
-
-/** Best-effort record removal on Ctrl+C / SIGTERM. */
-for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-  process.on(signal, () => {
-    httpServer.close();
-    removeCompanionRecord().finally(() => process.exit(0));
-  });
-}

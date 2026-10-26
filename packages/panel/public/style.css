@@ -794,3 +794,165 @@ button:focus-visible {
     transition-duration: 0ms !important;
   }
 }
+/* ── LyX theme override (Warm Parchment): selected via the theme-lyx class
+   on <html>, injected by the panel index handler ── */
+:root.theme-lyx {
+  color-scheme: light dark;
+
+  /* Surfaces — warm parchment family */
+  --bg: #FDF6E3;
+  --surface: #FFFBF0;
+  --surface-secondary: #F5ECD7;
+  --surface-tertiary: #EDE2C8;
+  --surface-hover: #FFF3D0;
+
+  /* Text — warm ink */
+  --text-primary: #2C2416;
+  --text-secondary: #6B5E4A;
+  --text-tertiary: #75684F;
+  --text-on-accent: #ffffff;
+
+  /* Borders — warm tan */
+  --border: #E8DDC4;
+  --border-strong: #D4C4A0;
+  --focus-ring: #3b6ea5;
+
+  /* Accent — LyX blue, slightly deeper for contrast on warm bg */
+  --accent: #2E5A8A;
+  --accent-hover: #234A73;
+  --accent-subtle: rgba(46, 90, 138, 0.08);
+  --accent-glow: rgba(46, 90, 138, 0.30);
+
+  /* Secondary accent — warm amber for highlights */
+  --amber: #8A650B;
+  --amber-subtle: rgba(138, 101, 11, 0.10);
+  --amber-border: rgba(138, 101, 11, 0.30);
+
+  /* Status */
+  --status-ok: #2d7a46;
+  --status-bad: #b33a3a;
+  --status-warn: #7A5416;
+  --status-busy: #2E5A8A;
+  --error: var(--status-bad);
+  --applied: var(--status-ok);
+
+  /* Typography */
+  --font-sans: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-display: "Newsreader", Georgia, "Times New Roman", serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-base: 13px;
+  --text-md: 14px;
+
+  --leading-normal: 1.45;
+  --leading-relaxed: 1.6;
+
+  --weight-normal: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+
+  /* Spacing */
+  --space-1: 2px;
+  --space-2: 4px;
+  --space-3: 6px;
+  --space-4: 8px;
+  --space-5: 12px;
+  --space-6: 16px;
+  --space-7: 20px;
+  --space-8: 24px;
+
+  /* Radius — slightly softer, paper-like */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-pill: 999px;
+
+  /* Elevation — warm shadows */
+  --shadow-sm: 0 1px 3px rgba(44, 36, 22, 0.06), 0 1px 2px rgba(44, 36, 22, 0.04);
+  --shadow-float: 0 4px 12px rgba(44, 36, 22, 0.08), 0 1px 3px rgba(44, 36, 22, 0.06);
+  --shadow-card: 0 1px 4px rgba(44, 36, 22, 0.06);
+
+  /* Motion */
+  --duration-fast: 100ms;
+  --duration-base: 150ms;
+  --duration-slow: 220ms;
+  --ease-out: cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+
+.vcs-warn {
+  display: inline-flex;
+  align-items: center;
+  font-size: var(--text-xs);
+  color: var(--status-warn);
+  background: var(--amber-subtle);
+  border: 1px solid var(--amber-border);
+  border-radius: var(--radius-pill);
+  padding: 2px 8px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* ── Save-consent modal ── */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-7);
+  background: rgba(44, 36, 22, 0.45);
+}
+.modal {
+  max-width: 460px;
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-float);
+  padding: var(--space-7);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.modal h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+.modal p {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+  color: var(--text-secondary);
+}
+.modal p code {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+  background: var(--surface-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 1px 4px;
+  word-break: break-all;
+}
+.modal-hint { font-size: var(--text-xs); }
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-4);
+  margin-top: var(--space-2);
+}
+.modal-actions button { min-width: 96px; }
+.modal-primary {
+  background: var(--accent);
+  color: var(--text-on-accent);
+  border-color: var(--accent);
+  font-weight: var(--weight-semibold);
+}
+.modal-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+

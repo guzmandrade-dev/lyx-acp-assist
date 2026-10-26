@@ -4,6 +4,10 @@ import type { Server } from 'node:http';
 import type { Express } from 'express';
 import { createServer, parseAction, normalizeForCompare, isLikelyMatch, verifyParagraphSelection, buildAutoPrompt, extractAttachmentText, findClassLayouts, listKnownDocuments, formatHistoryReplay } from '../src/server.js';
 import type { RawClipboard } from '../src/clipboard/lyx-clipboard.js';
+import { PANEL_CONFIG } from '../src/panel-config.js';
+
+/** LyX panel config for the shared panel (Track C). */
+const TEST_PANEL_CONFIG = PANEL_CONFIG;
 
 /** Fixed API bearer token (audit B1) for these HTTP-level tests. */
 const API_TOKEN = 'test-api-token';
@@ -37,7 +41,7 @@ let baseUrl = '';
 async function setup(): Promise<void> {
   if (server) return;
   express = createServer({
-    apiToken: API_TOKEN, publicDir: new URL('../public', import.meta.url).pathname.replace(/^\/(\w:)/, '$1'),
+    apiToken: API_TOKEN, panelConfig: PANEL_CONFIG,
     clipboard: stubClipboard,
   });
   server = await new Promise<Server>((resolve) => {
@@ -83,11 +87,14 @@ describe('API surface', () => {
       req.end();
     });
     expect(rebindingStatus).toBe(403);
-    // The panel index carries the token same-origin; static assets do not
-    // need auth.
+    // The panel index references the CSP-safe boot script; the token +
+    // config live there (an injected inline script is blocked by the
+    // tight CSP).
     const index = await fetch(`${baseUrl}/`);
     expect(index.status).toBe(200);
-    expect(await index.text()).toContain('window.__ACP_TOKEN__');
+    expect(await index.text()).toContain('<script src="/panel-boot.js"></script>');
+    const boot = await fetch(`${baseUrl}/panel-boot.js`);
+    expect(await boot.text()).toContain('window.__ACP_TOKEN__');
   });
 
   it('reports LyX pipe availability on /api/status', async () => {
@@ -124,7 +131,7 @@ describe('agent settings persistence', () => {
     const path = await import('node:path');
     const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'lyx-settings-'));
     const app = createServer({
-      apiToken: API_TOKEN, publicDir: new URL('../public', import.meta.url).pathname.replace(/^\/(\w:)/, '$1'),
+      apiToken: API_TOKEN, panelConfig: PANEL_CONFIG,
       clipboard: stubClipboard,
       settingsDir: dir,
     });
@@ -690,7 +697,7 @@ describe('idle-session GC (audit B2)', () => {
     };
     const app = createServer({
       apiToken: API_TOKEN,
-      publicDir: new URL('../public', import.meta.url).pathname.replace(/^\/(\w:)/, '$1'),
+      panelConfig: PANEL_CONFIG,
       clipboard: stubClipboard,
       sessionIdleMs: 300, // sweep every max(1s, 30ms) -> 1s
       agentFactory: () => fakeAgent as unknown as import('../src/server.js').AgentRunner,

@@ -60,34 +60,6 @@ export function createApiAuthGuard(token: string): express.RequestHandler {
   };
 }
 
-/**
- * Serve the panel's index.html with the API token injected as
- * `window.__ACP_TOKEN__` (same-origin delivery — see the module comment).
- * The file is read once and cached; a read failure serves a 500 so a
- * missing panel dir is loud, not silent.
- */
-export function createPanelIndexHandler(publicDir: string, token: string): express.RequestHandler {
-  let html: Promise<string> | null = null;
-  const load = () => {
-    html ??= fs
-      .readFile(path.join(publicDir, 'index.html'), 'utf8')
-      .then((raw) =>
-        raw.replace(
-          '</head>',
-          `<script>window.__ACP_TOKEN__ = ${JSON.stringify(token)};</script>\n</head>`,
-        ),
-      );
-    return html;
-  };
-  return async (_req, res) => {
-    try {
-      res.type('html').send(await load());
-    } catch {
-      res.status(500).send('panel index.html not found');
-    }
-  };
-}
-
 /** Companion discovery record shape (pid/port/url/exe + API token). */
 export interface CompanionRecord {
   pid: number;
