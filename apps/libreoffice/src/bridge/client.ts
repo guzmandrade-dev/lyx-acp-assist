@@ -11,6 +11,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
+import { TIMINGS } from '../timings.js';
 
 /** One `<pid>.json` discovery record written by a bridge. */
 export interface BridgeRecord {
@@ -313,7 +314,7 @@ export class BridgeClient {
     this.base = `http://127.0.0.1:${record.port}`;
   }
 
-  private async request(method: string, apiPath: string, body?: unknown, timeoutMs = 40_000): Promise<unknown> {
+  private async request(method: string, apiPath: string, body?: unknown, timeoutMs = TIMINGS.bridgeRequestTimeoutMs): Promise<unknown> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {

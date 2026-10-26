@@ -26,6 +26,7 @@ import {
   type InstallResult,
 } from './bridge/install.js';
 import { writerAdapter } from './modules/writer.js';
+import { TIMINGS } from './timings.js';
 import { calcAdapter, parseCalcAction } from './modules/calc.js';
 import { impressAdapter, parseImpressAction } from './modules/impress.js';
 import { genericAdapter } from './modules/generic.js';
@@ -370,7 +371,7 @@ export function createServer(options: ServerOptions & {
           const st = await session.bridge.status();
           return st.active && (st.url === target || st.title === target);
         },
-        { timeoutMs: 2000, intervalMs: 50 },
+        { timeoutMs: TIMINGS.documentSwitchPollMs, intervalMs: TIMINGS.pollIntervalMs },
       );
       const active = await refreshActiveDocument(session);
       res.json({ active, documents: [...session.knownDocuments] });
@@ -478,7 +479,7 @@ export function createServer(options: ServerOptions & {
         const reply = await session.agent.prompt(session.id, [{ type: 'text', text: prompt }], {
           onChunk: (chunk) => send({ text: chunk, ...(step > 1 ? { step } : {}) }),
           onToolCall: (tool) => send({ tool }),
-          timeoutMs: 240_000,
+          timeoutMs: TIMINGS.promptTimeoutMs,
         });
         const outcome = parseOutcome(adapter, reply);
 

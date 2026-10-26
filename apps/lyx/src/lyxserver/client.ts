@@ -28,6 +28,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
+import { TIMINGS } from '../timings.js';
 import {
   discoverLyxEnvironment,
   parseSessionFilePaths,
@@ -130,9 +131,9 @@ export class LyxServerClient extends EventEmitter {
     this.pipeBase = options.pipeBase ?? process.env.LYX_PIPE ?? env.pipeBase;
     this.userDir = options.userDir ?? env.userDir;
     this.clientName = `lyx-acp-${process.pid}`;
-    this.timeoutMs = options.timeoutMs ?? 8000;
-    this.deafProbeMs = options.deafProbeMs ?? 500;
-    this.writeOnlyGraceMs = options.writeOnlyGraceMs ?? 150;
+    this.timeoutMs = options.timeoutMs ?? TIMINGS.pipeTimeoutMs;
+    this.deafProbeMs = options.deafProbeMs ?? TIMINGS.deafProbeMs;
+    this.writeOnlyGraceMs = options.writeOnlyGraceMs ?? TIMINGS.writeOnlyGraceMs;
     this.fallbacks = options.fallbacks ?? null;
     this.inPath = `${this.pipeBase}.in`;
     this.outPath = `${this.pipeBase}.out`;

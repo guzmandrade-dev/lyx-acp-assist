@@ -30,6 +30,7 @@ import {
 } from './lyx/context.js';
 import { CHAT_KNOWLEDGE } from './lyx/knowledge.js';
 import { discoverLyxEnvironment } from './lyxserver/pipe-config.js';
+import { TIMINGS } from './timings.js';
 import { isVersionControlled } from './vcs.js';
 import {
   AcpClient,
@@ -366,7 +367,7 @@ export function createServer(options: ServerOptions & {
       // Wait until LyX actually switched (bounded poll instead of a fixed
       // sleep); on timeout we fall through and report whatever is active.
       await pollUntil(async () => (await session.lyx.getFilename()) === target, {
-        timeoutMs: 2000,
+        timeoutMs: TIMINGS.documentSwitchPollMs,
         intervalMs: 50,
       });
       const active = await refreshActiveDocument(session);
@@ -493,7 +494,7 @@ export function createServer(options: ServerOptions & {
       let reply = await session.agent.prompt(session.id, [{ type: 'text', text: prompt }], {
         onChunk: (chunk) => send({ text: chunk, ...(step > 1 ? { step } : {}) }),
         onToolCall: (tool) => send({ tool }),
-        timeoutMs: 240_000,
+        timeoutMs: TIMINGS.promptTimeoutMs,
       });
       let outcome = parseAction(reply);
 
@@ -506,6 +507,9 @@ export function createServer(options: ServerOptions & {
           reply = await session.agent.prompt(session.id, [{ type: 'text', text: retry }], {
             onChunk: (chunk) => send({ text: `\n${chunk}`, ...(step > 1 ? { step } : {}) }),
             onToolCall: (tool) => send({ tool }),
+            // Same budget as the main prompt (audit B8: this call had NO
+            // timeoutMs, so a stuck retry could hang the stream).
+            timeoutMs: TIMINGS.promptTimeoutMs,
           });
           outcome = parseAction(reply);
         }
@@ -1075,8 +1079,8 @@ export function createServer(options: ServerOptions & {
         // Wait until the x-lyx payload lands on the clipboard (the copy
         // LFUN is dispatched asynchronously in LyX's event loop).
         const doc = await pollUntil(() => session.clipboard.readLyxDocument(), {
-          timeoutMs: 500,
-          intervalMs: 25,
+          timeoutMs: TIMINGS.clipboardPayloadPollMs,
+          intervalMs: TIMINGS.pollIntervalMs,
         });
         if (doc) {
           lyxBody = extractBodyLayouts(doc) ?? doc;
@@ -1153,8 +1157,8 @@ export function createServer(options: ServerOptions & {
       return fail('Could not copy the selected paragraph for verification.');
     }
     const payload = await pollUntil(() => session.clipboard.readLyxDocument(), {
-      timeoutMs: 500,
-      intervalMs: 25,
+      timeoutMs: TIMINGS.clipboardPayloadPollMs,
+      intervalMs: TIMINGS.pollIntervalMs,
     });
     const clipboardText = payload === null ? await session.clipboard.readText() : null;
     const verify = verifyParagraphSelection({
