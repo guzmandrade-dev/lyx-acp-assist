@@ -636,11 +636,16 @@ function hideInstallButton() {
 
 async function installBridgeExtension() {
   if (installBusy || !installBtn) return;
-  // This touches the user's REAL LibreOffice profile — confirm first.
+  // This touches the user's REAL LibreOffice profile — confirm first,
+  // stating the full blast radius (audit B9): the cache wipe is profile-
+  // wide, not extension-specific.
   const okToRun = window.confirm(
     'Install the ACP Assist bridge extension into your LibreOffice?\n' +
-    'This modifies your LibreOffice profile and clears its extension cache ' +
-    '(so the sidebar deck registers cleanly). Close LibreOffice first if it is running.',
+    'This modifies your LibreOffice profile. Only the ACP Assist extension ' +
+    'is removed and re-added, but the extension-cache clear (uno_packages/cache ' +
+    'and uno_packages.pmap) covers ALL extensions in this profile — ' +
+    'LibreOffice rebuilds it on the next launch and re-registers them. ' +
+    'Close LibreOffice first if it is running.',
   );
   if (!okToRun) return;
   installBusy = true;

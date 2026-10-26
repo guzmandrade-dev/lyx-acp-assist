@@ -10,6 +10,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -28,6 +29,7 @@ import {
   type DocumentContext,
 } from './lyx/context.js';
 import { CHAT_KNOWLEDGE } from './lyx/knowledge.js';
+import { discoverLyxEnvironment } from './lyxserver/pipe-config.js';
 import { isVersionControlled } from './vcs.js';
 import {
   AcpClient,
@@ -1753,21 +1755,57 @@ export function verifyParagraphSelection(
  */
 const classLayoutsCache = new Map<string, string[] | null>();
 
+/**
+ * Candidate layout directories, version-agnostic (audit B10 — the list
+ * used to pin `LyX 2.5`): the user's own layouts dir (via the same
+ * version-globbing discovery as the pipe config), then every installed
+ * `LyX*` under Program Files (newest version first), then Linux paths.
+ * LYX_LAYOUTS_DIR always wins.
+ */
+function layoutDirCandidates(): string[] {
+  const candidates: string[] = [];
+  if (process.env.LYX_LAYOUTS_DIR) candidates.push(process.env.LYX_LAYOUTS_DIR);
+  if (process.platform === 'win32') {
+    const env = discoverLyxEnvironment();
+    if (env.userDir) candidates.push(path.join(env.userDir, 'layouts'));
+    const programDirs = [process.env.ProgramFiles ?? 'C:\\Program Files', process.env['ProgramFiles(x86)'] ?? 'C:\\Program Files (x86)'];
+    for (const root of programDirs) {
+      try {
+        const installs = fsSync
+          .readdirSync(root)
+          .filter((name) => /^LyX \d+(\.\d+)*$/i.test(name))
+          .sort((a, b) => compareLyxDirsDesc(a, b));
+        for (const install of installs) {
+          candidates.push(path.join(root, install, 'Resources', 'layouts'));
+        }
+      } catch {
+        /* that Program Files root does not exist */
+      }
+    }
+  } else {
+    candidates.push(path.join(os.homedir(), '.lyx', 'layouts'));
+  }
+  candidates.push('/usr/share/lyx/layouts', '/usr/local/share/lyx/layouts');
+  return [...new Set(candidates)];
+}
+
+/** Sort helper: "LyX 2.5" > "LyX 2.4.1" > "LyX 2.4". */
+function compareLyxDirsDesc(a: string, b: string): number {
+  const ver = (s: string) => (s.match(/\d+(?:\.\d+)*/g)?.[0] ?? '').split('.').map(Number);
+  const va = ver(a);
+  const vb = ver(b);
+  for (let i = 0; i < Math.max(va.length, vb.length); i++) {
+    const d = (vb[i] ?? 0) - (va[i] ?? 0);
+    if (d !== 0) return d;
+  }
+  return 0;
+}
+
 export async function findClassLayouts(textclass: string): Promise<string[] | null> {
   const safeClass = textclass.replace(/[^\w.-]+/g, '');
   if (!safeClass) return null;
   if (classLayoutsCache.has(safeClass)) return classLayoutsCache.get(safeClass) ?? null;
-  const home = os.homedir();
-  const candidates = [
-    process.env.LYX_LAYOUTS_DIR,
-    process.platform === 'win32'
-      ? path.join(process.env.APPDATA ?? home, 'LyX2.5', 'layouts')
-      : path.join(home, '.lyx', 'layouts'),
-    'C:\\Program Files\\LyX 2.5\\Resources\\layouts',
-    '/usr/share/lyx/layouts',
-    '/usr/local/share/lyx/layouts',
-  ].filter((d): d is string => Boolean(d));
-  for (const dir of candidates) {
+  for (const dir of layoutDirCandidates()) {
     const names = await collectStyles(path.join(dir, `${safeClass}.layout`), dir, 0);
     if (names) {
       classLayoutsCache.set(safeClass, names);
@@ -1837,6 +1875,10 @@ export async function listKnownDocuments(historyDir: string): Promise<string[]> 
 }
 
 /** Minimal header used when the document has never been saved. */
+// Paste-document header when the real document header is unavailable
+// (unsaved buffer; audit B10 reviewed the pinning: LyX UPGRADES older
+// \lyxformat documents on read, so a slightly older pinned format is
+// safe across future LyX versions — no discovery needed).
 const FALLBACK_HEADER = [
   '#LyX 2.5 created this file. For more info see https://www.lyx.org/',
   '\\lyxformat 643',
