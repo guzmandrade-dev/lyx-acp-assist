@@ -758,3 +758,24 @@ reverted it — same flow as the 2026-10-22 validation).
   - The `AsyncCallback` service is resolved once and cached
     (`_async_callback()`, same in acppanel's status refresh) — was
     `createInstanceWithContext` per HTTP request.
+
+## API bearer-token auth (audit B1, 2026-10-26)
+
+Same shared-core change as the LyX app (`@acp-assist/core` `auth.ts`):
+random 256-bit bearer token on all `/api/*`, loopback Host check,
+`express.json` limit 50mb → 5mb, panel token injected same-origin into
+index.html (`window.__ACP_TOKEN__`). App-specific pieces:
+
+- `companion.json` carries the token (written by `standalone.ts` and
+  `electron/main.ts` from `app.locals.apiToken`); `acppanel.py`'s
+  companion status probe sends it as `Authorization` (old records
+  without a token degrade to "not responding" — the app requires it).
+- `test-bridge/live_drive.mjs` reads the token from the record
+  (`API_TOKEN` env overrides).
+- TEST PITFALL: `fetch()` refuses to override the Host header — the
+  DNS-rebinding test uses a raw `http.request`.
+
+Gates: LO 73/73 + core 20/20 + typechecks; oxt rebuilt, bridge e2e
+47/47 + mechanics 13/13 against live LO; live vibe-acp run through the
+authenticated API (401 unauthenticated, insert-after + undo with the
+token from companion.json).

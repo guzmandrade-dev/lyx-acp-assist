@@ -987,3 +987,26 @@ probes (real PowerShell + real Windows clipboard) rather than LyX.
 - **History persistence is debounced** (`@acp-assist/core`
   conversations store): 500ms per-key trailing debounce + `flush()`;
   the stream loop flushes at `{done:true}` and in the error path.
+
+## API bearer-token auth (audit B1, 2026-10-26)
+
+The companion API (127.0.0.1 + random port) now REQUIRES auth on every
+`/api/*` request — any local process or a DNS-rebinding page could
+previously `POST /api/session` with an arbitrary agent command (spawning
+any executable). Shared implementation in `@acp-assist/core` `auth.ts`:
+
+- Random 256-bit bearer token per server (option `apiToken` to pin it;
+  exposed as `app.locals.apiToken`).
+- Loopback Host-header check (DNS-rebinding guard).
+- `express.json` limit cut 50mb → 5mb.
+- The panel gets the token SAME-ORIGIN: `GET /` serves index.html with
+  `window.__ACP_TOKEN__` injected (static assets stay unguarded — they
+  are not sensitive; a cross-origin page can send requests but never
+  READ responses, so it cannot obtain the token). Both panels' `api()`
+  and the stream fetch send `Authorization: Bearer …`.
+- External tools read the token from the companion record the server
+  writes: LyX `<userData>/companion.json` (dev: `<tmp>/lyx-acp-assist-
+  dev/`), LO `%APPDATA%/LibreOffice ACP Assist/companion.json` —
+  `test/live_drive.mjs` reads it (`API_TOKEN` env overrides).
+- TEST PITFALL: `fetch()` (undici) refuses to override the Host header,
+  so the rebinding test uses a raw `http.request`.
