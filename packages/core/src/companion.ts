@@ -226,6 +226,18 @@ export interface CompanionBackend<
    * turn was recorded — from the error path.
    */
   afterRun?(session: CompanionSession<TState>): Promise<void>;
+  /**
+   * Server-push watcher (audit Track D: the LO bridge's /events long-poll,
+   * BUILT BUT previously UNUSED by the product). The core starts it once
+   * per session and forwards every pushed frame to the panel over the
+   * GET /api/session/:id/events SSE channel. Return the stop function;
+   * it is called on session teardown (reconnect + idle GC). Apps without
+   * push events (LyX: pipe polling) omit it.
+   */
+  watchEvents?(
+    session: CompanionSession<TState>,
+    push: (frame: Record<string, unknown>) => void,
+  ): () => void;
 }
 
 export interface CompanionServerOptions<TState = unknown> {
@@ -286,8 +298,20 @@ export function createCompanionServer<TState>(
   app.use(createApiAuthGuard(apiToken));
 
   const sessions = new Map<string, CompanionSession<TState>>();
+  /** Push-event watchers per session id (stopped on teardown). */
+  const eventWatchers = new Map<string, () => void>();
+  /** Panel subscribers of the per-session push channel. */
+  const eventListeners = new Map<string, Set<(frame: unknown) => void>>();
   const logError = createLogError(options.logDir);
   const wrap: WrapFn = createWrap({ logError, mapStatus: backend.mapStatus });
+
+  /** Backend teardown + event-watcher stop, shared by DELETE and GC. */
+  function teardownSession(session: CompanionSession<TState>): void {
+    backend.teardownSession?.(session.state);
+    eventWatchers.get(session.id)?.();
+    eventWatchers.delete(session.id);
+    eventListeners.delete(session.id);
+  }
 
   // Idle-session GC (audit B2): F5 / crash-reload of the panel orphans the
   // running agent process + backend session state (only an explicit
@@ -306,7 +330,7 @@ export function createCompanionServer<TState>(
       if (now - session.lastActive < sessionIdleMs) continue;
       sessions.delete(id);
       try {
-        backend.teardownSession?.(session.state);
+        teardownSession(session);
       } catch {
         /* best-effort */
       }
@@ -374,6 +398,26 @@ export function createCompanionServer<TState>(
       sessions.set(id, session);
       await agent.createSession(id);
 
+      // Server-push watcher (audit Track D: the LO bridge /events
+      // long-poll). Frames go to the panel's /events SSE channel.
+      if (backend.watchEvents) {
+        let watchers = eventWatchers;
+        watchers.set(
+          id,
+          backend.watchEvents(session, (frame) => {
+            const listeners = eventListeners.get(id);
+            if (!listeners) return;
+            for (const send of [...listeners]) {
+              try {
+                send(frame);
+              } catch {
+                /* a dead subscriber must not break the others */
+              }
+            }
+          }),
+        );
+      }
+
       // Seed the document selector with paths from previous sessions (LyX's
       // pipe has no "list buffers" LFUN; LO tracks urls as it goes).
       if (options.historyDir) {
@@ -391,7 +435,7 @@ export function createCompanionServer<TState>(
     getSession,
     sessions,
     sessionInfo: (session, opts) => backend.sessionInfo(session, opts),
-    teardown: (session) => backend.teardownSession?.(session.state),
+    teardown: teardownSession,
   });
 
   // --- attachments -------------------------------------------------------------
@@ -434,6 +478,36 @@ export function createCompanionServer<TState>(
       res.json(await backend.selection(session));
     }),
   );
+
+  // --- server-push event channel (audit Track D) -----------------------------------
+
+  /**
+   * SSE channel the panel subscribes to: every frame the backend's
+   * watchEvents pushes (e.g. {refresh: true} when the bridge reports a
+   * selection change or an edit) is forwarded here live. This replaces
+   * the panel's typing-debounce/focus refresh heuristics for apps with
+   * push events, and makes bridge recovery (audit B3) natural: when the
+   * bridge comes back, events flow again and the panel refreshes itself.
+   */
+  app.get('/api/session/:id/events', (req, res) => {
+    const session = sessions.get(param(req.params['id']));
+    if (!session) {
+      res.status(404).json({ error: 'Unknown session' });
+      return;
+    }
+    const send = startSse(res);
+    let listeners = eventListeners.get(session.id);
+    if (!listeners) {
+      listeners = new Set();
+      eventListeners.set(session.id, listeners);
+    }
+    listeners.add(send);
+    session.lastActive = Date.now();
+    send({ connected: true });
+    req.on('close', () => {
+      listeners?.delete(send);
+    });
+  });
 
   // --- message (unified; the agent infers the action) ------------------------------
 

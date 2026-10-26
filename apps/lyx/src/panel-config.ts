@@ -14,5 +14,6 @@ export const PANEL_CONFIG: PanelConfig = {
   // NEVER refresh the selection on composer interaction: the selection
   // read dispatches a `copy` LFUN that clobbers the user's clipboard.
   composerRefreshSelection: false,
+  eventPush: false,
   theme: 'theme-lyx',
 };

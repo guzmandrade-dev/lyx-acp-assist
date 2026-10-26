@@ -20,6 +20,7 @@ const testConfig: PanelConfig = {
   hasSaveConsent: true,
   hasInstallFlow: false,
   composerRefreshSelection: false,
+  eventPush: false,
   theme: 'theme-test',
 };
 
@@ -41,6 +42,7 @@ describe('shared panel assets', () => {
     expect(source).toContain('hasSaveConsent');
     expect(source).toContain('hasInstallFlow');
     expect(source).toContain('composerRefreshSelection');
+    expect(source).toContain('eventPush');
   });
 
   it('shared css carries both themes and both feature sections', async () => {

@@ -885,6 +885,84 @@ async function connect() {
     hideEmpty();
   }
   updateComposerState();
+  openEventChannel();
+}
+
+// --- server-push refresh channel (audit Track D) ---------------------------------
+// Apps with a push source (LO: the bridge's /events feed) refresh the
+// editor context from SERVER frames instead of the composer-typing/focus
+// heuristics below: the server watches the editor and pushes {refresh}
+// frames over a per-session SSE channel whenever the selection changed
+// or a document was edited — live feedback without any panel interaction.
+// EventSource cannot send the Authorization header, so this is a
+// fetch-stream parse like streamMessage().
+let eventStreamController = null;
+let eventRefreshTimer = null;
+
+function closeEventChannel() {
+  if (eventStreamController) {
+    eventStreamController.abort();
+    eventStreamController = null;
+  }
+}
+
+function openEventChannel() {
+  closeEventChannel();
+  if (!CONFIG.eventPush || !sessionId) return;
+  const id = sessionId;
+  const controller = new AbortController();
+  eventStreamController = controller;
+  (async () => {
+    while (!controller.signal.aborted && sessionId === id) {
+      try {
+        const res = await fetch(`/api/session/${id}/events`, {
+          headers: {
+            ...(window.__ACP_TOKEN__ ? { authorization: `Bearer ${window.__ACP_TOKEN__}` } : {}),
+          },
+          signal: controller.signal,
+        });
+        if (!res.ok || !res.body) throw new Error(`${res.status} ${res.statusText}`);
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          let idx;
+          while ((idx = buf.indexOf('\n\n')) !== -1) {
+            const chunk = buf.slice(0, idx);
+            buf = buf.slice(idx + 2);
+            for (const line of chunk.split('\n')) {
+              if (!line.startsWith('data: ')) continue;
+              try {
+                const frame = JSON.parse(line.slice(6));
+                if (frame.refresh) scheduleEventRefresh();
+              } catch {
+                /* partial frame */
+              }
+            }
+          }
+        }
+      } catch {
+        if (controller.signal.aborted) return;
+        /* session gone or channel error: reconnect below unless gone */
+      }
+      if (controller.signal.aborted || sessionId !== id) return;
+      // The channel closed (server restart / teardown): reconnect shortly.
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  })();
+}
+
+/** One debounced editor-context refresh per burst of pushed events. */
+function scheduleEventRefresh() {
+  if (eventRefreshTimer) return;
+  eventRefreshTimer = setTimeout(() => {
+    eventRefreshTimer = null;
+    if (!sessionId || busy) return;
+    Promise.allSettled([refreshStatus(), refreshDocuments(), refreshSelection()]);
+  }, 300);
 }
 
 /** Tear down the current session (agent process included) and start a new one. */
@@ -898,6 +976,7 @@ async function reconnect() {
       } catch {
         /* session already gone */
       }
+      closeEventChannel();
       sessionId = null;
     }
     chat.innerHTML = '';
@@ -1426,6 +1505,8 @@ fileInput.addEventListener('change', async () => {
 // even a 2s status poll breaks wheel-scrolling an unfocused
 // editor window (Windows scrolls inactive windows under the cursor). The
 // authoritative context is re-read server-side when a message is sent.
+// With CONFIG.eventPush (LO) this whole heuristic is REPLACED by the
+// server-push refresh channel above.
 function refreshEditorContext() {
   if (!sessionId || busy) return;
   refreshDocuments();
@@ -1435,23 +1516,25 @@ function refreshEditorContext() {
   // copied to paste into the composer (live-reported 2026-10-22).
   if (CONFIG.composerRefreshSelection) refreshSelection();
 }
-let editorContextRefreshTimer = null;
-input.addEventListener('input', () => {
-  if (editorContextRefreshTimer) clearTimeout(editorContextRefreshTimer);
-  editorContextRefreshTimer = setTimeout(refreshEditorContext, 400);
-});
-input.addEventListener('focus', refreshEditorContext);
+if (!CONFIG.eventPush) {
+  let editorContextRefreshTimer = null;
+  input.addEventListener('input', () => {
+    if (editorContextRefreshTimer) clearTimeout(editorContextRefreshTimer);
+    editorContextRefreshTimer = setTimeout(refreshEditorContext, 400);
+  });
+  input.addEventListener('focus', refreshEditorContext);
 
-// One document refresh per window focus: the pipe has no "list open
-// buffers" LFUN, so this is how tabs opened/switched in the editor get discovered
-// after an app restart. A single LFUN on a deliberate focus change — unlike
-// the old 2s poll, it never fires while the user scrolls an unfocused editor window (scrolling does not change focus). Documents only: refreshing the
-// selection dispatches a `copy` LFUN that overwrites the system clipboard,
-// which we don't want on a passive window focus.
-window.addEventListener('focus', () => {
-  if (!sessionId || busy) return;
-  refreshDocuments();
-});
+  // One document refresh per window focus: the pipe has no "list open
+  // buffers" LFUN, so this is how tabs opened/switched in the editor get discovered
+  // after an app restart. A single LFUN on a deliberate focus change — unlike
+  // the old 2s poll, it never fires while the user scrolls an unfocused editor window (scrolling does not change focus). Documents only: refreshing the
+  // selection dispatches a `copy` LFUN that overwrites the system clipboard,
+  // which we don't want on a passive window focus.
+  window.addEventListener('focus', () => {
+    if (!sessionId || busy) return;
+    refreshDocuments();
+  });
+}
 
 sendBtn.addEventListener('click', send);
 input.addEventListener('keydown', (e) => {

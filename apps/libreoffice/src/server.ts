@@ -45,6 +45,7 @@ import {
   createCompanionServer,
   MAX_ACTIONS_PER_MESSAGE,
   pollUntil,
+  sleep,
   UNSAVED_KEY,
   formatHistoryReplay as coreFormatHistoryReplay,
   type AppliedResult,
@@ -400,6 +401,38 @@ function createLoBackend(
       return {
         address: outcome.address,
         module: s.adapter.id === 'generic' ? 'other' : s.adapter.id,
+      };
+    },
+
+    /**
+     * Audit Track D: the bridge's /events long-poll was BUILT BUT UNUSED
+     * by the product — the panel refreshed on composer/focus heuristics
+     * instead. ONE long-poll per session now consumes the feed
+     * (selection-changed, document-edited) and pushes {refresh} frames to
+     * the panel's SSE channel. When the bridge dies the poll fails and
+     * retries (see TIMINGS.eventRetryMs) — after a bridge restart (audit
+     * B3) events flow again and the panel refreshes itself.
+     */
+    watchEvents(session, push) {
+      let stopped = false;
+      let since = 0;
+      (async () => {
+        while (!stopped) {
+          try {
+            const r = await session.state.bridge.events(since);
+            since = r.last ?? since;
+            if (!stopped && (r.events?.length ?? 0) > 0) {
+              push({ refresh: true });
+            }
+          } catch {
+            if (stopped) return;
+            // Bridge down or between restarts: retry shortly.
+            await sleep(TIMINGS.eventRetryMs);
+          }
+        }
+      })();
+      return () => {
+        stopped = true;
       };
     },
   };

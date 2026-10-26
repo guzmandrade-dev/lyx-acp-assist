@@ -36,6 +36,13 @@ export interface PanelConfig {
   /** Refresh the selection on composer interaction (LO: yes; LyX: NO —
    * the selection read clobbers the user's clipboard). */
   composerRefreshSelection: boolean;
+  /**
+   * The server pushes refresh frames (the bridge's /events feed) over a
+   * per-session SSE channel; the panel refreshes on them INSTEAD of the
+   * composer-typing/focus heuristics. LO: true. LyX: false (no push
+   * source — the pipe is polled; the heuristics stay).
+   */
+  eventPush: boolean;
   /** CSS theme class on <html> (e.g. 'theme-lyx'); null = default. */
   theme: string | null;
 }

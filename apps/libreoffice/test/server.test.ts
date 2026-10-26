@@ -99,6 +99,30 @@ class FakeBridge extends BridgeClient {
     return Promise.resolve({ undone: true });
   }
 
+  // --- Track D: the /events long-poll feed (server-push channel) -----------
+  private eventsQueue: Array<{ seq: number; type: string; ts: string }> = [];
+  private eventsWaiters: Array<() => void> = [];
+
+  /** Test helper: the bridge saw something (selection change / edit). */
+  pushEvent(type: string) {
+    this.eventsQueue.push({ seq: this.eventsQueue.length + 1, type, ts: new Date().toISOString() });
+    for (const wake of this.eventsWaiters.splice(0)) wake();
+  }
+
+  override events(since: number) {
+    const fresh = this.eventsQueue.filter((e) => e.seq > since);
+    if (fresh.length > 0) {
+      return Promise.resolve({ events: fresh, last: fresh[fresh.length - 1]!.seq });
+    }
+    // No fresh events: block like the real long-poll until one arrives.
+    return new Promise((resolve) => {
+      this.eventsWaiters.push(() => {
+        const f = this.eventsQueue.filter((e) => e.seq > since);
+        resolve({ events: f, last: f.length > 0 ? f[f.length - 1]!.seq : since });
+      });
+    });
+  }
+
   override activate() {
     return Promise.resolve({ activated: 'file:///fake/doc.odt' });
   }
@@ -188,6 +212,51 @@ describe('server message loop (fake agent + fake bridge)', () => {
   afterAll(async () => {
     httpServer.close();
     await fs.rm(historyDir, { recursive: true, force: true });
+  });
+
+  it('pushes bridge events to the panel channel (Track D /events feed)', async () => {
+    // One session; the panel subscribes to the SSE push channel; a
+    // selection change in the "editor" must arrive as a refresh frame
+    // without any panel interaction (this replaces the typing-debounce
+    // heuristics; see the shared panel app.js).
+    const created = (await (
+      await fetch(`${baseUrl}/api/session`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${API_TOKEN}` },
+        body: JSON.stringify({}),
+      })
+    ).json()) as { sessionId: string };
+    const channel = await fetch(`${baseUrl}/api/session/${created.sessionId}/events`, {
+      headers: { authorization: `Bearer ${API_TOKEN}` },
+    });
+    expect(channel.status).toBe(200);
+    const reader = channel.body!.getReader();
+    const decoder = new TextDecoder();
+    const frames: Array<Record<string, unknown>> = [];
+    const readUntil = async (pred: (f: Record<string, unknown>) => boolean, what: string) => {
+      let buf = '';
+      for (let i = 0; i < 100 && !frames.some(pred); i++) {
+        const { done, value } = await reader.read();
+        if (done) throw new Error(`channel closed before ${what}`);
+        buf += decoder.decode(value, { stream: true });
+        let idx;
+        while ((idx = buf.indexOf('\n\n')) !== -1) {
+          const chunk = buf.slice(0, idx);
+          buf = buf.slice(idx + 2);
+          for (const line of chunk.split('\n')) {
+            if (line.startsWith('data: ')) frames.push(JSON.parse(line.slice(6)));
+          }
+        }
+      }
+    };
+    await readUntil((f) => f['connected'] === true, 'the connected frame');
+    // The user moves the cursor in the "editor": the bridge records a
+    // selection-changed event; the server's long-poll watcher consumes it
+    // and pushes a refresh frame to the channel.
+    bridge.pushEvent('selection-changed');
+    await readUntil((f) => f['refresh'] === true, 'the refresh frame');
+    expect(frames).toEqual([{ connected: true }, { refresh: true }]);
+    await reader.cancel();
   });
 
   it('recovers a stale bridge record without a manual reconnect (B3)', async () => {

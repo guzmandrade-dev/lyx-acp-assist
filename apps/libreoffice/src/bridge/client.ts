@@ -314,7 +314,7 @@ export class BridgeClient {
     this.base = `http://127.0.0.1:${record.port}`;
   }
 
-  private async request(method: string, apiPath: string, body?: unknown, timeoutMs = TIMINGS.bridgeRequestTimeoutMs): Promise<unknown> {
+  private async request(method: string, apiPath: string, body?: unknown, timeoutMs: number = TIMINGS.bridgeRequestTimeoutMs): Promise<unknown> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -352,6 +352,21 @@ export class BridgeClient {
 
   document(): Promise<BridgeDocument> {
     return this.request('GET', '/document') as Promise<BridgeDocument>;
+  }
+
+  /**
+   * Track D: the bridge's /events long-poll — the selection-changed and
+   * document-edited feed the server watcher consumes (one long-poll per
+   * session; see acpbridge.py `_events`). Returns the fresh events and
+   * the new cursor.
+   */
+  events(since: number, timeoutMs = TIMINGS.eventPollMs): Promise<{ events: { seq: number; type: string; ts: string }[]; last: number }> {
+    return this.request(
+      'GET',
+      `/events?since=${since}&timeout=${Math.round(timeoutMs / 1000)}`,
+      undefined,
+      timeoutMs + 10_000,
+    ) as Promise<{ events: { seq: number; type: string; ts: string }[]; last: number }>;
   }
 
   /** Lazy fetch: the full text of one paragraph (large documents). */

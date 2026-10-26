@@ -12,4 +12,8 @@ export const TIMINGS = {
   pollIntervalMs: 50,
   /** Bridge HTTP request timeout. */
   bridgeRequestTimeoutMs: 40_000,
+  /** Track D: one bridge /events long-poll per session (its window). */
+  eventPollMs: 25_000,
+  /** Track D: retry pause after a failed events long-poll (bridge down). */
+  eventRetryMs: 5_000,
 } as const;

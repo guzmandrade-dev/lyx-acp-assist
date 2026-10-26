@@ -12,5 +12,6 @@ export const PANEL_CONFIG: PanelConfig = {
   hasSaveConsent: false,
   hasInstallFlow: true,
   composerRefreshSelection: true,
+  eventPush: true,
   theme: null,
 };
