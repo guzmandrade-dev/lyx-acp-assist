@@ -779,3 +779,28 @@ Gates: LO 73/73 + core 20/20 + typechecks; oxt rebuilt, bridge e2e
 47/47 + mechanics 13/13 against live LO; live vibe-acp run through the
 authenticated API (401 unauthenticated, insert-after + undo with the
 token from companion.json).
+
+## Track B robustness fixes (2026-10-26)
+
+- **Healing bridge (B3)**: `session.bridge` is a Proxy that, on any
+  BridgeError, re-discovers once (pickBridge), swaps the target, and
+  retries once — restarting the bridge from the LO sidebar (new port +
+  token) no longer breaks the session until a manual reconnect. Test
+  hook: `recoverBridge`. Validated LIVE: bridge restarted mid-session,
+  the session healed, a real vibe-acp chat ran through the swapped
+  bridge. Fake-bridge tests are unaffected (their errors are not
+  BridgeErrors).
+- **Protocol check (B6)**: discoverBridges skips records whose
+  `protocol` differs from BRIDGE_PROTOCOL (1; must match acpbridge.py's
+  PROTOCOL) — the field finally does what it was designed for.
+- **Listener cleanup (B7)**: BridgeSelListener holds its controller and
+  discards it (and the disposing source) from `_REGISTERED` — the set no
+  longer leaks dead controllers.
+- **Action-tag anchoring (B5)**: same layered rule as the LyX app (last
+  non-empty line, then inside a fence, never bare prose) in the writer,
+  calc, and impress parsers.
+- **Install blast radius (B9)**: the confirm dialog states that the
+  cache clear covers ALL extensions in the profile (surgical pmap
+  editing is infeasible — the wipe stays the documented fallback).
+- **Timings live in `src/timings.ts` (B8)**; the bridge client's 40s
+  HTTP timeout comes from there.

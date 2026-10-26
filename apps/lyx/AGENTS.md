@@ -1010,3 +1010,32 @@ any executable). Shared implementation in `@acp-assist/core` `auth.ts`:
   `test/live_drive.mjs` reads it (`API_TOKEN` env overrides).
 - TEST PITFALL: `fetch()` (undici) refuses to override the Host header,
   so the rebinding test uses a raw `http.request`.
+
+## Track B robustness fixes (2026-10-26)
+
+- **Action-tag anchoring (B5)**: all four tag parsers resolve in layers —
+  the reply's LAST non-empty line wins (core `lastNonEmptyLine`); else a
+  tag INSIDE a fenced content block still counts (core `lastFencedMatch`;
+  live-observed 2026-10-24 — agents sometimes leave the tag inside the
+  fence, and the strict form would silently drop those edits); bare prose
+  is never searched. A quoted example mid-reply can no longer misparse.
+- **Same-func pipe requests are serialized (B11)**: replies match by
+  client:func only (no wire request id), so overlapping same-func requests
+  cross-resolved; request() chains per-func. Tested with two concurrent
+  round-trips over the named-pipe mock.
+- **Idle-session GC (B2)**: sessions carry lastActive (per request + per
+  SSE frame); a sweeper tears idle sessions down fully (pipe bye frees a
+  client-registry slot + agent stop). Default 30min; `sessionIdleMs`
+  option. Fixes the F5/crash-reload orphan leak.
+- **Clipboard text save/restore (B4)**: the message stream saves the
+  pre-run TEXT flavor and restores it at the end (best-effort; non-text
+  flavors cannot be preserved by the adapter). RawClipboard gained
+  `writeText()` on all three platforms (new `writeText` op on the
+  PowerShell host; empty string clears) — live-probed on Windows.
+- **Timings live in `src/timings.ts` (B8)**: TIMINGS feeds the pipe
+  client defaults and the poll caps; the markup-retry prompt now has the
+  same 240s timeoutMs as the main prompt (it previously had NONE).
+- **Unpinned paths (B10)**: findClassLayouts discovers the user layouts
+  dir via the version-globbing pipe discovery and probes every installed
+  `LyX *` under Program Files newest-first; FALLBACK_HEADER's pinned
+  \lyxformat 643 is version-safe (LyX upgrades older formats on read).
