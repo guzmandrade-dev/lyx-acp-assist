@@ -804,3 +804,35 @@ token from companion.json).
   editing is infeasible — the wipe stays the documented fallback).
 - **Timings live in `src/timings.ts` (B8)**; the bridge client's 40s
   HTTP timeout comes from there.
+
+## Shared panel package (audit Track C, 2026-10-26)
+
+The panel is now SHARED across both apps: `@acp-assist/panel`
+(`packages/panel`) holds `public/app.js`/`style.css`/`index.html`,
+driven by this app's `src/panel-config.ts` (fenceRe
+'(?:writer|calc|impress)', statusKey 'bridgeAvailable', cursorTerm
+'style', hasInstallFlow true, hasSaveConsent false,
+composerRefreshSelection true, theme null = the Fresh Office palette).
+
+- **CSP PITFALL (live-found)**: injected INLINE scripts are blocked by
+  the tight CSP — the token + config ship via an EXTERNAL same-origin
+  `/panel-boot.js` instead (see the panel package).
+- `src/electron/main.ts` and `src/standalone.ts` are thin calls into the
+  panel package's `createElectronMain` / `createStandaloneServer`
+  (watchedProcessName 'soffice', oxtPath dev/packaged, companion record
+  with the auth token). preload.ts stays per-app.
+- The app's `public/` dir now holds ONLY logo.svg (assetsDir, served
+  BEFORE the shared panel dir).
+- **PACKAGING NOTE**: electron-builder was verified to bundle
+  @acp-assist/core into app.asar; re-verify the NEXT packaging run
+  includes packages/panel (public/ + dist/) — the CI build/test scripts
+  already chain its build.
+- Live browser check (Playwright, real bridge + vibe-acp): panel boots
+  with zero console errors; a composer message applied a Writer
+  insert-after (edit bubble + undo button + "Finished after 1 edit"
+  summary note all correct); Undo through the panel reverted the
+  paragraph (UNO-verified).
+
+Also (Track D start): writer/calc/impress parsers now share core
+`createParseActionTag`; the attachment prompt block comes from core
+`buildAttachmentBlock`.

@@ -1039,3 +1039,39 @@ any executable). Shared implementation in `@acp-assist/core` `auth.ts`:
   dir via the version-globbing pipe discovery and probes every installed
   `LyX *` under Program Files newest-first; FALLBACK_HEADER's pinned
   \lyxformat 643 is version-safe (LyX upgrades older formats on read).
+
+## Shared panel package (audit Track C, 2026-10-26)
+
+The two ~85%-identical panels are now ONE panel in `@acp-assist/panel`
+(`packages/panel`): shared `public/app.js`/`style.css`/`index.html`,
+config-driven via a `PanelConfig` injected at boot (`src/panel-config.ts`
+per app). LyX's config: fenceRe 'lyx', statusKey 'lyxPipeAvailable',
+cursorTerm 'layout', hasSaveConsent true, hasInstallFlow false,
+composerRefreshSelection FALSE (the clipboard-clobber rule),
+theme 'theme-lyx' (the Warm Parchment palette lives in the shared CSS as
+`:root.theme-lyx`).
+
+- **CSP PITFALL (live-found)**: the panel's tight CSP
+  (`default-src 'self'`) BLOCKS injected inline scripts — an inline
+  `<script>window.__ACP_TOKEN__…</script>` silently never ran, so the
+  browser panel had no token and every API call 401'd (masked until the
+  Track C live browser check because the earlier B1 live runs drove the
+  API directly). Token + config now ship via an EXTERNAL same-origin
+  `/panel-boot.js`.
+- The app's `public/` dir now holds ONLY logo.svg (served via
+  `assetsDir` BEFORE the shared panel dir); the shared HTML carries both
+  apps' optional elements hidden (consent modal, vcs-warn, install
+  button).
+- `src/electron/main.ts` and `src/standalone.ts` are thin calls into the
+  panel package's `createElectronMain` / `createStandaloneServer`;
+  preload.ts deliberately stays per-app (5 identical lines compiled
+  into the packaged dist layout — see the panel package note).
+- The companion record still lives at `<dev dataDir>/companion.json`
+  (standalone) / `<userData>/companion.json` (packaged).
+- Live browser check (Playwright): LyX panel boots with theme-lyx,
+  correct config strings, the consent modal present-but-hidden, zero
+  console errors.
+
+Also (Track D start): all four action-tag parsers now share core
+`createParseActionTag` (the B5 layering + captures); LyX's parseAction
+keeps only its vocabulary + outcome shaping.
