@@ -823,10 +823,21 @@ composerRefreshSelection true, theme null = the Fresh Office palette).
   with the auth token). preload.ts stays per-app.
 - The app's `public/` dir now holds ONLY logo.svg (assetsDir, served
   BEFORE the shared panel dir).
-- **PACKAGING NOTE**: electron-builder was verified to bundle
-  @acp-assist/core into app.asar; re-verify the NEXT packaging run
-  includes packages/panel (public/ + dist/) — the CI build/test scripts
-  already chain its build.
+- **ELECTRON VERSION PIN (v1.4.0 CI build fix, 2026-10-26)**:
+  electron-builder reads the Electron version from
+  `apps/<app>/node_modules/electron/package.json` — a DIRECT path, no
+  upward walk — and, failing that, from the app package.json spec,
+  which must be EXACT (`^44.x` ranges fail: "Cannot compute electron
+  version ... not fixed in project"). The v1.4.0 CI builds broke
+  because the two apps used to resolve DIFFERENT electron versions so
+  npm kept them workspace-local (where electron-builder found them);
+  the Track C lock regen unified them at 44.9.3 and npm hoisted
+  electron to the workspace ROOT. Both apps now pin
+  `"electron": "44.9.3"` — bump the pin deliberately when upgrading.
+- **PACKAGING NOTE (RESOLVED 2026-10-26)**: a full Windows package run
+  confirms app.asar bundles BOTH node_modules/@acp-assist/core
+  (dist/, incl. companion.js) and node_modules/@acp-assist/panel
+  (dist/ + public/ assets); the .oxt still lands in resources/.
 - Live browser check (Playwright, real bridge + vibe-acp): panel boots
   with zero console errors; a composer message applied a Writer
   insert-after (edit bubble + undo button + "Finished after 1 edit"

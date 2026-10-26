@@ -30,7 +30,7 @@
   "devDependencies": {
     "@types/express": "^5.0.6",
     "@types/node": "^26.1.1",
-    "electron": "^44.5.1",
+    "electron": "44.9.3",
     "electron-builder": "^26.15.3",
     "typescript": "^5.9.3",
     "vitest": "^4.1.10"

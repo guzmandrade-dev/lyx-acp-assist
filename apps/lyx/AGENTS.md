@@ -942,6 +942,16 @@ the selection -> `buffer-write`. Insert-at-cursor and undo also wired.
   - Verified end-to-end: packaged exe starts, serves the UI, `/api/status`
     reports the live LyX pipe, remote debugging (--remote-debugging-port)
     confirms the renderer loads our URL.
+  - electron-builder reads the Electron version from
+    apps/<app>/node_modules/electron/package.json — a DIRECT path, no
+    upward walk — and, failing that, from the app package.json spec,
+    which must be EXACT (`^44.x` ranges fail: "Cannot compute electron
+    version ... not fixed in project"). The v1.4.0 CI builds broke when
+    the Track C lock regen unified both apps' electron at 44.9.3 and
+    npm hoisted it to the workspace ROOT (previously the apps resolved
+    different versions, keeping electron workspace-local where
+    electron-builder found it). Both apps now pin
+    `"electron": "44.9.3"` — bump the pin deliberately when upgrading.
 ## Track A performance fixes (2026-10-26)
 
 Audit-driven hot-path fixes (root `next-steps.md` section 3). All gated
