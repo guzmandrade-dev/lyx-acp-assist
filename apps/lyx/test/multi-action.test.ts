@@ -92,7 +92,7 @@ class FakeAgent implements AgentRunner {
  * In-memory LyXServerClient stand-in. Only the LFUNs the message loop uses
  * are implemented; verification reads go through the raw clipboard stub.
  */
-function fakeLyx(doc: FakeDoc) {
+function fakeLyx(doc: FakeDoc, hooks: { onPaste?: () => Promise<void> } = {}) {
   let cursor = 0;
   let selection: { p: number; start: number; end: number } | null = null;
   const clip = { text: '' };
@@ -159,6 +159,8 @@ function fakeLyx(doc: FakeDoc) {
     },
     async paste() {
       client.calls.paste += 1;
+      // Test hook: mid-choreography seam (the paste LFUN is in flight).
+      if (hooks.onPaste) await hooks.onPaste();
       // LyX reads the x-lyx payload through the OS clipboard (the raw stub
       // in this test), not through this closure: use the global payload.
       const payload = (globalThis as { __clipDoc?: string }).__clipDoc ?? clip.text;
@@ -227,9 +229,12 @@ interface Harness {
   server: Server;
 }
 
-async function startHarness(replies: string[]): Promise<Harness> {
+async function startHarness(
+  replies: string[],
+  lyxHooks: { onPaste?: () => Promise<void> } = {},
+): Promise<Harness> {
   const doc = await writeFakeDoc();
-  const lyx = fakeLyx(doc);
+  const lyx = fakeLyx(doc, lyxHooks);
   const agent = new FakeAgent(replies);
   const app = createServer({
     publicDir: new URL('../public', import.meta.url).pathname.replace(/^\/(\w:)/, '$1'),
@@ -351,18 +356,27 @@ describe('multi-action runs over the message stream', () => {
   });
 
   it('stops between edits when the user cancels the run', async () => {
-    const harness = await startHarness([
-      'First edit.\n```lyx\n\\begin_layout Title\nReal title\n\\end_layout\n```\n[ACTION: rewrite-at p1]',
-      'This should not be reached.\n```lyx\n\\begin_layout Standard\ny\n\\end_layout\n```\n[ACTION: rewrite-at p2]',
-    ]);
+    // The user presses Stop while the first edit is being applied: the
+    // cancel endpoint flips session.cancelRequested mid-choreography (the
+    // paste LFUN is in flight), so the loop must finish that edit and not
+    // issue a second prompt. Fired from the fake paste seam to be
+    // deterministic — a fixed sleep raced the (now faster) choreography.
+    let cancelMidPaste: () => Promise<void> = async () => {};
+    const harness = await startHarness(
+      [
+        'First edit.\n```lyx\n\\begin_layout Title\nReal title\n\\end_layout\n```\n[ACTION: rewrite-at p1]',
+        'This should not be reached.\n```lyx\n\\begin_layout Standard\ny\n\\end_layout\n```\n[ACTION: rewrite-at p2]',
+      ],
+      { onPaste: () => cancelMidPaste() },
+    );
+    cancelMidPaste = async () => {
+      await fetch(`${harness.base}/api/session/${harness.sessionId}/cancel`, { method: 'POST' });
+    };
     cleanups.push(async () => {
       await new Promise<void>((resolve) => harness.server.close(() => resolve()));
       await fs.rm(harness.doc.dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     });
 
-    // The user presses Stop after the first edit lands: the cancel endpoint
-    // flips session.cancelRequested and notifies the agent, so the loop must
-    // not issue a second prompt.
     const streamPromise = fetch(
       `${harness.base}/api/session/${harness.sessionId}/message/stream`,
       {
@@ -371,8 +385,6 @@ describe('multi-action runs over the message stream', () => {
         body: JSON.stringify({ message: 'fill the template' }),
       },
     );
-    await new Promise((resolve) => setTimeout(resolve, 75));
-    await fetch(`${harness.base}/api/session/${harness.sessionId}/cancel`, { method: 'POST' });
     const frames = await readSse(await streamPromise);
 
     expect(harness.doc.paragraphs[0].text).toBe('Real title');

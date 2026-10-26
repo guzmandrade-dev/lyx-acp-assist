@@ -129,3 +129,23 @@ export function formatHistoryReplay(
 export function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
+
+/**
+ * Poll `cond` until it returns a truthy value, at `intervalMs` intervals,
+ * up to `timeoutMs` total. Returns the first truthy value, or null when
+ * the budget ran out. Replaces fixed sleeps after commands with
+ * event-verified waits (payload appeared / state changed).
+ */
+export async function pollUntil<T>(
+  cond: () => Promise<T>,
+  options: { intervalMs?: number; timeoutMs?: number } = {},
+): Promise<T | null> {
+  const interval = options.intervalMs ?? 25;
+  const deadline = Date.now() + (options.timeoutMs ?? 500);
+  for (;;) {
+    const value = await cond();
+    if (value) return value;
+    if (Date.now() >= deadline) return null;
+    await sleep(interval);
+  }
+}

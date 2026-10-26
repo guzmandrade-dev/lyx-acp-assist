@@ -43,6 +43,7 @@ import {
   startSse,
   sseFail,
   MAX_ACTIONS_PER_MESSAGE,
+  pollUntil,
   sleep,
   type ConversationStore,
 } from '@acp-assist/core';
@@ -288,7 +289,12 @@ export function createServer(options: ServerOptions & {
         return;
       }
       await session.lyx.request('file-open', target);
-      await sleep(200); // let the view settle
+      // Wait until LyX actually switched (bounded poll instead of a fixed
+      // sleep); on timeout we fall through and report whatever is active.
+      await pollUntil(async () => (await session.lyx.getFilename()) === target, {
+        timeoutMs: 2000,
+        intervalMs: 50,
+      });
       const active = await refreshActiveDocument(session);
       res.json({
         active,
@@ -570,7 +576,6 @@ export function createServer(options: ServerOptions & {
                 'The .lyx payload could not be written to the clipboard; ' +
                 'nothing was pasted. Please try again.';
             } else {
-              await sleep(100); // let the OS clipboard settle before paste
               await session.lyx.paste(); // replaces the active selection if any
               send({ applied: outcome.action, target, ...(step > 1 ? { step } : {}) });
               applied = true;
@@ -937,9 +942,12 @@ export function createServer(options: ServerOptions & {
     if (hasSelection) {
       const copied = await session.lyx.copySelection();
       if (copied) {
-        // Give LyX a moment to put the payload on the clipboard.
-        await sleep(150);
-        const doc = await session.clipboard.readLyxDocument();
+        // Wait until the x-lyx payload lands on the clipboard (the copy
+        // LFUN is dispatched asynchronously in LyX's event loop).
+        const doc = await pollUntil(() => session.clipboard.readLyxDocument(), {
+          timeoutMs: 500,
+          intervalMs: 25,
+        });
         if (doc) {
           lyxBody = extractBodyLayouts(doc) ?? doc;
           text = await session.clipboard.readText();
@@ -1011,8 +1019,10 @@ export function createServer(options: ServerOptions & {
     if (!copied) {
       return fail('Could not copy the selected paragraph for verification.');
     }
-    await sleep(150);
-    const payload = await session.clipboard.readLyxDocument();
+    const payload = await pollUntil(() => session.clipboard.readLyxDocument(), {
+      timeoutMs: 500,
+      intervalMs: 25,
+    });
     const clipboardText = payload === null ? await session.clipboard.readText() : null;
     const verify = verifyParagraphSelection({
       payload,
@@ -1186,7 +1196,8 @@ export function createServer(options: ServerOptions & {
           'was deleted but not re-inserted. Undo in LyX to restore it.',
       );
     }
-    await sleep(100); // let the OS clipboard settle before paste
+    // The clipboard write above is verified by read-back, so the payload is
+    // already globally visible — no settle wait is needed before the paste.
     await session.lyx.paste();
     return { target2: to, error: null };
   }
