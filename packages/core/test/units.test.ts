@@ -58,6 +58,9 @@ describe('history persistence', () => {
     await saveHistory(dir, 'doc-a', turns);
     expect(await loadHistory(dir, 'doc-a')).toEqual(turns);
     expect(await loadHistory(dir, 'doc-b')).toEqual([]);
+    // Compact JSON — the file is rewritten per persisted turn.
+    const raw = await fs.readFile(historyFile(dir, 'doc-a'), 'utf8');
+    expect(raw).not.toContain('\n');
     await fs.rm(dir, { recursive: true, force: true });
   });
 
@@ -213,6 +216,32 @@ describe('createConversationStore', () => {
       const stored = await loadHistory(dir, 'doc-a');
       expect(stored).toHaveLength(2);
       expect(stored[1]?.meta?.action).toBe('none');
+    });
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it('debounces history writes and flush() persists immediately', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'core-store-'));
+    const { store } = makeStore(dir);
+    await store.recordTurn('hello', 'hi there [ACTION: none]');
+    await store.recordTurnMeta({ action: 'none', result: 'applied' });
+    // Still inside the debounce window: nothing on disk yet (turn + meta
+    // coalesce into one write).
+    expect(await loadHistory(dir, 'doc-a')).toEqual([]);
+    // flush() bypasses the debounce and writes everything.
+    await store.flush();
+    const stored = await loadHistory(dir, 'doc-a');
+    expect(stored).toHaveLength(2);
+    expect(stored[1]?.meta?.action).toBe('none');
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it('persists through the debounce without an explicit flush', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'core-store-'));
+    const { store } = makeStore(dir);
+    await store.recordTurn('hello', 'hi');
+    await waitFor(async () => {
+      expect(await loadHistory(dir, 'doc-a')).toHaveLength(2);
     });
     await fs.rm(dir, { recursive: true, force: true });
   });

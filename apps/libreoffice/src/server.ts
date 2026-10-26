@@ -481,6 +481,10 @@ export function createServer(options: ServerOptions & {
       }
       send({ stopped: stoppedReason, appliedCount: completed.length });
       send({ done: true });
+      // History writes are debounced in the shared store; flush before the
+      // stream closes so a completed run is always on disk when the UI
+      // sees `done`.
+      await storeFor(session).flush().catch(() => undefined);
       res.end();
     } catch (err) {
       const message2 = err instanceof Error ? err.message : String(err);
@@ -498,6 +502,7 @@ export function createServer(options: ServerOptions & {
           result: lastAction === 'none' ? 'applied' : 'error',
           error: message2,
         }).catch(() => undefined);
+        await storeFor(session).flush().catch(() => undefined);
       }
     }
   });

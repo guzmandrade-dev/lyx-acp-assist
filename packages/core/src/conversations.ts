@@ -90,7 +90,21 @@ export interface ConversationStore {
    * turn, so a failed or successful document action survives a restart.
    */
   recordTurnMeta: (meta: TurnMeta) => Promise<void>;
+  /**
+   * Write any pending (debounced) history changes to disk immediately.
+   * The stream loop calls this at turn boundaries; a crash can then only
+   * lose the in-flight step, never a completed one.
+   */
+  flush: (key?: string) => Promise<void>;
 }
+
+/**
+ * How long persist batches writes before hitting the disk. Turn pushes and
+ * their meta updates arrive within milliseconds of each other, so this
+ * coalesces each (turn, meta) pair — and rapid multi-action steps — into
+ * ONE rewrite of the growing history file instead of one per call.
+ */
+const PERSIST_DEBOUNCE_MS = 500;
 
 export function createConversationStore(options: ConversationStoreOptions): ConversationStore {
   const { conversations, historyHandoff, keyOf } = options;
@@ -116,11 +130,51 @@ export function createConversationStore(options: ConversationStoreOptions): Conv
     return turns;
   }
 
-  function persist(key: string, turns: Turn[]): void {
-    if (options.historyDir) {
-      saveHistory(options.historyDir, key, turns).catch((e) =>
-        options.logError('[history] save failed', e),
-      );
+  const pendingTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const dirty = new Set<string>();
+
+  function writeNow(key: string): void {
+    if (!options.historyDir) return;
+    dirty.delete(key);
+    const turns = conversations.get(key);
+    if (!turns) return;
+    saveHistory(options.historyDir, key, turns).catch((e) =>
+      options.logError('[history] save failed', e),
+    );
+  }
+
+  /** Debounced persist: one write per burst of record* calls. */
+  function persist(key: string): void {
+    if (!options.historyDir) return;
+    dirty.add(key);
+    if (pendingTimers.has(key)) return; // a write is already scheduled
+    const timer = setTimeout(() => {
+      pendingTimers.delete(key);
+      if (dirty.has(key)) writeNow(key);
+    }, PERSIST_DEBOUNCE_MS);
+    // Never hold the process (or an Electron quit) open for a pending write.
+    if (typeof timer.unref === 'function') timer.unref();
+    pendingTimers.set(key, timer);
+  }
+
+  async function flush(key?: string): Promise<void> {
+    const keys = key ? [key] : [...new Set([...pendingTimers.keys(), ...dirty])];
+    for (const k of keys) {
+      const timer = pendingTimers.get(k);
+      if (timer) {
+        clearTimeout(timer);
+        pendingTimers.delete(k);
+      }
+      if (!dirty.has(k)) continue;
+      dirty.delete(k);
+      if (!options.historyDir) continue;
+      const turns = conversations.get(k);
+      if (!turns) continue;
+      try {
+        await saveHistory(options.historyDir, k, turns);
+      } catch (e) {
+        options.logError('[history] save failed', e);
+      }
     }
   }
 
@@ -137,13 +191,13 @@ export function createConversationStore(options: ConversationStoreOptions): Conv
         { role: 'user', content: user, timestamp: new Date().toISOString() },
         { role: 'assistant', content: assistant, timestamp: new Date().toISOString() },
       );
-      persist(key, turns);
+      persist(key);
     },
     async recordActionStep(assistant: string, _step: number) {
       const key = keyOf();
       const turns = await ensure(key);
       turns.push({ role: 'assistant', content: assistant, timestamp: new Date().toISOString() });
-      persist(key, turns);
+      persist(key);
     },
     async recordTurnMeta(meta: TurnMeta) {
       const key = keyOf();
@@ -151,7 +205,8 @@ export function createConversationStore(options: ConversationStoreOptions): Conv
       const last = turns[turns.length - 1];
       if (!last || last.role !== 'assistant') return;
       last.meta = meta;
-      persist(key, turns);
+      persist(key);
     },
+    flush,
   };
 }

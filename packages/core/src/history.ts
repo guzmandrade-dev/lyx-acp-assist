@@ -70,7 +70,9 @@ export async function loadHistory(dir: string, key: string): Promise<Turn[]> {
 
 export async function saveHistory(dir: string, key: string, turns: Turn[]): Promise<void> {
   await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(historyFile(dir, key), JSON.stringify({ key, turns }, null, 2), 'utf8');
+  // Compact JSON: history grows per turn and the file is rewritten per
+  // persisted turn — pretty-printing roughly doubles the bytes written.
+  await fs.writeFile(historyFile(dir, key), JSON.stringify({ key, turns }), 'utf8');
 }
 
 export interface HistoryReplayOptions {
