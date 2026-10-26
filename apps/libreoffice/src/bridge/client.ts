@@ -23,6 +23,10 @@ export interface BridgeRecord {
   platform?: string;
 }
 
+/** Discovery-record protocol this companion speaks (bumps on breaking
+ * record/HTTP changes; acpbridge.py's PROTOCOL must match). */
+export const BRIDGE_PROTOCOL = 1;
+
 export class BridgeError extends Error {
   constructor(
     message: string,
@@ -104,6 +108,10 @@ export async function discoverBridges(dir: string = bridgesDir()): Promise<Bridg
     try {
       const raw = JSON.parse(await fs.readFile(file, 'utf8')) as BridgeRecord;
       if (typeof raw !== 'object' || typeof raw.port !== 'number' || typeof raw.token !== 'string') continue;
+      // Audit B6: a record from a different discovery-protocol version
+      // may carry fields we do not understand — ignore it instead of
+      // talking to it (the protocol field exists for exactly this).
+      if (raw.protocol !== BRIDGE_PROTOCOL) continue;
       if (typeof raw.pid === 'number' && !pidAlive(raw.pid)) {
         stale.push(file);
         continue;

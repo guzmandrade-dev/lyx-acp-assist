@@ -218,13 +218,38 @@ describe('companion discovery record', () => {
     process.env.APPDATA = tmp;
     try {
       const file = path.join(assistDir(), 'companion.json');
-      await writeCompanionRecord({ pid: 1234, port: 9999, url: 'http://127.0.0.1:9999', exe: null });
+      await writeCompanionRecord({ pid: 1234, port: 9999, url: 'http://127.0.0.1:9999', exe: null, token: 'tok' });
       const saved = JSON.parse(await fs.readFile(file, 'utf8'));
-      expect(saved).toEqual({ pid: 1234, port: 9999, url: 'http://127.0.0.1:9999', exe: null });
+      expect(saved).toEqual({ pid: 1234, port: 9999, url: 'http://127.0.0.1:9999', exe: null, token: 'tok' });
       await removeCompanionRecord();
       await expect(fs.access(file)).rejects.toThrow();
     } finally {
       process.env.APPDATA = prev;
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('discoverBridges ignores foreign-protocol records (B6) and drops dead PIDs', async () => {
+    const { discoverBridges } = await import('../src/bridge/client.js');
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'lo-acp-bridges-'));
+    const record = (over: Record<string, unknown>) => ({
+      app: 'LibreOffice ACP Assist',
+      protocol: 1,
+      pid: process.pid, // this test process is alive
+      port: 45678,
+      token: 'tok',
+      startedAt: '2026-10-26T00:00:00Z',
+      ...over,
+    });
+    await fs.writeFile(path.join(tmp, `${process.pid}-live.json`), JSON.stringify(record({})));
+    await fs.writeFile(path.join(tmp, '999999-foreign.json'), JSON.stringify(record({ pid: 999999, protocol: 99 })));
+    await fs.writeFile(path.join(tmp, '888888-dead.json'), JSON.stringify(record({ pid: 888888 })));
+    try {
+      const found = await discoverBridges(tmp);
+      expect(found.map((r) => r.port)).toEqual([45678]); // only the live, same-protocol record
+      await expect(fs.access(path.join(tmp, '888888-dead.json'))).rejects.toThrow(); // stale unlinked
+      await expect(fs.access(path.join(tmp, '999999-foreign.json'))).resolves.toBeUndefined(); // kept, ignored
+    } finally {
       await fs.rm(tmp, { recursive: true, force: true });
     }
   });
