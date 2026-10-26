@@ -173,6 +173,9 @@ class AcpPanel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent
 
     def __init__(self, ctx, frame, parent, sidebar):
         self.ctx = ctx
+        # AsyncCallback dispatcher, resolved once (was created per status
+        # refresh; stateless main-thread poster, safe to reuse).
+        self._async_cb = None
         self.frame = frame
         self.parent = parent
         self.sidebar = sidebar
@@ -312,9 +315,10 @@ class AcpPanel(unohelper.Base, XUIElement, XToolPanel, XSidebarPanel, XComponent
                 self.lbl_bridge.setText(status["bridge"])
                 self.lbl_companion.setText(status["companion"])
             try:
-                cb = self.ctx.ServiceManager.createInstanceWithContext(
-                    "com.sun.star.awt.AsyncCallback", self.ctx)
-                cb.addCallback(_UiUpdate(apply), None)
+                if self._async_cb is None:
+                    self._async_cb = self.ctx.ServiceManager.createInstanceWithContext(
+                        "com.sun.star.awt.AsyncCallback", self.ctx)
+                self._async_cb.addCallback(_UiUpdate(apply), None)
             except Exception:
                 traceback.print_exc()
 

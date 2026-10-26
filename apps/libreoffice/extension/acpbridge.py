@@ -114,15 +114,29 @@ class MainThreadCall(unohelper.Base, XCallback):
         self.done.set()
 
     def run(self, timeout=TIMEOUT_S):
-        ctx = _context()
-        cb = ctx.ServiceManager.createInstanceWithContext(
-            "com.sun.star.awt.AsyncCallback", ctx)
-        cb.addCallback(self, None)
+        _async_callback().addCallback(self, None)
         if not self.done.wait(timeout):
             raise TimeoutError("main thread did not respond in time")
         if self.error is not None:
             raise self.error
         return self.result
+
+
+_ASYNC_CALLBACK = None
+_ASYNC_CALLBACK_LOCK = threading.Lock()
+
+
+def _async_callback():
+    """The AsyncCallback dispatcher, resolved ONCE (previously
+    createInstanceWithContext ran per HTTP request; the service is a
+    stateless main-thread poster, safe to reuse)."""
+    global _ASYNC_CALLBACK
+    with _ASYNC_CALLBACK_LOCK:
+        if _ASYNC_CALLBACK is None:
+            ctx = _context()
+            _ASYNC_CALLBACK = ctx.ServiceManager.createInstanceWithContext(
+                "com.sun.star.awt.AsyncCallback", ctx)
+        return _ASYNC_CALLBACK
 
 
 class BridgeSelListener(unohelper.Base, XSelectionChangeListener):
@@ -181,26 +195,33 @@ def _view_cursor_style(doc):
 
 
 def _writer_paragraphs(doc, preview=False):
-    """All paragraphs as {i, text, style}; text truncated in preview mode."""
+    """All paragraphs as {i, text, style}; text truncated in preview mode
+    (normalized BEFORE truncating, so a preview built from an already
+    collected full list is identical to a preview-mode walk)."""
     out = []
     for i, p in enumerate(doc.getText().createEnumeration()):
-        t = p.getString()
+        t = p.getString().replace("\r\n", "\n")
         if preview and len(t) > PREVIEW_LEN:
             t = t[:PREVIEW_LEN] + "…"
         out.append({
             "i": i,
-            "text": t.replace("\r\n", "\n"),
+            "text": t,
             "style": str(p.getPropertyValue("ParaStyleName")),
         })
     return out
 
 
-def _nth_paragraph(doc, n):
-    """0-based paragraph accessor for the 1-based [pN] addressing."""
-    for i, p in enumerate(doc.getText().createEnumeration()):
-        if i == n - 1:
-            return p
-    raise RuntimeError(f"paragraph [p{n}] does not exist")
+def _preview_paragraphs(paras):
+    """Preview-truncate an ALREADY-COLLECTED paragraph list (no second
+    document walk — large docs used to be enumerated twice per /document:
+    once full, once in preview mode)."""
+    out = []
+    for p in paras:
+        t = p["text"]
+        if len(t) > PREVIEW_LEN:
+            t = t[:PREVIEW_LEN] + "…"
+        out.append({"i": p["i"], "text": t, "style": p["style"]})
+    return out
 
 
 # ----------------------------------------------------------- calc helpers
@@ -280,8 +301,11 @@ def _calc_range_data(sheet, a):
         a.StartColumn + cap_cols - 1, a.StartRow + cap_rows - 1)
     values = [[_calc_value(v) for v in row] for row in block.getDataArray()]
     truncated = rows > cap_rows or cols > cap_cols
-    while values and sum(len(c) for row in values for c in row) > BODY_LIMIT:
-        values.pop()
+    # Running size instead of re-summing the whole grid per popped row
+    # (was O(rows²) over the byte budget).
+    size = sum(len(c) for row in values for c in row)
+    while values and size > BODY_LIMIT:
+        size -= sum(len(c) for c in values.pop())
         truncated = True
     values = _trim_empty(values)
     formulas = None
@@ -415,8 +439,13 @@ def _current_page_index(doc):
     return None
 
 
-def _slide_payload(doc, index):
-    """One slide: {i, name, current, shapes: [{i, kind, text}]}."""
+def _slide_payload(doc, index, current=None):
+    """One slide: {i, name, current, shapes: [{i, kind, text}]}.
+    `current` is the pre-computed active page index (or None to compute
+    it here) — _read_slides passes it in: computing it per slide made deck
+    reads O(slides²) in getByIndex crossings."""
+    if current is None:
+        current = _current_page_index(doc)
     page = doc.getDrawPages().getByIndex(index)
     budget = IMPRESS_SHAPE_TEXT_LIMIT
     shapes = []
@@ -431,7 +460,7 @@ def _slide_payload(doc, index):
             budget -= len(text)
         shapes.append({"i": j, "kind": kind, "text": text})
     return {"i": index, "name": page.getName(),
-            "current": _current_page_index(doc) == index, "shapes": shapes}
+            "current": current == index, "shapes": shapes}
 
 
 def _impress_selection(doc):
@@ -451,23 +480,29 @@ def _impress_selection(doc):
             targets.append(sel)
         else:
             return None  # text-edit selection or unknown: treat as none
+    # One pass over all pages/shapes collecting the wrappers ONCE (the
+    # per-target nested scan re-crossed into UNO pages×shapes times, and
+    # _shape_kind(target) ran twice per target). pyuno == on the collected
+    # wrappers is plain Python after this point — no UNO crossings.
     pages = doc.getDrawPages()
+    shapes_flat = []
+    for i in range(pages.getCount()):
+        p = pages.getByIndex(i)
+        for j in range(p.getCount()):
+            shapes_flat.append((p.getByIndex(j), i, j))
     out = []
     for target in targets:
         found = None
-        for i in range(pages.getCount()):
-            p = pages.getByIndex(i)
-            for j in range(p.getCount()):
-                if p.getByIndex(j) == target:
-                    found = (i, j)
-                    break
-            if found is not None:
+        for shape, i, j in shapes_flat:
+            if shape == target:
+                found = (i, j)
                 break
         if found is None:
             continue
+        kind = _shape_kind(target)
         out.append({"slide": found[0], "shape": found[1],
-                    "kind": _shape_kind(target),
-                    "text": _shape_text(target) if _shape_kind(target) != "other" else None})
+                    "kind": kind,
+                    "text": _shape_text(target) if kind != "other" else None})
     return out or None
 
 
@@ -475,7 +510,9 @@ def _read_slides(doc):
     """Impress/Draw branch of /document: the deck outline + selection."""
     pages = doc.getDrawPages()
     count = pages.getCount()
-    slides = [_slide_payload(doc, i) for i in range(min(count, IMPRESS_MAX_SLIDES))]
+    current = _current_page_index(doc)  # once for the whole deck
+    slides = [_slide_payload(doc, i, current)
+              for i in range(min(count, IMPRESS_MAX_SLIDES))]
     return {
         "slides": slides,
         "selection": _impress_selection(doc),
@@ -819,7 +856,9 @@ def _read_document(desktop):
     if body_size <= BODY_LIMIT:
         paras, truncated = paras_full, False
     else:
-        paras, truncated = _writer_paragraphs(doc, preview=True), True
+        # Single pass: truncate the already-collected strings instead of
+        # re-walking the document in preview mode (~2N extra UNO calls).
+        paras, truncated = _preview_paragraphs(paras_full), True
 
     sel = None
     s = doc.getCurrentController().getSelection()
@@ -1077,13 +1116,18 @@ def _edit_writer(desktop, payload):
     if mode != "delete-at" and not paragraphs:
         raise RuntimeError(f"mode {mode!r} requires paragraphs")
     target = payload.get("target")
+    # Request-local paragraph list: the existence check, the target lookup,
+    # and the post-delete checks below all index into ONE walk (each
+    # _writer_paragraphs/_nth_paragraph call used to re-walk from
+    # paragraph 0 — one delete-at walked the document up to 4 times).
+    paras_pre = None
     if mode in ("insert-after", "rewrite-at", "delete-at"):
         if not isinstance(target, int) or target < 1:
             raise RuntimeError(f"mode {mode!r} requires a 1-based target")
-        count = len(_writer_paragraphs(doc))
-        if target > count:
+        paras_pre = list(text.createEnumeration())
+        if target > len(paras_pre):
             raise RuntimeError(
-                f"paragraph [p{target}] does not exist (document has {count})")
+                f"paragraph [p{target}] does not exist (document has {len(paras_pre)})")
 
     tracked = bool(payload.get("tracked", True))
     was_tracking = doc.getPropertyValue("RecordChanges")
@@ -1102,7 +1146,7 @@ def _edit_writer(desktop, payload):
             _write_paragraphs(doc, vc, paragraphs, break_mode="after")
 
         elif mode == "insert-after":
-            para = _nth_paragraph(doc, target)
+            para = paras_pre[target - 1]
             vc.gotoRange(para.getEnd(), False)
             _write_paragraphs(doc, vc, paragraphs, break_mode="before")
 
@@ -1110,7 +1154,7 @@ def _edit_writer(desktop, payload):
             # Verified choreography (probe 7): collapse at the paragraph
             # START, select its text, delete, then type the replacement
             # (first paragraph fills the emptied paragraph).
-            para = _nth_paragraph(doc, target)
+            para = paras_pre[target - 1]
             vc.gotoRange(para.getStart(), False)
             vc.goRight(len(para.getString()), True)
             vc.setString("")
@@ -1128,7 +1172,7 @@ def _edit_writer(desktop, payload):
             _write_paragraphs(doc, vc, paragraphs, break_mode="between")
 
         elif mode == "delete-at":
-            para = _nth_paragraph(doc, target)
+            para = paras_pre[target - 1]
             vc.gotoRange(para.getStart(), False)
             if not vc.goRight(len(para.getString()) + 1, True):
                 vc.goRight(len(para.getString()), True)
@@ -1137,13 +1181,14 @@ def _edit_writer(desktop, payload):
             # insertion cancels its text but leaves an EMPTY paragraph.
             # It is content-free, so remove it UNTRACKED inside the same
             # undo transaction — the user sees no stray empty line and
-            # one undo restores everything.
-            paras = _writer_paragraphs(doc)
-            if len(paras) >= target and paras[target - 1]["text"] == "":
+            # one undo restores everything. ONE fresh post-delete walk
+            # serves both the emptiness check and the paragraph access.
+            paras_post = list(text.createEnumeration())
+            if len(paras_post) >= target and paras_post[target - 1].getString() == "":
                 if tracked:
                     doc.setPropertyValue("RecordChanges", False)
                 try:
-                    empty = _nth_paragraph(doc, target)
+                    empty = paras_post[target - 1]
                     vc.gotoRange(empty.getStart(), False)
                     vc.goRight(1, True)
                     vc.setString("")
