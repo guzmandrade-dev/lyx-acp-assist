@@ -837,6 +837,21 @@ Also (Track D start): writer/calc/impress parsers now share core
 `createParseActionTag`; the attachment prompt block comes from core
 `buildAttachmentBlock`.
 
+- **Per-app userData (live-found 2026-10-26)**: unpackaged runs
+  (`npm start` / `electron ./dist/...`) would otherwise share
+  Electron's DEFAULT userData folder (`Roaming/Electron`) with the LyX
+  app — the shared history dir cross-seeded this app's document
+  selector with LyX documents (.lyx files in the dropdown; live
+  reported), and settings/companion records collide.
+  `createElectronMain` now requires `userDataDirName` and applies
+  `app.setPath('userData', appData/<name>)` before anything reads it;
+  this app passes 'LibreOffice ACP Assist' (electron-builder's
+  default for it), LyX passes 'lyx-acp-assist'. NOTE: LO's
+  conversation keys are bridge URLs ('file:///...') and 'Untitled N'
+  — they have no on-disk `exists` filter (unlike LyX's), so a
+  shared/foreign history dir lists EVERYTHING in it; the dir split
+  is the fix.
+
 ## Track D mechanical dedup (2026-10-26)
 
 The audit's small Track D factories all live in `@acp-assist/core` now

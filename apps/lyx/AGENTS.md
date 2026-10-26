@@ -1097,6 +1097,18 @@ Also (Track D start): all four action-tag parsers now share core
 `createParseActionTag` (the B5 layering + captures); LyX's parseAction
 keeps only its vocabulary + outcome shaping.
 
+- **Per-app userData (live-found 2026-10-26)**: unpackaged runs
+  (`npm start` / `electron ./dist/...`) would otherwise share
+  Electron's DEFAULT userData folder (`Roaming/Electron`) with the LO
+  app — one shared history dir cross-seeds each app's document
+  selector with the OTHER app's documents (the LO dropdown listed
+  .lyx files), and settings/companion records collide.
+  `createElectronMain` now requires `userDataDirName` and applies
+  `app.setPath('userData', appData/<name>)` before anything reads it;
+  this app passes 'lyx-acp-assist' (the dir the packaged app already
+  uses), LO passes 'LibreOffice ACP Assist'. The mixed
+  `Roaming/Electron` data from pre-fix runs stays behind, ignored.
+
 ## Track D mechanical dedup (2026-10-26)
 
 The audit's small Track D factories all live in `@acp-assist/core` now

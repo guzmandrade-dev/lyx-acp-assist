@@ -18,6 +18,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 createElectronMain({
   windowTitle: 'LibreOffice ACP Assist',
   appName: 'LibreOffice',
+  // Per-app userData (Roaming/LibreOffice ACP Assist) — unpackaged runs
+  // would otherwise share Electron's default folder with the LyX app
+  // (one shared history dir cross-seeds the document selectors).
+  userDataDirName: 'LibreOffice ACP Assist',
   watchedProcessName: 'soffice', // soffice.bin reports its ProcessName as "soffice"
   appDistDir: __dirname,
   // The app's own logo.svg (all other panel assets are shared).

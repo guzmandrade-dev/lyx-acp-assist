@@ -21,6 +21,19 @@ export interface ElectronMainOptions {
   windowTitle: string;
   /** Log-line prefix (app name). */
   appName: string;
+  /**
+   * The userData directory name under the OS appData root
+   * (e.g. 'lyx-acp-assist', 'LibreOffice ACP Assist'). REQUIRED in
+   * practice: run unpackaged (`npm start` / electron ./dist/...), BOTH
+   * apps would otherwise share Electron's DEFAULT userData folder
+   * (Roaming/Electron) — one shared history dir cross-seeds the
+   * document selectors with the OTHER app's documents (live-found
+   * 2026-10-26: the LO dropdown listed .lyx files), and the settings +
+   * companion records collide. setPath is applied before anything
+   * reads userData; packaged runs land on the same directory
+   * electron-builder already uses.
+   */
+  userDataDirName: string;
   /** Foreground process name that floats the window ('LyX' | 'soffice'). */
   watchedProcessName: string;
   /**
@@ -53,6 +66,9 @@ export interface ElectronMainOptions {
 }
 
 export function createElectronMain(options: ElectronMainOptions): void {
+  // Per-app userData BEFORE anything reads it (see the option's comment).
+  // Must run before app ready; safe as the first statement of main.
+  app.setPath('userData', path.join(app.getPath('appData'), options.userDataDirName));
   let mainWindow: BrowserWindow | null = null;
   let httpServer: import('node:http').Server | null = null;
   /** When false (default), the window never floats on top; the pin toggle enables it. */

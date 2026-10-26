@@ -17,6 +17,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 createElectronMain({
   windowTitle: 'LyX ACP Assist',
   appName: 'LyX',
+  // Per-app userData (Roaming/lyx-acp-assist) — unpackaged runs would
+  // otherwise share Electron's default folder with the LO app (see the
+  // createElectronMain option).
+  userDataDirName: 'lyx-acp-assist',
   watchedProcessName: 'LyX',
   appDistDir: __dirname,
   // The app's own logo.svg (all other panel assets are shared).
