@@ -9,6 +9,15 @@ let typingIndicator = null;
 let generationStart = 0;
 let typingTimer = null;
 let typingResumeTimer = null;
+/**
+ * Live-render throttle for streamed replies: re-rendering the WHOLE
+ * accumulated reply on every {"text"} chunk is O(n²) over the stream, so
+ * chunks coalesce into one full markdown render at most this often. Turn
+ * boundaries (appliedStep / done) always render immediately and cancel
+ * any pending throttled render. Indistinguishable from per-chunk
+ * rendering in practice — chunks arrive faster than the eye can follow.
+ */
+const LIVE_RENDER_MS = 100;
 
 const chat = document.getElementById('chat');
 const statusEl = document.getElementById('status');
@@ -961,6 +970,28 @@ async function streamMessage(message) {
     toolLine.textContent = text;
   };
 
+  // Throttled live render (see LIVE_RENDER_MS): one full fence-aware
+  // render per burst of chunks instead of one per chunk.
+  let liveRenderTimer = null;
+  const cancelLiveRender = () => {
+    if (liveRenderTimer !== null) {
+      clearTimeout(liveRenderTimer);
+      liveRenderTimer = null;
+    }
+  };
+  const renderLive = () => {
+    liveRenderTimer = null;
+    div._rawText = full; // for the copy/quote actions
+    textDiv.innerHTML = renderAssistantText(full, applied);
+    scrollToBottomIfNear();
+    scheduleTypingResume();
+  };
+  const scheduleLiveRender = () => {
+    if (liveRenderTimer === null) {
+      liveRenderTimer = setTimeout(renderLive, LIVE_RENDER_MS);
+    }
+  };
+
   try {
     for (;;) {
       const { done, value } = await reader.read();
@@ -984,10 +1015,7 @@ async function streamMessage(message) {
           full += payload.text;
           started = true;
           hideTyping();
-          div._rawText = full; // for the copy/quote actions
-          textDiv.innerHTML = renderAssistantText(full, applied);
-          scrollToBottomIfNear();
-          scheduleTypingResume();
+          scheduleLiveRender();
         } else if (payload.tool) {
           const t = payload.tool;
           if (t.status === 'completed') {
@@ -1011,6 +1039,7 @@ async function streamMessage(message) {
           // Boundary between two edits of one multi-action run: close the
           // current bubble (with its feedback) and start a fresh one below
           // for the next agent step.
+          cancelLiveRender();
           div._rawText = full;
           div._applied = applied;
           textDiv.innerHTML =
@@ -1040,6 +1069,13 @@ async function streamMessage(message) {
       }
     }
   } catch (e) {
+    cancelLiveRender();
+    if (started) {
+      // Show everything streamed so far (abort/stop): the throttled
+      // render may be up to LIVE_RENDER_MS behind.
+      div._rawText = full;
+      textDiv.innerHTML = renderAssistantText(full, applied);
+    }
     maybeSetBusyFromError(e);
     hideTyping();
     generationStart = 0;
@@ -1049,6 +1085,7 @@ async function streamMessage(message) {
 
   hideTyping();
   generationStart = 0;
+  cancelLiveRender();
   if (toolLine) {
     if (usedTools.length > 0) setToolLine(`Used ${usedTools.join(', ')}`);
     else toolLine.remove();
