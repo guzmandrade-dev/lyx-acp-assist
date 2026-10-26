@@ -1102,3 +1102,32 @@ LO createServer lifted with the backend injected, the LyX write path
 as an adapter — do not regress the LyX choreographies — unified
 message/stream loop, LO session GC, /events consumption; root
 next-steps.md section 2 + 3 Track D).
+
+## Server-core unification (Phase B2, 2026-10-26) — DONE
+
+The session lifecycle, shared routes, and the multi-action message
+loop now live in ONE core `createCompanionServer`
+(`packages/core/src/companion.ts`); this app is a `CompanionBackend`:
+`createServer` is a thin call into core + the save-consent route via
+`extraRoutes`. What stays app-side (`createLyxBackend` in server.ts):
+the pipe client + write-only fallbacks, the clipboard choreographies,
+gotoParagraph/merge/move with verified targeting, the document
+snapshot cache, buildContextBlock + class layouts, the prompts, and
+the LyX-only hooks — the save-consent gate in `readStep(1)` (blocked →
+the original 409 body), the markup-retry (VRP) as `retryReply`, the B4
+clipboard save/restore as readStep(1)/`afterRun`, and the app-shaped
+SSE frames (`frame` hook: tagNote, applied with adjusted target2).
+
+- The LyX idle-session GC (audit B2) moved into the core server
+  (sessionIdleMs option); the sweeper calls `teardownSession` →
+  `lyx.stop()` before `agent.stop()`, exactly as before.
+- Conversation preloading: helpers call `session.ensureConversation(key)`
+  (the core-owned store) on every active-document refresh.
+- The shared panel's `eventPush` config is FALSE for LyX: the
+  composer-typing/focus refresh heuristics stay (no push source; the
+  pipe is polled). LO uses the server-push channel instead.
+- Verified gates: LyX 146/146 (every choreography incl. merge/move,
+  consent, markup retry, cancel-between-edits, GC), LO 77/77, core
+  20/20, panel 6/6, typechecks; LIVE write-only probe against the
+  running LyX (pipe bug, see root next-steps.md): session + consent
+  409 + consent accept + a real vibe-acp reply on the unified loop.

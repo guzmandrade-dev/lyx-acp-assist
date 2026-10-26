@@ -875,3 +875,38 @@ Remaining for Track D: the B2 lift itself (backend contract in core,
 LO createServer lifted with the backend injected, the LyX write path
 as an adapter, unified message/stream loop, LO session GC, /events
 consumption; root next-steps.md section 2 + 3 Track D).
+
+## Server-core unification (Phase B2, 2026-10-26) — DONE
+
+The session lifecycle, shared routes, and the multi-action message
+loop now live in ONE core `createCompanionServer`
+(`packages/core/src/companion.ts`); this app is a `CompanionBackend`:
+`createServer` is a thin call into core + the bridge-install routes
+(registered app-side). `createLoBackend` keeps the healing bridge
+(audit B3), `adapterFor` dispatch, ONE /document read per step
+(`readStep` → {doc, adapter, contextText, selection}), the module
+prompts/parsers, and the app-shaped frames/meta (`frame` +
+`metaExtras` hooks: module/address).
+
+- The idle-session GC (audit B2's LO side) comes from the core
+  server now (sessionIdleMs option; teardown → bridge cleanup).
+- **Server-push refreshes (Track D /events)**: the bridge's
+  `/events` long-poll is now consumed — `BridgeClient.events(since)`
+  + the backend's `watchEvents` run ONE long-poll per session and
+  push `{refresh:true}` frames to the panel over the core's
+  `GET /api/session/:id/events` SSE channel. The panel (config
+  `eventPush: true`) subscribes via a fetch-stream (EventSource
+  cannot send the Authorization header) and refreshes
+  status/documents/selection on frames (300ms debounce); the
+  composer-typing/focus heuristics are gone for LO. On a failed
+  poll (bridge down) the watcher retries every 5s — B3 recovery is
+  natural: events flow again and the panel refreshes itself.
+- Probe: `test-bridge/events_probe.mjs` (subscribe + expect
+  {refresh:true} after a UNO selection change).
+- Verified gates: LO 77/77 (incl. the new push-channel test), LyX
+  146/146, core 20/20, panel 6/6, typechecks; bridge e2e 47/47 +
+  mechanics 13/13 (live LO, fresh oxt); LIVE: a 2-edit multi-action
+  agent run through the unified loop (tracked changes, per-edit
+  undo, UNO-verified), real UNO selections reaching the panel
+  channel and the panel's indicator updating live with zero console
+  errors, plus a full agent chat through the panel on eventPush.
