@@ -97,6 +97,14 @@ while($true){
         [System.Windows.Forms.Clipboard]::SetDataObject($data, $true)
         Write-Output 'OK'
       }
+      'writeText' {
+        $data = New-Object System.Windows.Forms.DataObject
+        if ($req.text) {
+          $data.SetText([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($req.text)))
+        }
+        [System.Windows.Forms.Clipboard]::SetDataObject($data, $true)
+        Write-Output 'OK'
+      }
       'readFormat' {
         $d = [System.Windows.Forms.Clipboard]::GetDataObject()
         if ($d -eq $null -or -not $d.GetDataPresent('${LYX_FORMAT}')) {
@@ -269,6 +277,10 @@ function windowsClipboard(): RawClipboard {
       if (!line.startsWith('DATA ')) throw new Error(`Unexpected host reply: ${line.slice(0, 100)}`);
       return Buffer.from(line.slice(5), 'base64').toString('utf8');
     },
+    async writeText(text) {
+      const line = await psHostCommand({ op: 'writeText', text: Buffer.from(text, 'utf8').toString('base64') });
+      if (line !== 'OK') throw new Error(`Unexpected host reply: ${line.slice(0, 100)}`);
+    },
     async clear() {
       const line = await psHostCommand({ op: 'clear' });
       if (line !== 'OK') throw new Error(`Unexpected host reply: ${line.slice(0, 100)}`);
@@ -323,6 +335,12 @@ function linuxClipboard(): RawClipboard {
         ? await runProcess('wl-paste', ['--no-newline'])
         : await runProcess('xclip', ['-selection', 'clipboard', '-o']);
       return r.code === 0 ? r.stdout : '';
+    },
+    async writeText(text) {
+      // Same mechanism as clear(): replace the selection with the text
+      // (empty text empties the clipboard).
+      const args = isWayland() ? [] : ['-selection', 'clipboard'];
+      await runProcess(tool, args, text);
     },
     async clear() {
       // wl-copy has a dedicated --clear; xclip replaces the selection with
@@ -391,6 +409,10 @@ function macosClipboard(): RawClipboard {
     async readText() {
       const out = await osascript('return the clipboard as text');
       return out.trimEnd();
+    },
+    async writeText(text) {
+      // AppleScript sets the clipboard to text (empty string clears it).
+      await osascript(`set the clipboard to ${JSON.stringify(text)}`);
     },
     async clear() {
       await osascript(

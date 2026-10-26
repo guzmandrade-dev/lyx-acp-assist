@@ -216,7 +216,10 @@ const rawClipboard: RawClipboard = {
       typeof clip === 'string' ? clip : clip?.toString('utf8');
   },
   async readText() {
-    return '';
+    return (globalThis as { __clipText?: string }).__clipText ?? '';
+  },
+  async writeText(text) {
+    (globalThis as { __clipText?: string }).__clipText = text;
   },
   async clear() {
     (globalThis as { __clipDoc?: string }).__clipDoc = '';
@@ -283,6 +286,25 @@ afterEach(async () => {
 });
 
 describe('multi-action runs over the message stream', () => {
+  it('restores the user clipboard text after the run (B4)', async () => {
+    const harness = await startHarness(['Just prose, no edit.\n[ACTION: none]']);
+    cleanups.push(async () => {
+      await new Promise<void>((resolve) => harness.server.close(() => resolve()));
+      await fs.rm(harness.doc.dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    });
+    // The user had text on the clipboard before sending the message; the
+    // choreography clobbers it (selection reads), and the run must restore
+    // it before the stream closes.
+    (globalThis as { __clipText?: string }).__clipText = 'user copied this';
+    const res = await fetch(`${harness.base}/api/session/${harness.sessionId}/message/stream`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${API_TOKEN}` },
+      body: JSON.stringify({ message: 'chat only' }),
+    });
+    await readSse(res);
+    expect((globalThis as { __clipText?: string }).__clipText).toBe('user copied this');
+  });
+
   it('applies two edits in one request, then continues to completion', async () => {
     const harness = await startHarness([
       'Fixing the title.\n```lyx\n\\begin_layout Title\nReal title\n\\end_layout\n```\n[ACTION: rewrite-at p1]',

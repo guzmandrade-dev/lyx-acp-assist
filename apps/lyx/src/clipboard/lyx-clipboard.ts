@@ -23,6 +23,12 @@ export interface RawClipboard {
   clear(): Promise<void>;
   /** Plain-text flavor of the clipboard. */
   readText(): Promise<string>;
+  /**
+   * Replace the clipboard with plain text only (no x-lyx flavor) — used
+   * to restore the user's pre-run text after a choreography (audit B4).
+   * An empty string clears the clipboard.
+   */
+  writeText(text: string): Promise<void>;
 }
 
 export class LyxClipboard {
@@ -45,6 +51,11 @@ export class LyxClipboard {
   /** The plain-text flavor of the current clipboard (flattened selection). */
   async readText(): Promise<string> {
     return this.clipboard.readText();
+  }
+
+  /** Restore a plain-text clipboard (audit B4 — see RawClipboard). */
+  async writeText(text: string): Promise<void> {
+    return this.clipboard.writeText(text);
   }
 
   /**

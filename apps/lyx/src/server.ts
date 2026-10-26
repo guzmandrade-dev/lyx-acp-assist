@@ -451,6 +451,9 @@ export function createServer(options: ServerOptions & {
     let lastAction: AgentAction = 'none';
     let lastTarget: number | null = null;
     let lastTarget2: number | null = null;
+    // Audit B4: restores the user's pre-run clipboard text; a no-op until
+    // the choreography's first clipboard touch saves it (assigned in try).
+    let restoreClipboardText: () => Promise<void> = async () => {};
 
     type Send = (obj: unknown) => void;
 
@@ -712,6 +715,16 @@ export function createServer(options: ServerOptions & {
       // and body parsed from disk match the live document. Only for saved
       // buffers — buffer-write on an untitled buffer opens a Save As dialog.
       if (session.documentPath) await saveDocument(session);
+      // Audit B4: the clipboard is both write channel and verification
+      // channel — every choreography clobbers the user's clipboard. Save
+      // the pre-run TEXT flavor (non-text flavors cannot be preserved by
+      // the adapter) and restore it when the run ends.
+      const savedClipboardText = await session.clipboard.readText().catch(() => '');
+      restoreClipboardText = async () => {
+        await session.clipboard.writeText(savedClipboardText).catch(() => {
+          /* restoration is best-effort; never break the stream */
+        });
+      };
       const contextText = await buildContextBlock(session);
       const selection = await readSelection(session);
       // SSE frames keep the session's activity clock fresh (idle GC, B2).
@@ -790,6 +803,7 @@ export function createServer(options: ServerOptions & {
       // stream closes so a completed run is always on disk when the UI
       // sees `done`.
       await storeFor(session).flush().catch(() => { /* never break the stream */ });
+      await restoreClipboardText();
       res.end();
     } catch (err) {
       const message2 = err instanceof Error ? err.message : String(err);
@@ -807,6 +821,7 @@ export function createServer(options: ServerOptions & {
           error: message2,
         }).catch(() => { /* logging must never break the request path */ });
         await storeFor(session).flush().catch(() => { /* logging must never break the request path */ });
+        await restoreClipboardText().catch(() => { /* best-effort */ });
       }
     }
   });

@@ -19,6 +19,12 @@ const stubClipboard: RawClipboard = {
   async write() {
     /* no-op */
   },
+  async readText() {
+    return '';
+  },
+  async writeText() {
+    /* no-op */
+  },
   async clear() {
     /* no-op */
   },
