@@ -23,8 +23,13 @@ export interface SessionRoutesOptions<T extends SessionLike> {
   getSession: (id: string) => T;
   /** The app's session map (entries are removed on teardown). */
   sessions: Map<string, T>;
-  /** App-specific GET response body for the session info. */
-  sessionInfo: (session: T) => Promise<unknown>;
+  /**
+   * App-specific GET response body for the session info. `opts.outline` is
+   * true only when the caller asked for it (`?outline=1`) or when building
+   * a first-connect response; outline building can be expensive (it reads
+   * and parses the whole document), so light refresh calls leave it out.
+   */
+  sessionInfo: (session: T, opts: { outline?: boolean }) => Promise<unknown>;
   /** Extra teardown before the agent process is stopped (e.g. pipe stop). */
   teardown?: (session: T) => void;
 }
@@ -38,7 +43,7 @@ export function registerSessionRoutes<T extends SessionLike>(
     '/api/session/:id',
     wrap(async (req, res) => {
       const session = options.getSession(String(req.params['id']));
-      res.json(await options.sessionInfo(session));
+      res.json(await options.sessionInfo(session, { outline: req.query['outline'] === '1' }));
     }),
   );
 

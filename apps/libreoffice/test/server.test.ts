@@ -194,13 +194,22 @@ describe('server message loop (fake agent + fake bridge)', () => {
     const fakeBridgeInstance = (srv as unknown as { _loFakeBridge?: FakeBridge });
     void fakeBridgeInstance;
 
-    // Session info reflects the edited document and the conversation.
-    const info = (await (await fetch(`${url}/api/session/${session.sessionId}`)).json()) as {
+    // Session info reflects the edited document and the conversation. The
+    // outline is opt-in (`?outline=1`): the plain GET is the panel's light
+    // refresh path and skips the full document read.
+    const info = (await (
+      await fetch(`${url}/api/session/${session.sessionId}?outline=1`)
+    ).json()) as {
       conversation: Array<{ role: string; content: string; meta?: { action: string; result: string } }>;
       outline: string;
     };
     expect(info.conversation.length).toBeGreaterThanOrEqual(4);
     expect(info.outline).toContain('Results');
+    // The plain (light) GET skips the full document read.
+    const light = (await (await fetch(`${url}/api/session/${session.sessionId}`)).json()) as {
+      outline: string;
+    };
+    expect(light.outline).toBe('');
     const metas = info.conversation.filter((t) => t.meta).map((t) => t.meta);
     expect(metas[0]?.action).toBe('insert-after');
     expect(metas[0]?.result).toBe('applied');

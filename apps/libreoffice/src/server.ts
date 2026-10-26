@@ -257,7 +257,8 @@ export function createServer(options: ServerOptions & {
         }
       }
 
-      res.json(await sessionInfo(session));
+      // First connect: the panel shows an outline-aware welcome message.
+      res.json(await sessionInfo(session, { outline: true }));
     }),
   );
 
@@ -592,19 +593,26 @@ export function createServer(options: ServerOptions & {
     return storeFor(session).recordTurnMeta(meta);
   }
 
-  async function sessionInfo(session: Session) {
+  /**
+   * GET response body. By default the expensive full `/document` read is
+   * skipped: the panel's refresh chain calls this after every message and
+   * never displays the outline. `outline: true` (session creation,
+   * `?outline=1`) fetches it.
+   */
+  async function sessionInfo(session: Session, opts: { outline?: boolean } = {}) {
     const docKey = await refreshActiveDocument(session);
     let outline = '';
     let layout: string | null = null;
-    let conversation: Turn[] = [];
-    try {
-      const doc = await session.bridge.document();
-      const adapter = adapterFor(doc.module);
-      outline = adapter.renderOutline?.(doc) ?? '';
-      layout = doc.cursorStyle ?? null;
-      conversation = session.conversations.get(conversationKey(session)) ?? [];
-    } catch {
-      /* bridge may be between documents; report what we have */
+    let conversation: Turn[] = session.conversations.get(conversationKey(session)) ?? [];
+    if (opts.outline) {
+      try {
+        const doc = await session.bridge.document();
+        const adapter = adapterFor(doc.module);
+        outline = adapter.renderOutline?.(doc) ?? '';
+        layout = doc.cursorStyle ?? null;
+      } catch {
+        /* bridge may be between documents; report what we have */
+      }
     }
     return {
       sessionId: session.id,

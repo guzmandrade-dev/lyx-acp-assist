@@ -116,7 +116,6 @@ export class LyxServerClient extends EventEmitter {
 
   private shuttingDown = false;
   private waiters = new Set<Waiter>();
-  private unconsumed: string[] = [];
 
   private inFd: number | null = null;
   private helloPending = false;
@@ -407,7 +406,9 @@ export class LyxServerClient extends EventEmitter {
         }
       }
     }
-    this.unconsumed.push(line);
+    // Unmatched lines are deliberately dropped: stale/duplicated broadcasts
+    // must never be mistaken for fresh replies (see AGENTS.md), and the
+    // 'message' event above already surfaced the line to any listener.
   }
 
   private send(line: string): void {

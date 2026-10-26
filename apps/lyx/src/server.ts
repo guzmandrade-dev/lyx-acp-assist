@@ -234,7 +234,8 @@ export function createServer(options: ServerOptions & {
         }
       }
 
-      res.json(await sessionInfo(session));
+      // First connect: the panel shows an outline-aware welcome message.
+      res.json(await sessionInfo(session, { outline: true }));
     }),
   );
 
@@ -832,14 +833,22 @@ export function createServer(options: ServerOptions & {
     return storeFor(session).recordTurnMeta(meta);
   }
 
-  async function sessionInfo(session: Session) {
+  /**
+   * GET response body. By default the expensive parts are skipped: the
+   * panel's refresh chain calls this on every post-send / focus /
+   * keystroke burst and never displays the outline. `outline: true`
+   * (session creation, `?outline=1`) reads and parses the document.
+   */
+  async function sessionInfo(session: Session, opts: { outline?: boolean } = {}) {
     const docPath = await refreshActiveDocument(session);
     let outline = '';
     let layout = '';
     try {
       layout = await session.lyx.getLayout();
-      const ctx = await readDocumentContext(session);
-      outline = renderOutline(ctx.outline);
+      if (opts.outline) {
+        const ctx = await readDocumentContext(session);
+        outline = renderOutline(ctx.outline);
+      }
     } catch {
       /* document may be unsaved; outline unavailable */
     }
@@ -1605,10 +1614,17 @@ export function verifyParagraphSelection(
  * Search order: the user's LyX layouts dir (custom/journal classes), then
  * the installation's Resources (article, beamer, ...), then common Linux
  * paths. Returns null when the class file cannot be found.
+ *
+ * Results are memoized per class: layout files never change mid-session,
+ * and the read chain (up to 4-deep Input includes) ran on every prompt
+ * build and every continuation step.
  */
+const classLayoutsCache = new Map<string, string[] | null>();
+
 export async function findClassLayouts(textclass: string): Promise<string[] | null> {
   const safeClass = textclass.replace(/[^\w.-]+/g, '');
   if (!safeClass) return null;
+  if (classLayoutsCache.has(safeClass)) return classLayoutsCache.get(safeClass) ?? null;
   const home = os.homedir();
   const candidates = [
     process.env.LYX_LAYOUTS_DIR,
@@ -1621,8 +1637,12 @@ export async function findClassLayouts(textclass: string): Promise<string[] | nu
   ].filter((d): d is string => Boolean(d));
   for (const dir of candidates) {
     const names = await collectStyles(path.join(dir, `${safeClass}.layout`), dir, 0);
-    if (names) return names;
+    if (names) {
+      classLayoutsCache.set(safeClass, names);
+      return names;
+    }
   }
+  classLayoutsCache.set(safeClass, null);
   return null;
 }
 

@@ -85,7 +85,7 @@ export function buildDocumentContext(lyxText: string): DocumentContext {
           layout: node.args ?? 'Standard',
           depth,
           preview,
-          hasMath: JSON.stringify(node.children).includes('Formula'),
+          hasMath: hasFormulaInset(node.children),
         });
         // Do not descend into layouts: their children are the paragraph's
         // own text and insets, already captured by the preview.
@@ -344,6 +344,21 @@ function nearestNonBlank(lines: string[], i: number, dir: -1 | 1): string | null
 
 function isInsetSyntaxLine(text: string): boolean {
   return INSET_PROP_LINE.test(text) || INSET_QUOTED_PROP_LINE.test(text);
+}
+
+/**
+ * True when the subtree contains a Formula inset. Walks only block nodes
+ * and short-circuits on the first hit — O(paragraph), unlike the old
+ * JSON.stringify(children).includes('Formula') which was O(total doc
+ * bytes) per paragraph.
+ */
+function hasFormulaInset(nodes: LyxNode[]): boolean {
+  for (const node of nodes) {
+    if (node.type !== 'block') continue;
+    if (node.tag === 'inset' && (node.args ?? '').startsWith('Formula')) return true;
+    if (hasFormulaInset(node.children)) return true;
+  }
+  return false;
 }
 
 function collectTexts(nodes: LyxNode[], insideInset = false): string[] {
