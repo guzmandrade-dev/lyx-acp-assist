@@ -114,6 +114,8 @@ export interface Session {
   documentPath: string | null;
   /** Set when the client asks to stop the current generation. */
   cancelRequested: boolean;
+  /** Last request/SSE-frame time; drives the idle-session GC (audit B2). */
+  lastActive: number;
   /**
    * Parsed document snapshot, cached per (path, mtimeMs). One request
    * parses the document ONCE: every save() bumps the file's mtime, so the
@@ -150,6 +152,13 @@ export interface ServerOptions {
    * `app.locals.apiToken` for the record writers / dev tools.
    */
   apiToken?: string;
+  /**
+   * Idle-session GC (audit B2): sessions with no activity for this long
+   * are torn down (agent process + pipe client included) — an F5 or
+   * crash-reload of the panel otherwise orphans them forever. Default
+   * 30 minutes; the sweep interval is idleMs/10.
+   */
+  sessionIdleMs?: number;
 }
 
 
@@ -173,6 +182,33 @@ export function createServer(options: ServerOptions & {
   const sessions = new Map<string, Session>();
 
   const logError = createLogError(options.logDir);
+
+  // Audit B2: F5 / crash-reload of the panel orphans the running agent
+  // process + pipe client (only an explicit Reconnect deletes the old
+  // session). Track per-request activity and sweep idle sessions — the
+  // pipe client's stop() sends `bye`, freeing LyX's 10-slot registry.
+  const sessionIdleMs = options.sessionIdleMs ?? 30 * 60_000;
+  app.use((req, _res, next) => {
+    const m = /^\/api\/session\/([^/]+)/.exec(req.path);
+    const session = m ? sessions.get(m[1] ?? '') : undefined;
+    if (session) session.lastActive = Date.now();
+    next();
+  });
+  const sweeper = setInterval(() => {
+    const now = Date.now();
+    for (const [id, session] of sessions) {
+      if (now - session.lastActive < sessionIdleMs) continue;
+      sessions.delete(id);
+      try {
+        session.lyx.stop();
+      } catch {
+        /* best-effort */
+      }
+      session.agent.stop();
+      logError('[gc] idle session torn down', new Error(`session ${id} idle > ${sessionIdleMs}ms`));
+    }
+  }, Math.max(1_000, Math.round(sessionIdleMs / 10)));
+  sweeper.unref();
 
   const wrap = (handler: (req: express.Request, res: express.Response) => Promise<unknown>) =>
     async (req: express.Request, res: express.Response) => {
@@ -254,6 +290,7 @@ export function createServer(options: ServerOptions & {
         knownDocuments,
         documentPath: null,
         cancelRequested: false,
+        lastActive: Date.now(),
         saveConsent: new Set(),
         attachments: [],
       };
@@ -675,7 +712,12 @@ export function createServer(options: ServerOptions & {
       if (session.documentPath) await saveDocument(session);
       const contextText = await buildContextBlock(session);
       const selection = await readSelection(session);
-      const send = startSse(res);
+      // SSE frames keep the session's activity clock fresh (idle GC, B2).
+      const rawSend = startSse(res);
+      const send: Send = (obj) => {
+        session.lastActive = Date.now();
+        rawSend(obj);
+      };
       session.cancelRequested = false;
 
       // Attachments are consumed by this message (chat-app semantics).

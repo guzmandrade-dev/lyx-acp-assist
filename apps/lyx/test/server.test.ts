@@ -659,3 +659,59 @@ describe('verifyParagraphSelection', () => {
     expect(v.via).toBe('none');
   });
 });
+
+describe('idle-session GC (audit B2)', () => {
+  it('tears down sessions idle past the window, freeing agent + pipe client', async () => {
+    const stopped: string[] = [];
+    const fakeAgent = {
+      start: async () => undefined,
+      stop: () => {
+        stopped.push('agent');
+      },
+      createSession: async () => undefined,
+      cancel: () => undefined,
+      prompt: async () => 'ok [ACTION: none]',
+    };
+    const fakeLyx = {
+      mode: 'pipe',
+      start: async () => undefined,
+      stop: () => {
+        stopped.push('lyx');
+      },
+      getFilename: async () => '',
+      getLayout: async () => '',
+      isAvailable: () => false,
+    };
+    const app = createServer({
+      apiToken: API_TOKEN,
+      publicDir: new URL('../public', import.meta.url).pathname.replace(/^\/(\w:)/, '$1'),
+      clipboard: stubClipboard,
+      sessionIdleMs: 300, // sweep every max(1s, 30ms) -> 1s
+      agentFactory: () => fakeAgent as unknown as import('../src/server.js').AgentRunner,
+      lyxFactory: () => fakeLyx as unknown as import('../src/lyxserver/client.js').LyxServerClient,
+    });
+    const srv = app.listen(0, '127.0.0.1');
+    await new Promise<void>((r) => srv.on('listening', r));
+    const addr = srv.address();
+    if (typeof addr !== 'object' || addr === null) throw new Error('no address');
+    const base = `http://127.0.0.1:${addr.port}`;
+    try {
+      const headers = { 'content-type': 'application/json', authorization: 'Bearer ' + API_TOKEN };
+      const created = await fetch(`${base}/api/session`, { method: 'POST', headers });
+      expect(created.status).toBe(200);
+      const { sessionId } = (await created.json()) as { sessionId: string };
+      // Active session responds.
+      const before = await fetch(`${base}/api/session/${sessionId}`, { headers });
+      expect(before.status).toBe(200);
+      // Wait out the idle window + a sweep tick: the orphaned session is
+      // torn down (agent + pipe client), like after an F5 panel reload.
+      await new Promise((r) => setTimeout(r, 2_500));
+      const after = await fetch(`${base}/api/session/${sessionId}`, { headers });
+      // Unknown session (500 per the existing error contract).
+      expect(after.status).not.toBe(200);
+      expect(stopped.sort()).toEqual(['agent', 'lyx']);
+    } finally {
+      srv.close();
+    }
+  });
+});
