@@ -20,6 +20,7 @@ const testConfig: PanelConfig = {
   hasSaveConsent: true,
   hasInstallFlow: false,
   composerRefreshSelection: false,
+  busyText: 'talking to TestEditor…',
   eventPush: false,
   theme: 'theme-test',
 };
@@ -42,6 +43,7 @@ describe('shared panel assets', () => {
     expect(source).toContain('hasSaveConsent');
     expect(source).toContain('hasInstallFlow');
     expect(source).toContain('composerRefreshSelection');
+    expect(source).toContain('busyText');
     expect(source).toContain('eventPush');
   });
 

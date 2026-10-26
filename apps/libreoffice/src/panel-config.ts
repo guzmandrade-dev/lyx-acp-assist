@@ -12,6 +12,7 @@ export const PANEL_CONFIG: PanelConfig = {
   hasSaveConsent: false,
   hasInstallFlow: true,
   composerRefreshSelection: true,
+  busyText: 'talking to LibreOffice…',
   eventPush: true,
   theme: null,
 };

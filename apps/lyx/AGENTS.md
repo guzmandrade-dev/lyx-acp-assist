@@ -359,6 +359,18 @@ selection is empty. Useful as a cheap selection probe before `copy`.
   them; pastes then fail with that error. Clear with
   `buffer-external-modification-clear`, or avoid rewriting open files
   (close the buffer first).
+- **MULTI-INSTANCE pitfall (live-found 2026-10-26)**: the user runs LyX
+  with `\single_instance false`, so every window is its own process.
+  Only ONE instance can own `\\.\pipe\lyxpipe` — the app drives THAT
+  instance's active buffer. If a SECOND instance has the SAME file open,
+  the app's `buffer-write` rewrites the file under the second buffer and
+  ITS file monitor raises "modified externally — reload?" in that window
+  (the edits themselves apply correctly in the pipe-owning instance).
+  This is inherent two-writers-same-file behavior, not an app bug; the
+  remedy is to close the duplicate window (or answer reload). Related
+  write-only hazard: `readLyxWindowTitle` picks the FIRST LyX process's
+  title, so with multiple instances showing DIFFERENT documents the
+  fallback may resolve the wrong file.
 - Agents sometimes emit LaTeX-style inline commands (`\emph{...}`) instead
   of LyX token format (`\emph on/\emph default`); the app validates and
   retries once with a corrective prompt (`findMarkupProblems`).

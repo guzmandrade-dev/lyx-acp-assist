@@ -37,6 +37,11 @@ export interface PanelConfig {
    * the selection read clobbers the user's clipboard). */
   composerRefreshSelection: boolean;
   /**
+   * The "talking to the editor" busy label shown while requests that
+   * dispatch into the editor are in flight (e.g. 'talking to LyX…').
+   */
+  busyText: string;
+  /**
    * The server pushes refresh frames (the bridge's /events feed) over a
    * per-session SSE channel; the panel refreshes on them INSTEAD of the
    * composer-typing/focus heuristics. LO: true. LyX: false (no push

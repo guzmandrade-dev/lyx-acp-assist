@@ -48,6 +48,9 @@ const selectionEl = document.getElementById('selection');
 const docSelect = document.getElementById('doc-select');
 const editorSpinner = document.getElementById('bridge-spinner');
 const bridgeBusyText = document.getElementById('bridge-busy-text');
+// The "talking to the editor" label is per-app (Track C config): the
+// shared HTML ships a placeholder, the boot config overrides it.
+if (bridgeBusyText && CONFIG.busyText) bridgeBusyText.textContent = CONFIG.busyText;
 const input = document.getElementById('input');
 const sendBtn = document.getElementById('send');
 const stopBtn = document.getElementById('stop');
