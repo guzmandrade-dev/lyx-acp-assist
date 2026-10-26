@@ -1,8 +1,12 @@
 import { describe, it, expect, afterAll } from 'vitest';
+import http from 'node:http';
 import type { Server } from 'node:http';
 import type { Express } from 'express';
 import { createServer, parseAction, normalizeForCompare, isLikelyMatch, verifyParagraphSelection, buildAutoPrompt, extractAttachmentText, findClassLayouts, listKnownDocuments, formatHistoryReplay } from '../src/server.js';
 import type { RawClipboard } from '../src/clipboard/lyx-clipboard.js';
+
+/** Fixed API bearer token (audit B1) for these HTTP-level tests. */
+const API_TOKEN = 'test-api-token';
 
 /** Stub raw clipboard: enough for routes that never touch LyX. */
 const stubClipboard: RawClipboard = {
@@ -27,7 +31,7 @@ let baseUrl = '';
 async function setup(): Promise<void> {
   if (server) return;
   express = createServer({
-    publicDir: new URL('../public', import.meta.url).pathname.replace(/^\/(\w:)/, '$1'),
+    apiToken: API_TOKEN, publicDir: new URL('../public', import.meta.url).pathname.replace(/^\/(\w:)/, '$1'),
     clipboard: stubClipboard,
   });
   server = await new Promise<Server>((resolve) => {
@@ -43,9 +47,46 @@ afterAll(async () => {
 });
 
 describe('API surface', () => {
+  it('requires the API bearer token and a loopback Host (audit B1)', async () => {
+    await setup();
+    // No token -> 401.
+    const noAuth = await fetch(`${baseUrl}/api/status`);
+    expect(noAuth.status).toBe(401);
+    // Wrong token -> 401.
+    const wrong = await fetch(`${baseUrl}/api/status`, { headers: { authorization: 'Bearer nope' } });
+    expect(wrong.status).toBe(401);
+    // DNS-rebinding shape: a public Host name is rejected even with a
+    // valid token (a rebinding page can send but not read responses).
+    // Raw socket request — fetch() refuses to override the Host header.
+    const u = new URL(baseUrl);
+    const rebindingStatus = await new Promise<number>((resolve) => {
+      const req = http.request(
+        {
+          host: u.hostname,
+          port: u.port,
+          path: '/api/status',
+          method: 'GET',
+          headers: { host: 'evil.example.com', authorization: 'Bearer ' + API_TOKEN },
+        },
+        (res) => {
+          resolve(res.statusCode ?? 0);
+          res.resume();
+        },
+      );
+      req.on('error', () => resolve(0));
+      req.end();
+    });
+    expect(rebindingStatus).toBe(403);
+    // The panel index carries the token same-origin; static assets do not
+    // need auth.
+    const index = await fetch(`${baseUrl}/`);
+    expect(index.status).toBe(200);
+    expect(await index.text()).toContain('window.__ACP_TOKEN__');
+  });
+
   it('reports LyX pipe availability on /api/status', async () => {
     await setup();
-    const res = await fetch(`${baseUrl}/api/status`);
+    const res = await fetch(`${baseUrl}/api/status`, { headers: { authorization: 'Bearer ' + API_TOKEN } });
     expect(res.status).toBe(200);
     expect(typeof (await res.json()).lyxPipeAvailable).toBe('boolean');
   });
@@ -54,7 +95,7 @@ describe('API surface', () => {
     await setup();
     const res = await fetch(`${baseUrl}/api/session/nope/message/stream`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${API_TOKEN}` },
       body: JSON.stringify({ message: 'hi' }),
     });
     expect(res.status).toBe(404);
@@ -63,9 +104,9 @@ describe('API surface', () => {
 
   it('rejects unknown sessions on cancel and teardown', async () => {
     await setup();
-    const cancel = await fetch(`${baseUrl}/api/session/nope/cancel`, { method: 'POST' });
+    const cancel = await fetch(`${baseUrl}/api/session/nope/cancel`, { method: 'POST', headers: { authorization: 'Bearer ' + API_TOKEN } });
     expect(cancel.status).toBe(500);
-    const del = await fetch(`${baseUrl}/api/session/nope`, { method: 'DELETE' });
+    const del = await fetch(`${baseUrl}/api/session/nope`, { method: 'DELETE', headers: { authorization: 'Bearer ' + API_TOKEN } });
     expect(del.status).toBe(500);
   });
 });
@@ -77,7 +118,7 @@ describe('agent settings persistence', () => {
     const path = await import('node:path');
     const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'lyx-settings-'));
     const app = createServer({
-      publicDir: new URL('../public', import.meta.url).pathname.replace(/^\/(\w:)/, '$1'),
+      apiToken: API_TOKEN, publicDir: new URL('../public', import.meta.url).pathname.replace(/^\/(\w:)/, '$1'),
       clipboard: stubClipboard,
       settingsDir: dir,
     });
@@ -88,13 +129,13 @@ describe('agent settings persistence', () => {
     const base = `http://127.0.0.1:${port}`;
     try {
       // No settings yet -> empty object.
-      const initial = await (await fetch(`${base}/api/settings/agent`)).json();
+      const initial = await (await fetch(`${base}/api/settings/agent`, { headers: { authorization: 'Bearer ' + API_TOKEN } })).json();
       expect(initial).toEqual({});
 
       // PUT stores command + args (string form split on whitespace).
       const put = await fetch(`${base}/api/settings/agent`, {
         method: 'PUT',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${API_TOKEN}` },
         body: JSON.stringify({ command: 'copilot', args: '--acp' }),
       });
       expect(put.status).toBe(200);
@@ -102,32 +143,32 @@ describe('agent settings persistence', () => {
 
       // GET returns what was stored — this is what survives an app restart
       // (the server port, and therefore the localStorage origin, changes).
-      const got = await (await fetch(`${base}/api/settings/agent`)).json();
+      const got = await (await fetch(`${base}/api/settings/agent`, { headers: { authorization: 'Bearer ' + API_TOKEN } })).json();
       expect(got).toEqual({ command: 'copilot', args: ['--acp'] });
 
       // A partial PUT merges instead of clobbering.
       await fetch(`${base}/api/settings/agent`, {
         method: 'PUT',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${API_TOKEN}` },
         body: JSON.stringify({ command: 'goose' }),
       });
-      const merged = await (await fetch(`${base}/api/settings/agent`)).json();
+      const merged = await (await fetch(`${base}/api/settings/agent`, { headers: { authorization: 'Bearer ' + API_TOKEN } })).json();
       expect(merged).toEqual({ command: 'goose', args: ['--acp'] });
 
       // Garbage bodies are ignored, not 500.
       const bad = await fetch(`${base}/api/settings/agent`, {
         method: 'PUT',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${API_TOKEN}` },
         body: JSON.stringify({ command: 42, args: 'x y' }),
       });
       expect(bad.status).toBe(200);
-      const afterBad = await (await fetch(`${base}/api/settings/agent`)).json();
+      const afterBad = await (await fetch(`${base}/api/settings/agent`, { headers: { authorization: 'Bearer ' + API_TOKEN } })).json();
       expect(afterBad).toEqual({ command: 'goose', args: ['x', 'y'] });
 
       // An empty argument list is intentional (for agents such as vibe-acp).
       const noArgs = await fetch(`${base}/api/settings/agent`, {
         method: 'PUT',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${API_TOKEN}` },
         body: JSON.stringify({ command: 'vibe-acp', args: '' }),
       });
       expect(await noArgs.json()).toEqual({ command: 'vibe-acp', args: [] });
@@ -139,17 +180,17 @@ describe('agent settings persistence', () => {
 
   it('returns defaults when no settingsDir is configured', async () => {
     await setup(); // shared server has no settingsDir
-    const res = await fetch(`${baseUrl}/api/settings/agent`);
+    const res = await fetch(`${baseUrl}/api/settings/agent`, { headers: { authorization: 'Bearer ' + API_TOKEN } });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({});
     const put = await fetch(`${baseUrl}/api/settings/agent`, {
       method: 'PUT',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${API_TOKEN}` },
       body: JSON.stringify({ command: 'copilot', args: '--acp' }),
     });
     expect(put.status).toBe(200);
     // Nothing stored: a fresh GET still returns defaults.
-    const got = await (await fetch(`${baseUrl}/api/settings/agent`)).json();
+    const got = await (await fetch(`${baseUrl}/api/settings/agent`, { headers: { authorization: 'Bearer ' + API_TOKEN } })).json();
     expect(got).toEqual({});
   });
 });

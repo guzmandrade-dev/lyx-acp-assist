@@ -1,5 +1,6 @@
 export * from './types.js';
 export * from './attachments.js';
+export * from './auth.js';
 export * from './history.js';
 export * from './settings.js';
 export * from './routes.js';

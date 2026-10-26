@@ -46,6 +46,10 @@ import {
   MAX_ACTIONS_PER_MESSAGE,
   pollUntil,
   sleep,
+  createApiAuthGuard,
+  createPanelIndexHandler,
+  generateApiToken,
+  type CompanionRecord,
   type ConversationStore,
 } from '@acp-assist/core';
 import type {
@@ -139,6 +143,11 @@ export interface ServerOptions {
    * Optional; when absent the settings routes return defaults.
    */
   settingsDir?: string;
+  /**
+   * API bearer token (audit B1). Generated at boot when absent; exposed as
+   * `app.locals.apiToken` for the record writers / dev tools.
+   */
+  apiToken?: string;
 }
 
 
@@ -149,8 +158,15 @@ export function createServer(options: ServerOptions & {
   lyxFactory?: () => LyxServerClient;
 }) {
   const app = express();
-  app.use(express.json({ limit: '50mb' }));
+  // API auth (audit B1): random bearer token + loopback Host check; the
+  // panel gets the token same-origin via the injected index.html. Static
+  // assets sit BEFORE the guard (not sensitive), all /api routes after.
+  const apiToken = options.apiToken ?? generateApiToken();
+  app.locals.apiToken = apiToken;
+  app.use(express.json({ limit: '5mb' }));
+  app.get('/', createPanelIndexHandler(options.publicDir, apiToken));
   app.use(express.static(options.publicDir, { maxAge: 0, etag: false, lastModified: false }));
+  app.use(createApiAuthGuard(apiToken));
 
   const sessions = new Map<string, Session>();
 

@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createNativeClipboard } from '../clipboard/native-clipboard.js';
 import { createServer } from '../server.js';
+import { writeCompanionRecord } from '@acp-assist/core';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -110,6 +111,17 @@ async function startApp(): Promise<void> {
   if (typeof address !== 'object' || address === null) throw new Error('server address missing');
   const url = `http://127.0.0.1:${address.port}`;
   console.log(`LyX ACP Assist server at ${url}`);
+
+  // Companion record (audit B1 handshake): dev tools read the port + API
+  // bearer token from here. The LyX app has no in-editor consumer yet
+  // (unlike LO's sidebar); the record exists so scripts/tests can auth.
+  writeCompanionRecord(path.join(app.getPath('userData'), 'companion.json'), {
+    pid: process.pid,
+    port: address.port,
+    url,
+    exe: app.isPackaged ? process.execPath : null,
+    token: (server.locals.apiToken as string) ?? '',
+  }).catch(() => undefined);
 
   await app.whenReady();
 

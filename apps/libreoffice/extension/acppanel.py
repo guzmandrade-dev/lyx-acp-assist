@@ -132,7 +132,10 @@ def _collect_status():
     comp = _read_json(os.path.join(_assist_dir(), "companion.json"))
     if comp and _pid_alive(comp.get("pid")) and comp.get("port"):
         try:
-            _get_json(f"http://127.0.0.1:{comp['port']}/api/status", None)
+            # Companion API needs its bearer token (audit B1); the record
+            # written by the companion carries it.
+            _get_json(f"http://127.0.0.1:{comp['port']}/api/status",
+                      comp.get("token"))
             out["companion"] = f"Companion: connected ({comp.get('url', '?')})"
         except Exception:
             out["companion"] = "Companion: running, not responding"

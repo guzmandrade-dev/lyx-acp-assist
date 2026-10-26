@@ -25,6 +25,9 @@ import {
 import type { LyxServerClient } from '../src/lyxserver/client.js';
 import type { RawClipboard } from '../src/clipboard/lyx-clipboard.js';
 
+/** Fixed API bearer token (audit B1) for these HTTP-level tests. */
+const API_TOKEN = 'test-api-token';
+
 interface FakeDoc {
   file: string;
   dir: string;
@@ -237,7 +240,7 @@ async function startHarness(
   const lyx = fakeLyx(doc, lyxHooks);
   const agent = new FakeAgent(replies);
   const app = createServer({
-    publicDir: new URL('../public', import.meta.url).pathname.replace(/^\/(\w:)/, '$1'),
+    apiToken: API_TOKEN, publicDir: new URL('../public', import.meta.url).pathname.replace(/^\/(\w:)/, '$1'),
     clipboard: rawClipboard,
     historyDir: doc.dir,
     lyxFactory: () => lyx.client as unknown as LyxServerClient,
@@ -251,7 +254,7 @@ async function startHarness(
   const base = `http://127.0.0.1:${address.port}`;
   const res = await fetch(`${base}/api/session`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${API_TOKEN}` },
     body: JSON.stringify({ agent: { command: 'fake', args: [] } }),
   });
   if (!res.ok) throw new Error(`session create failed: ${res.status}`);
@@ -293,7 +296,7 @@ describe('multi-action runs over the message stream', () => {
 
     const res = await fetch(`${harness.base}/api/session/${harness.sessionId}/message/stream`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${API_TOKEN}` },
       body: JSON.stringify({ message: 'fill the template' }),
     });
     const frames = await readSse(res);
@@ -322,7 +325,7 @@ describe('multi-action runs over the message stream', () => {
 
     const res = await fetch(`${harness.base}/api/session/${harness.sessionId}/message/stream`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${API_TOKEN}` },
       body: JSON.stringify({ message: 'explain the intro' }),
     });
     const frames = await readSse(res);
@@ -344,7 +347,7 @@ describe('multi-action runs over the message stream', () => {
 
     const res = await fetch(`${harness.base}/api/session/${harness.sessionId}/message/stream`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${API_TOKEN}` },
       body: JSON.stringify({ message: 'rewrite everything' }),
     });
     const frames = await readSse(res);
@@ -370,7 +373,7 @@ describe('multi-action runs over the message stream', () => {
       { onPaste: () => cancelMidPaste() },
     );
     cancelMidPaste = async () => {
-      await fetch(`${harness.base}/api/session/${harness.sessionId}/cancel`, { method: 'POST' });
+      await fetch(`${harness.base}/api/session/${harness.sessionId}/cancel`, { method: 'POST', headers: { authorization: 'Bearer ' + API_TOKEN } });
     };
     cleanups.push(async () => {
       await new Promise<void>((resolve) => harness.server.close(() => resolve()));
@@ -381,7 +384,7 @@ describe('multi-action runs over the message stream', () => {
       `${harness.base}/api/session/${harness.sessionId}/message/stream`,
       {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${API_TOKEN}` },
         body: JSON.stringify({ message: 'fill the template' }),
       },
     );
@@ -406,7 +409,7 @@ describe('multi-action runs over the message stream', () => {
 
     const res = await fetch(`${harness.base}/api/session/${harness.sessionId}/message/stream`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${API_TOKEN}` },
       body: JSON.stringify({ message: 'rewrite the body 20 times' }),
     });
     const frames = await readSse(res);

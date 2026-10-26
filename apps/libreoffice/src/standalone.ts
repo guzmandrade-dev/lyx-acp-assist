@@ -40,6 +40,7 @@ const httpServer = server.listen(port, '127.0.0.1', () => {
     port: actual,
     url: `http://127.0.0.1:${actual}`,
     exe: null,
+    token: (server.locals.apiToken as string) ?? '',
   }).catch(() => undefined);
 });
 

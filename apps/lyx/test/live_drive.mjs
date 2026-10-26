@@ -11,6 +11,8 @@
 //
 // The agent command defaults to vibe-acp; override with AGENT_CMD.
 // BASE_URL overrides the server URL (default http://127.0.0.1:8791).
+// API_TOKEN overrides the bearer token; by default it is read from the
+// companion record (<dev dataDir>/companion.json) the server writes.
 
 const base = process.env.BASE_URL ?? 'http://127.0.0.1:8791';
 const agentCommand = process.env.AGENT_CMD ?? 'vibe-acp';
@@ -18,16 +20,36 @@ const agentCommand = process.env.AGENT_CMD ?? 'vibe-acp';
 // Tee all output to a log file: background-process output retention is
 // short-lived, so the log is the durable record of a run.
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 const LOG = new URL('./live_drive.log', import.meta.url);
 const emit = (line) => {
   console.log(line);
   fs.appendFileSync(LOG, line + '\n');
 };
 
+/** Bearer token: env override, else the companion record. */
+function apiToken() {
+  if (process.env.API_TOKEN) return process.env.API_TOKEN;
+  try {
+    const record = JSON.parse(
+      fs.readFileSync(
+        path.join(os.tmpdir(), 'lyx-acp-assist-dev', 'companion.json'),
+        'utf8',
+      ),
+    );
+    return record.token ?? '';
+  } catch {
+    return '';
+  }
+}
+
+const authHeaders = () => ({ authorization: `Bearer ${apiToken()}` });
+
 async function post(path, body) {
   const res = await fetch(`${base}${path}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...authHeaders() },
     body: JSON.stringify(body ?? {}),
   });
   return { status: res.status, json: await res.json().catch(() => null) };
@@ -48,7 +70,7 @@ async function main() {
     return;
   }
   if (mode === 'info') {
-    const res = await fetch(`${base}/api/session/${sessionId}`);
+    const res = await fetch(`${base}/api/session/${sessionId}`, { headers: authHeaders() });
     emit(JSON.stringify(await res.json()));
     return;
   }
@@ -57,7 +79,7 @@ async function main() {
     if (!message) throw new Error('message required');
     const res = await fetch(`${base}/api/session/${sessionId}/message/stream`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ message }),
     });
     // Parse the SSE stream: print each data frame as one line.

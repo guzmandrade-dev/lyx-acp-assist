@@ -585,8 +585,13 @@ function setBusy(state) {
 
 async function api(path, init) {
   const res = await fetch(path, {
-    headers: { 'content-type': 'application/json' },
     ...init,
+    headers: {
+      'content-type': 'application/json',
+      // API bearer token, injected same-origin into index.html (audit B1).
+      ...(window.__ACP_TOKEN__ ? { authorization: `Bearer ${window.__ACP_TOKEN__}` } : {}),
+      ...(init?.headers ?? {}),
+    },
   });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(body.error ?? `${res.status} ${res.statusText}`);
@@ -917,7 +922,10 @@ async function streamMessage(message) {
     res = await withLyxBusy(
       fetch(`/api/session/${sessionId}/message/stream`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: {
+          'content-type': 'application/json',
+          ...(window.__ACP_TOKEN__ ? { authorization: `Bearer ${window.__ACP_TOKEN__}` } : {}),
+        },
         body: JSON.stringify({ message }),
         signal: ctrl.signal,
       }),

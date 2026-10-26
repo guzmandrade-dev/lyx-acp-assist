@@ -56,6 +56,11 @@ export interface CompanionRecord {
   url: string;
   /** Executable to launch for "open companion" (null in dev/browser mode). */
   exe: string | null;
+  /**
+   * Companion API bearer token (audit B1): the LO sidebar's status probe
+   * reads it from this record and sends it as Authorization.
+   */
+  token: string;
 }
 
 /** Write this companion's discovery record (the in-LO status panel reads it). */

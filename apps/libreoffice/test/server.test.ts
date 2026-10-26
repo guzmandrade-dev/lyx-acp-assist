@@ -2,9 +2,13 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import http from 'node:http';
 import type { Server } from 'node:http';
 import { createServer, type AgentRunner, type AgentSettings } from '../src/server.js';
 import { BridgeClient, type BridgeDocument, type EditPayload, type BridgeStatus, type BridgeDocumentEntry } from '../src/bridge/client.js';
+
+/** Fixed API bearer token (audit B1) for these HTTP-level tests. */
+const API_TOKEN = 'test-api-token';
 
 /**
  * In-memory fake of the in-LibreOffice bridge. Implements the same
@@ -128,13 +132,46 @@ describe('server message loop (fake agent + fake bridge)', () => {
   const publicDir = path.join(os.tmpdir(), 'lo-acp-test-public');
   const historyDir = path.join(os.tmpdir(), 'lo-acp-test-history');
 
+  it('requires the API bearer token and a loopback Host (audit B1)', async () => {
+    const noAuth = await fetch(`${baseUrl}/api/status`);
+    expect(noAuth.status).toBe(401);
+    const wrong = await fetch(`${baseUrl}/api/status`, { headers: { authorization: 'Bearer nope' } });
+    expect(wrong.status).toBe(401);
+    // DNS-rebinding shape: a public Host name is rejected even with a
+    // valid token. Raw socket request — fetch() refuses to override the
+    // Host header.
+    const u = new URL(baseUrl);
+    const rebindingStatus = await new Promise<number>((resolve) => {
+      const req = http.request(
+        {
+          host: u.hostname,
+          port: u.port,
+          path: '/api/status',
+          method: 'GET',
+          headers: { host: 'evil.example.com', authorization: 'Bearer ' + API_TOKEN },
+        },
+        (res) => {
+          resolve(res.statusCode ?? 0);
+          res.resume();
+        },
+      );
+      req.on('error', () => resolve(0));
+      req.end();
+    });
+    expect(rebindingStatus).toBe(403);
+    // The panel index carries the token same-origin.
+    const index = await fetch(`${baseUrl}/`);
+    expect(index.status).toBe(200);
+    expect(await index.text()).toContain('window.__ACP_TOKEN__');
+  });
+
   beforeAll(async () => {
     await fs.mkdir(publicDir, { recursive: true });
-    await fs.writeFile(path.join(publicDir, 'index.html'), '<html></html>', 'utf8');
+    await fs.writeFile(path.join(publicDir, 'index.html'), '<html><head></head><body></body></html>', 'utf8');
     await fs.rm(historyDir, { recursive: true, force: true });
     bridge = new FakeBridge();
     const app = createServer({
-      publicDir,
+      apiToken: API_TOKEN, publicDir,
       historyDir,
       agentFactory: fakeAgent([]),
       bridgeFactory: () => bridge,
@@ -158,7 +195,7 @@ describe('server message loop (fake agent + fake bridge)', () => {
     ];
     // Re-create the session with a scripted agent (per-test agent).
     const app = createServer({
-      publicDir,
+      apiToken: API_TOKEN, publicDir,
       historyDir,
       agentFactory: fakeAgent(scripted),
       bridgeFactory: () => new FakeBridge(),
@@ -168,10 +205,10 @@ describe('server message loop (fake agent + fake bridge)', () => {
     const addr = srv.address() as { port: number };
     const url = `http://127.0.0.1:${addr.port}`;
 
-    const status = await (await fetch(`${url}/api/status`)).json();
+    const status = await (await fetch(`${url}/api/status`, { headers: { authorization: 'Bearer ' + API_TOKEN } })).json();
     expect(status.bridgeAvailable).toBe(true);
 
-    const created = await fetch(`${url}/api/session`, { method: 'POST' });
+    const created = await fetch(`${url}/api/session`, { method: 'POST', headers: { authorization: 'Bearer ' + API_TOKEN } });
     expect(created.status).toBe(200);
     const session = (await created.json()) as { sessionId: string };
     expect(session.documentPath).toBe('file:///fake/doc.odt');
@@ -179,7 +216,7 @@ describe('server message loop (fake agent + fake bridge)', () => {
 
     const res = await fetch(`${url}/api/session/${session.sessionId}/message/stream`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${API_TOKEN}` },
       body: JSON.stringify({ message: 'Add a Results section after paragraph 2, then a follow-up paragraph.' }),
     });
     const body = await res.text();
@@ -198,7 +235,7 @@ describe('server message loop (fake agent + fake bridge)', () => {
     // outline is opt-in (`?outline=1`): the plain GET is the panel's light
     // refresh path and skips the full document read.
     const info = (await (
-      await fetch(`${url}/api/session/${session.sessionId}?outline=1`)
+      await fetch(`${url}/api/session/${session.sessionId}?outline=1`, { headers: { authorization: 'Bearer ' + API_TOKEN } })
     ).json()) as {
       conversation: Array<{ role: string; content: string; meta?: { action: string; result: string } }>;
       outline: string;
@@ -206,7 +243,7 @@ describe('server message loop (fake agent + fake bridge)', () => {
     expect(info.conversation.length).toBeGreaterThanOrEqual(4);
     expect(info.outline).toContain('Results');
     // The plain (light) GET skips the full document read.
-    const light = (await (await fetch(`${url}/api/session/${session.sessionId}`)).json()) as {
+    const light = (await (await fetch(`${url}/api/session/${session.sessionId}`, { headers: { authorization: 'Bearer ' + API_TOKEN } })).json()) as {
       outline: string;
     };
     expect(light.outline).toBe('');
@@ -257,7 +294,7 @@ describe('server message loop (fake agent + fake bridge)', () => {
       }
     })();
     const app = createServer({
-      publicDir,
+      apiToken: API_TOKEN, publicDir,
       historyDir,
       agentFactory: fakeAgent([
         'Writing the totals.\n```calc\nTotal\t=SUM(B2:B3)\n```\n[ACTION: write-cells C1]',
@@ -269,7 +306,7 @@ describe('server message loop (fake agent + fake bridge)', () => {
     await new Promise<void>((r) => srv.on('listening', r));
     const addr = srv.address() as { port: number };
     const url = `http://127.0.0.1:${addr.port}`;
-    const session = (await (await fetch(`${url}/api/session`, { method: 'POST' })).json()) as {
+    const session = (await (await fetch(`${url}/api/session`, { method: 'POST', headers: { authorization: 'Bearer ' + API_TOKEN } })).json()) as {
       sessionId: string;
       outline: string;
     };
@@ -277,7 +314,7 @@ describe('server message loop (fake agent + fake bridge)', () => {
 
     const res = await fetch(`${url}/api/session/${session.sessionId}/message/stream`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${API_TOKEN}` },
       body: JSON.stringify({ message: 'Add a total in C1.' }),
     });
     const frames = sseFrames(await res.text());
@@ -287,7 +324,7 @@ describe('server message loop (fake agent + fake bridge)', () => {
       { mode: 'write-cells', anchor: 'C1', rows: [['Total', '=SUM(B2:B3)']], tracked: true },
     ]);
 
-    const info = (await (await fetch(`${url}/api/session/${session.sessionId}`)).json()) as {
+    const info = (await (await fetch(`${url}/api/session/${session.sessionId}`, { headers: { authorization: 'Bearer ' + API_TOKEN } })).json()) as {
       conversation: Array<{ meta?: { action: string; address: string | null; result: string } }>;
     };
     const meta = info.conversation.find((t) => t.meta)?.meta;
@@ -327,7 +364,7 @@ describe('server message loop (fake agent + fake bridge)', () => {
       }
     })();
     const app = createServer({
-      publicDir,
+      apiToken: API_TOKEN, publicDir,
       historyDir,
       agentFactory: fakeAgent([
         'Adding the slide.\n```impress\nConclusions\nShip it\nRest is history\n```\n[ACTION: insert-after s2]',
@@ -340,7 +377,7 @@ describe('server message loop (fake agent + fake bridge)', () => {
     await new Promise<void>((r) => srv.on('listening', r));
     const addr = srv.address() as { port: number };
     const url = `http://127.0.0.1:${addr.port}`;
-    const session = (await (await fetch(`${url}/api/session`, { method: 'POST' })).json()) as {
+    const session = (await (await fetch(`${url}/api/session`, { method: 'POST', headers: { authorization: 'Bearer ' + API_TOKEN } })).json()) as {
       sessionId: string;
       outline: string;
     };
@@ -348,7 +385,7 @@ describe('server message loop (fake agent + fake bridge)', () => {
 
     const res = await fetch(`${url}/api/session/${session.sessionId}/message/stream`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${API_TOKEN}` },
       body: JSON.stringify({ message: 'Add a Conclusions slide after slide 2, then reword slide 1 informally.' }),
     });
     const frames = sseFrames(await res.text());
@@ -362,7 +399,7 @@ describe('server message loop (fake agent + fake bridge)', () => {
       { mode: 'rewrite-slide', slide: 0, title: 'Q3 Results — final', body: ['Revenue up', 'Costs flat'] },
     ]);
 
-    const info = (await (await fetch(`${url}/api/session/${session.sessionId}`)).json()) as {
+    const info = (await (await fetch(`${url}/api/session/${session.sessionId}`, { headers: { authorization: 'Bearer ' + API_TOKEN } })).json()) as {
       conversation: Array<{ meta?: { action: string; target: number | null; module: string; result: string; step?: number } }>;
     };
     const metas = info.conversation.filter((t) => t.meta).map((t) => t.meta);
@@ -376,7 +413,7 @@ describe('server message loop (fake agent + fake bridge)', () => {
 
   it('undo routes through the bridge and reports when nothing is undoable', async () => {
     const app = createServer({
-      publicDir,
+      apiToken: API_TOKEN, publicDir,
       agentFactory: fakeAgent([]),
       bridgeFactory: () => {
         const b = new FakeBridge();
@@ -388,17 +425,17 @@ describe('server message loop (fake agent + fake bridge)', () => {
     await new Promise<void>((r) => srv.on('listening', r));
     const addr = srv.address() as { port: number };
     const url = `http://127.0.0.1:${addr.port}`;
-    const session = (await (await fetch(`${url}/api/session`, { method: 'POST' })).json()) as {
+    const session = (await (await fetch(`${url}/api/session`, { method: 'POST', headers: { authorization: 'Bearer ' + API_TOKEN } })).json()) as {
       sessionId: string;
     };
-    const undo = await (await fetch(`${url}/api/session/${session.sessionId}/undo`, { method: 'POST' })).json();
+    const undo = await (await fetch(`${url}/api/session/${session.sessionId}/undo`, { method: 'POST', headers: { authorization: 'Bearer ' + API_TOKEN } })).json();
     expect(undo).toEqual({ ok: false, reason: 'nothing to undo' });
     srv.close();
   });
 
   it('refuses document actions for unsupported modules via the generic adapter', async () => {
     const app = createServer({
-      publicDir,
+      apiToken: API_TOKEN, publicDir,
       agentFactory: fakeAgent(['I will edit it.\n```writer\nNope\n```\n[ACTION: insert]']),
       bridgeFactory: () => {
         const b = new FakeBridge();
@@ -417,12 +454,12 @@ describe('server message loop (fake agent + fake bridge)', () => {
     await new Promise<void>((r) => srv.on('listening', r));
     const addr = srv.address() as { port: number };
     const url = `http://127.0.0.1:${addr.port}`;
-    const session = (await (await fetch(`${url}/api/session`, { method: 'POST' })).json()) as {
+    const session = (await (await fetch(`${url}/api/session`, { method: 'POST', headers: { authorization: 'Bearer ' + API_TOKEN } })).json()) as {
       sessionId: string;
     };
     const res = await fetch(`${url}/api/session/${session.sessionId}/message/stream`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${API_TOKEN}` },
       body: JSON.stringify({ message: 'edit this spreadsheet' }),
     });
     const frames = sseFrames(await res.text());
@@ -436,7 +473,7 @@ describe('bridge extension install routes', () => {
 
   async function makeApp(opts: Partial<Parameters<typeof createServer>[0]> = {}) {
     const app = createServer({
-      publicDir,
+      apiToken: API_TOKEN, publicDir,
       agentFactory: () => ({ start: async () => undefined, stop: () => undefined, createSession: async () => undefined, cancel: () => undefined, prompt: async () => '' }),
       bridgeFactory: () => new FakeBridge(),
       ...opts,
@@ -449,7 +486,7 @@ describe('bridge extension install routes', () => {
 
   it('preflight reports not configured without an oxt path', async () => {
     const { srv, url } = await makeApp();
-    const pre = (await (await fetch(`${url}/api/bridge/install/preflight`)).json()) as { canInstall: boolean; reason: string };
+    const pre = (await (await fetch(`${url}/api/bridge/install/preflight`, { headers: { authorization: 'Bearer ' + API_TOKEN } })).json()) as { canInstall: boolean; reason: string };
     expect(pre.canInstall).toBe(false);
     expect(pre.reason).toContain('not configured');
     srv.close();
@@ -460,7 +497,7 @@ describe('bridge extension install routes', () => {
       oxtPath: path.join(os.tmpdir(), 'lo-acp-test', 'missing.oxt'),
       unopkgPath: 'C:/fake/unopkg.exe',
     });
-    const pre = (await (await fetch(`${url}/api/bridge/install/preflight`)).json()) as { canInstall: boolean; reason: string };
+    const pre = (await (await fetch(`${url}/api/bridge/install/preflight`, { headers: { authorization: 'Bearer ' + API_TOKEN } })).json()) as { canInstall: boolean; reason: string };
     expect(pre.canInstall).toBe(false);
     expect(pre.reason).toContain('not found');
     srv.close();
@@ -474,7 +511,7 @@ describe('bridge extension install routes', () => {
       unopkgPath: 'C:/fake/unopkg.exe',
       sofficeProbe: async () => false,
     });
-    const pre = (await (await fetch(`${url}/api/bridge/install/preflight`)).json()) as {
+    const pre = (await (await fetch(`${url}/api/bridge/install/preflight`, { headers: { authorization: 'Bearer ' + API_TOKEN } })).json()) as {
       canInstall: boolean; unopkg: string; sofficeRunning: boolean;
     };
     expect(pre.canInstall).toBe(true);
@@ -488,7 +525,7 @@ describe('bridge extension install routes', () => {
     const oxtPath = path.join(os.tmpdir(), 'lo-acp-test.oxt');
     await fs.writeFile(oxtPath, 'fake oxt', 'utf8');
     const { srv, url } = await makeApp({ oxtPath, unopkgPath: null });
-    const pre = (await (await fetch(`${url}/api/bridge/install/preflight`)).json()) as { canInstall: boolean; reason: string };
+    const pre = (await (await fetch(`${url}/api/bridge/install/preflight`, { headers: { authorization: 'Bearer ' + API_TOKEN } })).json()) as { canInstall: boolean; reason: string };
     expect(pre.canInstall).toBe(false);
     expect(pre.reason).toContain('unopkg not found');
     await fs.rm(oxtPath, { force: true });
@@ -506,7 +543,7 @@ describe('bridge extension install routes', () => {
         return { ok: true, steps: [], message: 'Extension installed.' };
       },
     });
-    const res = await fetch(`${url}/api/bridge/install`, { method: 'POST' });
+    const res = await fetch(`${url}/api/bridge/install`, { method: 'POST', headers: { authorization: 'Bearer ' + API_TOKEN } });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { ok: boolean; message: string };
     expect(body.ok).toBe(true);
@@ -524,7 +561,7 @@ describe('bridge extension install routes', () => {
         throw new Error('must not be called');
       },
     });
-    const res = await fetch(`${url}/api/bridge/install`, { method: 'POST' });
+    const res = await fetch(`${url}/api/bridge/install`, { method: 'POST', headers: { authorization: 'Bearer ' + API_TOKEN } });
     expect(res.status).toBe(409);
     const body = (await res.json()) as { error: string };
     expect(body.error).toContain('Close it first');
@@ -542,7 +579,7 @@ describe('bridge extension install routes', () => {
         message: 'unopkg add failed (exit 1): boom',
       }),
     });
-    const res = await fetch(`${url}/api/bridge/install`, { method: 'POST' });
+    const res = await fetch(`${url}/api/bridge/install`, { method: 'POST', headers: { authorization: 'Bearer ' + API_TOKEN } });
     expect(res.status).toBe(500);
     const body = (await res.json()) as { error: string };
     expect(body.error).toContain('unopkg add failed');

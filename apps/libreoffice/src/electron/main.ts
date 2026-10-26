@@ -113,6 +113,7 @@ async function startApp(): Promise<void> {
     port: address.port,
     url,
     exe: app.isPackaged ? process.execPath : null,
+    token: (server.locals.apiToken as string) ?? '',
   }).catch(() => undefined);
 
   await app.whenReady();

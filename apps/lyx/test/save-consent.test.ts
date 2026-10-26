@@ -15,6 +15,9 @@ import { isVersionControlled } from '../src/vcs.js';
 import type { LyxServerClient } from '../src/lyxserver/client.js';
 import type { RawClipboard } from '../src/clipboard/lyx-clipboard.js';
 
+/** Fixed API bearer token (audit B1) for these HTTP-level tests. */
+const API_TOKEN = 'test-api-token';
+
 const fakeDocText = () =>
   [
     '#LyX 2.5 created this file. For more info see https://www.lyx.org/',
@@ -146,7 +149,7 @@ async function startHarness(withGit: boolean): Promise<Harness> {
   const lyx = fakeLyx(file);
   const agent = new FakeAgent(['Just prose.\n[ACTION: none]']);
   const app = createServer({
-    publicDir: new URL('../public', import.meta.url).pathname.replace(/^\/(\w:)/, '$1'),
+    apiToken: API_TOKEN, publicDir: new URL('../public', import.meta.url).pathname.replace(/^\/(\w:)/, '$1'),
     clipboard: rawClipboard,
     historyDir: dir,
     lyxFactory: () => lyx.client,
@@ -160,7 +163,7 @@ async function startHarness(withGit: boolean): Promise<Harness> {
   const base = `http://127.0.0.1:${address.port}`;
   const res = await fetch(`${base}/api/session`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${API_TOKEN}` },
     body: JSON.stringify({ agent: { command: 'fake', args: [] } }),
   });
   if (!res.ok) throw new Error(`session create failed: ${res.status}`);
@@ -171,7 +174,7 @@ async function startHarness(withGit: boolean): Promise<Harness> {
 async function postMessage(h: Harness) {
   return fetch(`${h.base}/api/session/${h.sessionId}/message/stream`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${API_TOKEN}` },
     body: JSON.stringify({ message: 'explain the intro' }),
   });
 }
@@ -224,7 +227,7 @@ describe('save-consent gate', () => {
     });
 
     const docs = await (
-      await fetch(`${harness.base}/api/session/${harness.sessionId}/documents`)
+      await fetch(`${harness.base}/api/session/${harness.sessionId}/documents`, { headers: { authorization: 'Bearer ' + API_TOKEN } })
     ).json();
     expect(docs.active).toBeTruthy();
     expect(docs.versionControlled).toBe(false);
@@ -249,7 +252,7 @@ describe('save-consent gate', () => {
     // The client registers the user's acceptance (modal), then retries.
     const consent = await fetch(`${harness.base}/api/session/${harness.sessionId}/save-consent`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${API_TOKEN}` },
       body: JSON.stringify({ path: body.documentPath }),
     });
     expect(consent.status).toBe(200);
@@ -286,7 +289,7 @@ describe('save-consent gate', () => {
 
     const res = await fetch(`${harness.base}/api/session/${harness.sessionId}/save-consent`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${API_TOKEN}` },
       body: JSON.stringify({}),
     });
     expect(res.status).toBe(400);
