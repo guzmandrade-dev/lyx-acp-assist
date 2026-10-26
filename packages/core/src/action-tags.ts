@@ -106,3 +106,68 @@ export function actionTagNote(raw: string | undefined, canonical: string): strin
   const tag = raw.trim();
   return tag === canonical ? null : tag;
 }
+/**
+ * Audit Track D: shared frame for the apps' action-tag instruction
+ * blocks (the LibreOffice writer/calc/impress adapters were ~60%
+ * identical prose). The builder assembles the fixed protocol frame —
+ * the header, the [ACTION: none] line, the "Rules for document
+ * actions:" section with the shared tag/apply/multi-edit rules — around
+ * the module's own action descriptions and content-format lines.
+ */
+export interface ActionInstructionsSpec {
+  /**
+   * The module's action-tag lines, starting with its [ACTION: none]
+   * line and followed by one entry per action (wrapped at ~76 chars).
+   */
+  actions: readonly string[];
+  /** The "Content format (```...)" paragraph lines. */
+  contentFormat: readonly string[];
+  /**
+   * How applied edits are recoverable: 'tracked-changes' (Writer/Calc:
+   * recorded in Edit > Track Changes) or 'undo-only' (Impress/Draw: one
+   * undo step per edit).
+   */
+  undoMode: 'tracked-changes' | 'undo-only';
+  /**
+   * Module-specific rules placed BEFORE the shared rules (e.g. the
+   * "[pN] ids" context line).
+   */
+  leadRules?: readonly string[];
+  /** Module-specific rules placed AFTER the shared rules. */
+  rules?: readonly string[];
+  /**
+   * Tail of the shared multi-edit rule after "re-prompts you with" —
+   * may embed '\n  ' continuation indents to keep the wrapped width
+   * (e.g. 'fresh paragraph\n  numbers for the next edit.').
+   */
+  rePrompt: string;
+}
+
+export function actionInstructions(spec: ActionInstructionsSpec): string {
+  const liveRule =
+    spec.undoMode === 'tracked-changes'
+      ? [
+          '- The action is applied to the LIVE document, recorded as a tracked',
+          '  change the user can accept or reject in Edit > Track Changes.',
+        ]
+      : [
+          '- The action is applied to the LIVE document. These modules have no',
+          '  change tracking: each edit is a single undo step the user can',
+          '  revert with the app\u2019s Undo button.',
+        ];
+  return [
+    'Decide yourself what the user wants, and END your reply with exactly one',
+    'of these action tags on its own last line:',
+    ...spec.actions,
+    '',
+    ...spec.contentFormat,
+    '',
+    'Rules for document actions:',
+    ...(spec.leadRules ?? []),
+    '- The action tag must be the very last line of your reply.',
+    ...liveRule,
+    ...(spec.rules ?? []),
+    '- When one request needs SEVERAL edits, apply the FIRST edit now and',
+    `  end with its action tag; the app re-prompts you with ${spec.rePrompt}`,
+  ].join('\n');
+}

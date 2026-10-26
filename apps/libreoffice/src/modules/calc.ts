@@ -10,7 +10,7 @@
  */
 
 import type { BridgeClient, BridgeDocument, CalcInfo, CalcSelection } from '../bridge/client.js';
-import { extractContentBlock, parseTsvBlock, actionTagNote, createParseActionTag } from './markdown.js';
+import { extractContentBlock, parseTsvBlock, actionTagNote, actionInstructions, createParseActionTag } from './markdown.js';
 import type { ActionOutcome, AppliedAction, AgentAction, ModuleAdapter, SelectionInfo } from './types.js';
 
 /** Grammar: [ACTION: name] or [ACTION: name B2] (A1 anchor). The header
@@ -100,38 +100,35 @@ export const calcAdapter: ModuleAdapter = {
   id: 'calc',
 
   buildActionInstructions(): string {
-    return [
-      'Decide yourself what the user wants, and END your reply with exactly one',
-      'of these action tags on its own last line:',
-      '- [ACTION: none] to reply in prose only (questions, explanations,',
-      '  discussion, planning).',
-      '- [ACTION: write-cells] to write a block of cells with the selection\'s',
-      '  top-left cell as the anchor, or [ACTION: write-cells B2] with an',
-      '  explicit A1 anchor: include a ```calc block.',
-      '- [ACTION: rewrite] to REPLACE the selected cells: include a ```calc',
-      '  block with the complete replacement grid (anchored at the',
-      '  selection\'s top-left cell).',
-      '- [ACTION: insert-rows] to insert one empty row ABOVE the selection\'s',
-      '  anchor row, or [ACTION: insert-rows A5] above a given cell.',
-      '- [ACTION: insert-cols] to insert one empty column LEFT of the',
-      '  selection\'s anchor column, or [ACTION: insert-cols C1].',
-      '',
-      'Content format (```calc block): tab-separated cells, one sheet row per',
-      'line. A cell starting with "=" is written as a formula (e.g.',
-      '=SUM(B2:B10)). An empty cell clears the target cell. Use column',
-      'letters in formulas exactly as shown in the document context.',
-      '',
-      'Rules for document actions:',
-      '- The action tag must be the very last line of your reply.',
-      '- The action is applied to the LIVE document, recorded as a tracked',
-      '  change the user can accept or reject in Edit > Track Changes.',
-      '- Cell contents you cannot see in the context are still there: the',
-      '  context shows the active sheet\'s used range (capped) and the',
-      '  selection. Never overwrite cells outside what the user asked for.',
-      '- When one request needs SEVERAL edits, apply the FIRST edit now and',
-      '  end with its action tag; the app re-prompts you with fresh context',
-      '  for the next edit.',
-    ].join('\n');
+    return actionInstructions({
+      actions: [
+        '- [ACTION: none] to reply in prose only (questions, explanations,',
+        '  discussion, planning).',
+        '- [ACTION: write-cells] to write a block of cells with the selection\'s',
+        '  top-left cell as the anchor, or [ACTION: write-cells B2] with an',
+        '  explicit A1 anchor: include a ```calc block.',
+        '- [ACTION: rewrite] to REPLACE the selected cells: include a ```calc',
+        '  block with the complete replacement grid (anchored at the',
+        '  selection\'s top-left cell).',
+        '- [ACTION: insert-rows] to insert one empty row ABOVE the selection\'s',
+        '  anchor row, or [ACTION: insert-rows A5] above a given cell.',
+        '- [ACTION: insert-cols] to insert one empty column LEFT of the',
+        '  selection\'s anchor column, or [ACTION: insert-cols C1].',
+      ],
+      contentFormat: [
+        'Content format (```calc block): tab-separated cells, one sheet row per',
+        'line. A cell starting with "=" is written as a formula (e.g.',
+        '=SUM(B2:B10)). An empty cell clears the target cell. Use column',
+        'letters in formulas exactly as shown in the document context.',
+      ],
+      undoMode: 'tracked-changes',
+      rules: [
+        '- Cell contents you cannot see in the context are still there: the',
+        '  context shows the active sheet\'s used range (capped) and the',
+        '  selection. Never overwrite cells outside what the user asked for.',
+      ],
+      rePrompt: 'fresh context\n  for the next edit.',
+    });
   },
 
   buildContextBlock(doc: BridgeDocument, filePath: string | null): string {

@@ -5,7 +5,9 @@
  * parsed file matches the buffer). In a VCS working tree that save has a
  * safety net: the previous state is recoverable. Outside any VCS an
  * overwrite is unrecoverable, so the server asks the user to accept that
- * condition once per document (see the save-consent routes in server.ts).
+ * condition once per document (see the save-consent routes in the apps'
+ * server.ts; the LyX app uses this today, LibreOffice may gain
+ * save-consent later).
  */
 
 import fs from 'node:fs/promises';

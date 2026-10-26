@@ -11,7 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { ContentBlock } from '@agentclientprotocol/sdk';
 import { createServer, type AgentRunner } from '../src/server.js';
-import { isVersionControlled } from '../src/vcs.js';
+import { isVersionControlled } from '@acp-assist/core';
 import type { LyxServerClient } from '../src/lyxserver/client.js';
 import type { RawClipboard } from '../src/clipboard/lyx-clipboard.js';
 import { PANEL_CONFIG } from '../src/panel-config.js';

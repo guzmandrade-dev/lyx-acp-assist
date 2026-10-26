@@ -31,15 +31,16 @@ import {
 import { CHAT_KNOWLEDGE } from './lyx/knowledge.js';
 import { discoverLyxEnvironment } from './lyxserver/pipe-config.js';
 import { TIMINGS } from './timings.js';
-import { isVersionControlled } from './vcs.js';
 import {
   AcpClient,
   UNSAVED_KEY,
   createParseActionTag,
   createAgentSettings,
+  createAttachmentExtractor,
   createConversationStore,
   createLogError,
-  extractAttachmentText as coreExtractAttachmentText,
+  createWrap,
+  isVersionControlled,
   buildAttachmentBlock,
   formatHistoryReplay as coreFormatHistoryReplay,
   listKnownDocuments as coreListKnownDocuments,
@@ -230,17 +231,10 @@ export function createServer(options: ServerOptions & {
   }, Math.max(1_000, Math.round(sessionIdleMs / 10)));
   sweeper.unref();
 
-  const wrap = (handler: (req: express.Request, res: express.Response) => Promise<unknown>) =>
-    async (req: express.Request, res: express.Response) => {
-      try {
-        await handler(req, res);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        const status = err instanceof LyxPipeError ? 503 : 500;
-        logError(`[api] ${req.path}`, err);
-        res.status(status).json({ error: message });
-      }
-    };
+  const wrap = createWrap({
+    logError,
+    mapStatus: (err) => (err instanceof LyxPipeError ? 503 : 500),
+  });
 
   // --- status ----------------------------------------------------------
 
@@ -1600,25 +1594,19 @@ export function buildAutoPrompt(
   return parts.join('\n');
 }
 
-/** How many characters of an attachment's extracted text go into the prompt. */
-/** Extensions the app can read as text directly (no converter needed). */
-const TEXTUAL_FILE = /\.(txt|md|markdown|tex|lyx|csv|tsv|json|xml|bib|sty|cls|log|html?|yaml|yml|py|js|ts)$/i;
-
 /**
  * Best-effort text/markdown extraction for an uploaded attachment:
  * text formats are read directly; binary formats (PDF, DOCX, XLSX, ...)
  * go through the markitdown CLI when it is installed (see
  * @acp-assist/core for the converter chain).
  */
-export async function extractAttachmentText(
-  filePath: string,
-  name: string,
-): Promise<string | null> {
-  return coreExtractAttachmentText(filePath, name, {
-    textualFile: TEXTUAL_FILE,
-    markitdownEnv: process.env.LYX_MARKITDOWN,
-  });
-}
+export const extractAttachmentText = createAttachmentExtractor({
+  extensions: [
+    'txt', 'md', 'markdown', 'tex', 'lyx', 'csv', 'tsv', 'json', 'xml',
+    'bib', 'sty', 'cls', 'log', 'htm', 'html', 'yaml', 'yml', 'py', 'js', 'ts',
+  ],
+  envVar: 'LYX_MARKITDOWN',
+});
 
 /** Corrective retry prompt when the ```lyx block has markup problems. */
 function buildMarkupRetryPrompt(action: AgentAction, problems: string[]): string {

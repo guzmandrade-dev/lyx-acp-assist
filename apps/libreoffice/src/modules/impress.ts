@@ -12,7 +12,7 @@
  */
 
 import type { BridgeClient, BridgeDocument, SlidesSelectionShape } from '../bridge/client.js';
-import { extractContentBlock, ACTION_TAG_LINE, actionTagNote, createParseActionTag } from './markdown.js';
+import { extractContentBlock, ACTION_TAG_LINE, actionTagNote, actionInstructions, createParseActionTag, preview } from './markdown.js';
 import type { ActionOutcome, AppliedAction, ModuleAdapter, SelectionInfo } from './types.js';
 
 /** Grammar: [ACTION: name] or [ACTION: name sN]. The header tolerates tag
@@ -64,50 +64,43 @@ function blockToText(outcome: ActionOutcome): string[] {
   return (outcome.block ?? []).map((p) => p.runs.map((r) => r.text).join(''));
 }
 
-function preview(text: string, len = 100): string {
-  const t = text.replace(/\s+/g, ' ').trim();
-  return t.length <= len ? t : `${t.slice(0, len)}…`;
-}
-
 export const impressAdapter: ModuleAdapter = {
   id: 'impress',
 
   buildActionInstructions(): string {
-    return [
-      'Decide yourself what the user wants, and END your reply with exactly one',
-      'of these action tags on its own last line:',
-      '- [ACTION: none] to reply in prose only (questions, explanations,',
-      '  discussion, planning).',
-      '- [ACTION: rewrite] to REPLACE the text of the SELECTED frame (given',
-      '  below): include a ```impress block with the complete new frame text.',
-      '- [ACTION: rewrite-slide sN] to REPLACE the outline of slide [sN]:',
-      '  include a ```impress block whose first line is the new title and the',
-      '  following lines are the new body paragraphs (empty body lines keep',
-      '  the current body).',
-      '- [ACTION: insert-after sN] to insert a NEW slide after slide [sN]',
-      '  with a title and body: include a ```impress block. Use s0 to insert',
-      '  at the very start of the deck (as the new first slide).',
-      '',
-      'Content format (```impress block): plain text, no markdown. The FIRST',
-      'non-empty line is the slide title; every following non-empty line is',
-      'one body paragraph (rendered as one bullet/outline point). One block',
-      '= one slide. When one request needs SEVERAL new slides, insert the',
-      'FIRST one now; the app re-prompts you with fresh context for the next.',
-      '',
-      'Rules for document actions:',
-      '- The document context lists slides as [sN] ids with their titles and',
-      '  body previews.',
-      '- The action tag must be the very last line of your reply.',
-      '- The action is applied to the LIVE document. These modules have no',
-      '  change tracking: each edit is a single undo step the user can',
-      '  revert with the app\u2019s Undo button.',
-      '- Slides the context shows as having no title/body frame cannot be',
-      '  rewritten with rewrite-slide (a fresh slide from insert-after',
-      '  always has both).',
-      '- When one request needs SEVERAL edits, apply the FIRST edit now and',
-      '  end with its action tag; the app re-prompts you with fresh slide',
-      '  numbers for the next edit.',
-    ].join('\n');
+    return actionInstructions({
+      actions: [
+        '- [ACTION: none] to reply in prose only (questions, explanations,',
+        '  discussion, planning).',
+        '- [ACTION: rewrite] to REPLACE the text of the SELECTED frame (given',
+        '  below): include a ```impress block with the complete new frame text.',
+        '- [ACTION: rewrite-slide sN] to REPLACE the outline of slide [sN]:',
+        '  include a ```impress block whose first line is the new title and the',
+        '  following lines are the new body paragraphs (empty body lines keep',
+        '  the current body).',
+        '- [ACTION: insert-after sN] to insert a NEW slide after slide [sN]',
+        '  with a title and body: include a ```impress block. Use s0 to insert',
+        '  at the very start of the deck (as the new first slide).',
+      ],
+      contentFormat: [
+        'Content format (```impress block): plain text, no markdown. The FIRST',
+        'non-empty line is the slide title; every following non-empty line is',
+        'one body paragraph (rendered as one bullet/outline point). One block',
+        '= one slide. When one request needs SEVERAL new slides, insert the',
+        'FIRST one now; the app re-prompts you with fresh context for the next.',
+      ],
+      undoMode: 'undo-only',
+      leadRules: [
+        '- The document context lists slides as [sN] ids with their titles and',
+        '  body previews.',
+      ],
+      rules: [
+        '- Slides the context shows as having no title/body frame cannot be',
+        '  rewritten with rewrite-slide (a fresh slide from insert-after',
+        '  always has both).',
+      ],
+      rePrompt: 'fresh slide\n  numbers for the next edit.',
+    });
   },
 
   buildContextBlock(doc: BridgeDocument, filePath: string | null): string {
@@ -145,7 +138,7 @@ export const impressAdapter: ModuleAdapter = {
       lines.push(main + (detail.length > 0 ? ` | ${detail.join(', ')}` : ''));
       if (body?.text) {
         const first = body.text.split('\n').find((l) => l.length > 0);
-        if (first) lines.push(`     ${preview(first)}`);
+        if (first) lines.push(`     ${preview(first, 100)}`);
       }
     }
     return lines.join('\n');
@@ -169,7 +162,7 @@ export const impressAdapter: ModuleAdapter = {
     return (doc.slides ?? [])
       .map((s) => {
         const title = s.shapes.find((sh) => sh.kind === 'title' || sh.kind === 'text');
-        return `[s${s.i + 1}]${s.current ? ' *' : ''} ${title?.text ? preview(title.text) : '(untitled)'}`;
+        return `[s${s.i + 1}]${s.current ? ' *' : ''} ${title?.text ? preview(title.text, 100) : '(untitled)'}`;
       })
       .join('\n');
   },

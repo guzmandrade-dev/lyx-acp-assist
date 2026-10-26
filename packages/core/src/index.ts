@@ -6,5 +6,7 @@ export * from './settings.js';
 export * from './routes.js';
 export * from './conversations.js';
 export * from './action-tags.js';
+export * from './text.js';
+export * from './vcs.js';
 export { AcpClient, type AcpClientOptions, type PromptOptions } from './acp/client.js';
 export { spawnAgentProcess, type AgentProcess } from './acp/agent-process.js';

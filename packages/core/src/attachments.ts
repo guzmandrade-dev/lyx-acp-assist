@@ -54,6 +54,44 @@ export async function extractAttachmentText(
   return null;
 }
 
+/** Options for the per-app extractor factory (audit Track D). */
+export interface AttachmentExtractorOptions {
+  /**
+   * File extensions (WITHOUT the leading dot) the app reads as text
+   * directly (e.g. 'lyx', 'odt'); everything else goes through the
+   * markitdown converter chain.
+   */
+  extensions: readonly string[];
+  /**
+   * Name of the env var that overrides the markitdown converter path
+   * (read per call, e.g. LYX_MARKITDOWN / LO_MARKITDOWN).
+   */
+  envVar?: string;
+}
+
+/**
+ * Audit Track D: factory for the apps' identical `extractAttachmentText`
+ * wrappers — they differ only in the textual-extension list and the
+ * env var name, so each app keeps just that pair.
+ */
+export function createAttachmentExtractor(
+  options: AttachmentExtractorOptions,
+): (filePath: string, name: string) => Promise<string | null> {
+  const textualFile = new RegExp(
+    `\\.(${options.extensions.map(escapeRegExp).join('|')})$`,
+    'i',
+  );
+  return (filePath, name) =>
+    extractAttachmentText(filePath, name, {
+      textualFile,
+      markitdownEnv: options.envVar ? process.env[options.envVar] : undefined,
+    });
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 /**
  * Converter candidates, most preferred first: an env-var override,
  * then `markitdown` on PATH, then `uvx markitdown`, then the

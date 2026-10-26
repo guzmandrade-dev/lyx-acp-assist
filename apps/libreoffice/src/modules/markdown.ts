@@ -12,7 +12,7 @@ import { ACTION_HEADER, actionTagNote, createParseActionTag } from '@acp-assist/
 
 // Shared with the LyX app via @acp-assist/core; re-exported here so the
 // module adapters keep their single markdown.js import point.
-export { ACTION_HEADER, actionTagNote, createParseActionTag };
+export { ACTION_HEADER, actionTagNote, actionInstructions, createParseActionTag, preview } from '@acp-assist/core';
 
 /**
  * Line-level action-tag test with the tolerant header: tags are

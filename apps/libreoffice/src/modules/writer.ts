@@ -10,10 +10,9 @@
  */
 
 import type { BridgeClient, BridgeDocument, BlockParagraph, EditMode } from '../bridge/client.js';
+import { actionInstructions, preview } from './markdown.js';
 import type { ActionOutcome, AppliedAction, ModuleAdapter, SelectionInfo } from './types.js';
 
-/** Per-paragraph preview length in outline mode (large documents). */
-const PREVIEW_LEN = 120;
 /** Body size above which only the outline + previews are attached. */
 const OUTLINE_ONLY_BODY_LIMIT = 16_000;
 
@@ -28,12 +27,6 @@ function styleVocabulary(doc: BridgeDocument): string[] {
     if (p.style && p.style !== 'Standard' && p.style !== 'Default Style') seen.add(p.style);
   }
   return [...seen];
-}
-
-/** Short preview of a paragraph's text. */
-function preview(text: string, len = PREVIEW_LEN): string {
-  const t = text.replace(/\s+/g, ' ').trim();
-  return t.length <= len ? t : `${t.slice(0, len)}…`;
 }
 
 /** Render the [pN] outline: every paragraph with its style and preview. */
@@ -60,43 +53,42 @@ export const writerAdapter: ModuleAdapter = {
   id: 'writer',
 
   buildActionInstructions(): string {
-    return [
-      'Decide yourself what the user wants, and END your reply with exactly one',
-      'of these action tags on its own last line:',
-      '- [ACTION: none] to reply in prose only (questions, explanations,',
-      '  discussion, outlines, planning).',
-      '- [ACTION: insert] to insert NEW paragraph(s) at the CURSOR position:',
-      '  include a ```writer block. The content becomes fresh paragraph(s)',
-      '  right below the cursor; existing text is never merged or replaced.',
-      '- [ACTION: insert-top] to insert NEW content at the VERY BEGINNING of',
-      '  the document (titles, abstracts): include a ```writer block.',
-      '- [ACTION: insert-after pN] to insert NEW paragraph(s) right AFTER',
-      '  paragraph [pN] from the outline: include a ```writer block.',
-      '- [ACTION: rewrite] to REPLACE the currently selected text (given',
-      '  below): include a ```writer block with the complete replacement.',
-      '- [ACTION: rewrite-at pN] to REPLACE the entire paragraph [pN]: include',
-      '  a ```writer block with the complete replacement paragraph(s). Use',
-      '  this (with several paragraphs) to split one paragraph.',
-      '- [ACTION: delete-at pN] to DELETE the entire paragraph [pN]:',
-      '  NO ```writer block, just the tag.',
-      '',
-      'Content format (```writer block): markdown-lite, one paragraph per line.',
-      'Supported: # / ## / ### headings, "- " list items, "> " quotes,',
-      'triple-backtick code sections (kept verbatim), and inline **bold**,',
-      '*italic*, `code`. Plain lines keep the document default style.',
-      'Prefer paragraph styles that already appear in the document context.',
-      '',
-      'Rules for document actions:',
-      '- The document context lists paragraphs as [pN] ids with their styles.',
-      '- The action tag must be the very last line of your reply.',
-      '- The action is applied to the LIVE document, recorded as a tracked',
-      '  change the user can accept or reject in Edit > Track Changes.',
-      '- For rewrite: output the complete replacement of the selection.',
-      '- If nothing is selected you cannot rewrite; choose insert-at/none.',
-      '- When one request needs SEVERAL edits, apply the FIRST edit now and',
-      '  end with its action tag; the app re-prompts you with fresh paragraph',
-      '  numbers for the next edit.',
-    ].join('\n');
+    return actionInstructions({
+      actions: [
+        '- [ACTION: none] to reply in prose only (questions, explanations,',
+        '  discussion, outlines, planning).',
+        '- [ACTION: insert] to insert NEW paragraph(s) at the CURSOR position:',
+        '  include a ```writer block. The content becomes fresh paragraph(s)',
+        '  right below the cursor; existing text is never merged or replaced.',
+        '- [ACTION: insert-top] to insert NEW content at the VERY BEGINNING of',
+        '  the document (titles, abstracts): include a ```writer block.',
+        '- [ACTION: insert-after pN] to insert NEW paragraph(s) right AFTER',
+        '  paragraph [pN] from the outline: include a ```writer block.',
+        '- [ACTION: rewrite] to REPLACE the currently selected text (given',
+        '  below): include a ```writer block with the complete replacement.',
+        '- [ACTION: rewrite-at pN] to REPLACE the entire paragraph [pN]: include',
+        '  a ```writer block with the complete replacement paragraph(s). Use',
+        '  this (with several paragraphs) to split one paragraph.',
+        '- [ACTION: delete-at pN] to DELETE the entire paragraph [pN]:',
+        '  NO ```writer block, just the tag.',
+      ],
+      contentFormat: [
+        'Content format (```writer block): markdown-lite, one paragraph per line.',
+        'Supported: # / ## / ### headings, "- " list items, "> " quotes,',
+        'triple-backtick code sections (kept verbatim), and inline **bold**,',
+        '*italic*, `code`. Plain lines keep the document default style.',
+        'Prefer paragraph styles that already appear in the document context.',
+      ],
+      undoMode: 'tracked-changes',
+      leadRules: [
+        '- The document context lists paragraphs as [pN] ids with their styles.',
+      ],
+      rules: [
+        '- For rewrite: output the complete replacement of the selection.',
+        '- If nothing is selected you cannot rewrite; choose insert-at/none.',
+      ],
+      rePrompt: 'fresh paragraph\n  numbers for the next edit.',
+    });
   },
 
   buildContextBlock(doc: BridgeDocument, filePath: string | null): string {

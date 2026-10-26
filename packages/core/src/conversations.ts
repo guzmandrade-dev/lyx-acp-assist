@@ -33,6 +33,35 @@ export function createLogError(logDir?: string) {
   };
 }
 
+export interface WrapOptions {
+  /** The app's error logger (see createLogError). */
+  logError: (scope: string, err: unknown) => void;
+  /**
+   * Maps a thrown error to the HTTP status sent (default: 500). Apps map
+   * their transport errors (bridge / LyX pipe) to 503.
+   */
+  mapStatus?: (err: unknown) => number;
+}
+
+/**
+ * Audit Track D: the apps' identical async route wrappers — try/catch,
+ * log via the app's logError, respond `{ error }` with the mapped
+ * status. They differed only in the Error→503 mapping.
+ */
+export function createWrap(options: WrapOptions) {
+  return (handler: (req: express.Request, res: express.Response) => Promise<unknown>) =>
+    async (req: express.Request, res: express.Response) => {
+      try {
+        await handler(req, res);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        const status = options.mapStatus ? options.mapStatus(err) : 500;
+        options.logError(`[api] ${req.path}`, err);
+        res.status(status).json({ error: message });
+      }
+    };
+}
+
 /** Start an SSE response; returns the frame sender. */
 export const startSse = (res: express.Response) => {
   res.writeHead(200, {
