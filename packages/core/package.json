@@ -22,7 +22,8 @@
   "license": "MIT",
   "dependencies": {
     "@agentclientprotocol/sdk": "^1.7.0",
-    "express": "^5.2.1"
+    "express": "^5.2.1",
+    "@acp-assist/panel": "0.1.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",

@@ -8,5 +8,6 @@ export * from './conversations.js';
 export * from './action-tags.js';
 export * from './text.js';
 export * from './vcs.js';
+export * from './companion.js';
 export { AcpClient, type AcpClientOptions, type PromptOptions } from './acp/client.js';
 export { spawnAgentProcess, type AgentProcess } from './acp/agent-process.js';

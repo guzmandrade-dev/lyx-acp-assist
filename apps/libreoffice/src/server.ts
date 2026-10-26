@@ -7,11 +7,14 @@
  * and writes go through the in-LibreOffice bridge (extension/) — the
  * bridge is the only thing that touches UNO, and LibreOffice remains the
  * single writer of truth.
+ *
+ * Phase B2 (audit Track D): the session lifecycle, shared routes, and
+ * the multi-action message loop live in core `createCompanionServer`;
+ * this file is the app's `CompanionBackend` (bridge + module adapters)
+ * plus the LO-only bridge-extension install routes.
  */
 
-import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
-import path from 'node:path';
 import express from 'express';
 import {
   BridgeClient,
@@ -31,36 +34,30 @@ import { calcAdapter, parseCalcAction } from './modules/calc.js';
 import { impressAdapter, parseImpressAction } from './modules/impress.js';
 import { genericAdapter } from './modules/generic.js';
 import type { ModuleAdapter, AgentAction, ActionOutcome, SelectionInfo } from './modules/types.js';
-import { extractContentBlock, parseContentBlock, actionTagNote, createParseActionTag } from './modules/markdown.js';
+import { extractContentBlock, parseContentBlock } from './modules/markdown.js';
 import {
-  AcpClient,
-  UNSAVED_KEY,
-  createAgentSettings,
-  createAttachmentExtractor,
-  createConversationStore,
-  createLogError,
-  createWrap,
+  actionTagNote,
   buildAttachmentBlock,
-  formatHistoryReplay as coreFormatHistoryReplay,
-  listKnownDocuments,
-  registerAttachmentRoutes,
-  registerSessionRoutes,
-  startSse,
-  sseFail,
+  createAttachmentExtractor,
+  createLogError,
+  createParseActionTag,
+  createWrap,
+  createCompanionServer,
   MAX_ACTIONS_PER_MESSAGE,
   pollUntil,
-  createApiAuthGuard,
-  generateApiToken,
-  type ConversationStore,
+  UNSAVED_KEY,
+  formatHistoryReplay as coreFormatHistoryReplay,
+  type AppliedResult,
+  type CompanionBackend,
+  type CompanionSession,
+  type ReadStepResult,
+  type AgentSettings,
+  type AgentRunner,
+  type Attachment,
+  type Turn,
+  type TurnMeta,
 } from '@acp-assist/core';
-import { createPanelBootScript, createPanelIndexHandler, panelPublicDir, type PanelConfig } from '@acp-assist/panel';
-import type {
-  AgentRunner,
-  AgentSettings,
-  Attachment,
-  Turn,
-  TurnMeta,
-} from '@acp-assist/core';
+import { panelPublicDir, type PanelConfig } from '@acp-assist/panel';
 
 export type {
   AgentSettings,
@@ -70,20 +67,6 @@ export type {
   Attachment,
 } from '@acp-assist/core';
 export { listKnownDocuments } from '@acp-assist/core';
-
-export interface Session {
-  id: string;
-  bridge: BridgeClient;
-  agent: AgentRunner;
-  conversations: Map<string, Turn[]>;
-  /** Leading persisted turns per key the fresh agent process has not seen. */
-  historyHandoff: Map<string, number>;
-  knownDocuments: Set<string>;
-  /** Active document {url,title,module}; refreshed from the bridge. */
-  activeDoc: { url: string; title: string; module: string } | null;
-  cancelRequested: boolean;
-  attachments: Attachment[];
-}
 
 export interface ServerOptions {
   /**
@@ -120,8 +103,25 @@ export interface ServerOptions {
    * `app.locals.apiToken` for the companion record writers / dev tools.
    */
   apiToken?: string;
+  /** Idle-session GC (audit B2); see createCompanionServer. */
+  sessionIdleMs?: number;
 }
 
+/** The app backend's per-session state (opaque to the core server). */
+interface LoState {
+  /** The healing proxy (audit B3) around this session's bridge. */
+  bridge: BridgeClient;
+  /** Active document {url,title,module}; refreshed from the bridge. */
+  activeDoc: { url: string; title: string; module: string } | null;
+}
+
+/** One step's data: ONE /document read serves the whole step. */
+interface LoStepData {
+  doc: BridgeDocument;
+  adapter: ModuleAdapter;
+  contextText: string;
+  selection: SelectionInfo;
+}
 
 export function createServer(options: ServerOptions & {
   /** Test hook: inject a fake agent process instead of spawning one. */
@@ -129,67 +129,315 @@ export function createServer(options: ServerOptions & {
   /** Test hook: inject a fake bridge client instead of discovery. */
   bridgeFactory?: () => BridgeClient;
 }) {
-  const app = express();
-  // API auth (audit B1): random bearer token + loopback Host check; the
-  // panel gets the token same-origin via the injected index.html. Static
-  // assets sit BEFORE the guard (not sensitive), all /api routes after.
-  const apiToken = options.apiToken ?? generateApiToken();
-  app.locals.apiToken = apiToken;
-  const publicDir = options.publicDir ?? panelPublicDir();
-  app.use(express.json({ limit: '5mb' }));
-  app.get('/', createPanelIndexHandler(publicDir, { token: apiToken, config: options.panelConfig }));
-  // CSP-safe boot script (external same-origin): carries the token +
-  // panel config to the page.
-  app.get('/panel-boot.js', createPanelBootScript({ token: apiToken, config: options.panelConfig }));
-  if (options.assetsDir) {
-    app.use(express.static(options.assetsDir, { maxAge: 0, etag: false, lastModified: false }));
-  }
-  app.use(express.static(publicDir, { maxAge: 0, etag: false, lastModified: false }));
-  app.use(createApiAuthGuard(apiToken));
+  const app = createCompanionServer({
+    panelConfig: options.panelConfig,
+    publicDir: options.publicDir ?? panelPublicDir(),
+    assetsDir: options.assetsDir,
+    historyDir: options.historyDir,
+    attachmentsDir: options.attachmentsDir,
+    logDir: options.logDir,
+    settingsDir: options.settingsDir,
+    apiToken: options.apiToken,
+    sessionIdleMs: options.sessionIdleMs,
+    extractText: extractAttachmentText,
+    backend: createLoBackend(options),
+    agentFactory: options.agentFactory,
+  });
+  registerInstallRoutes(app, options);
+  return app;
+}
 
-  const sessions = new Map<string, Session>();
-
+/** The LibreOffice backend: bridge + module adapters behind the contract. */
+function createLoBackend(
+  options: ServerOptions & {
+    agentFactory?: (settings: AgentSettings) => AgentRunner;
+    bridgeFactory?: () => BridgeClient;
+  },
+): CompanionBackend<LoState, ActionOutcome> {
   const logError = createLogError(options.logDir);
 
-  const wrap = createWrap({
-    logError,
+  // --- bridge discovery / healing (audit B3) ------------------------------
+
+  /** Newest live bridge record, or throw a user-facing error. */
+  async function pickBridge(): Promise<BridgeClient> {
+    const bridges = await discoverBridges();
+    if (bridges.length === 0) {
+      throw new BridgeError(
+        'No LibreOffice bridge found. Start LibreOffice (with the ACP Assist ' +
+          'extension installed) and use menu ACP Assist > Start bridge.',
+      );
+    }
+    return new BridgeClient(bridges[0]!);
+  }
+
+  /**
+   * Audit B3: a session pinned its bridge record forever — restarting the
+   * bridge from the LO sidebar (new port + token) broke the session until
+   * a manual reconnect. This proxy wraps EVERY bridge call: on a
+   * BridgeError it re-discovers once (default pickBridge), swaps the
+   * target, and retries once. Non-bridge errors pass straight through,
+   * and the fake-bridge tests are unaffected (their errors are not
+   * BridgeErrors).
+   */
+  function createHealingBridge(initial: BridgeClient): BridgeClient {
+    let target = initial;
+    const recover = options.recoverBridge ?? pickBridge;
+    return new Proxy(initial, {
+      get(_t, prop) {
+        const value = Reflect.get(target, prop, target);
+        if (typeof value !== 'function') return value;
+        return async (...args: unknown[]) => {
+          try {
+            return await (value as (...a: unknown[]) => unknown).apply(target, args);
+          } catch (e) {
+            if (!(e instanceof BridgeError)) throw e;
+            target = await recover(target);
+            const fresh = Reflect.get(target, prop, target);
+            return (fresh as (...a: unknown[]) => unknown).apply(target, args);
+          }
+        };
+      },
+    }) as BridgeClient;
+  }
+
+  // --- document bookkeeping ------------------------------------------------
+
+  /** Re-read the active document from the bridge and track it. */
+  async function refreshActiveDocument(session: CompanionSession<LoState>): Promise<string | null> {
+    const st = await session.state.bridge.status();
+    return refreshFromStatus(session, st.active, st.url ?? '', st.title ?? '', st.module ?? 'unknown');
+  }
+
+  /**
+   * Same bookkeeping as refreshActiveDocument, but from an already-fetched
+   * `/document` payload (it carries active/module/title/url too) — avoids
+   * the extra `/status` round-trip in the message loop.
+   */
+  async function refreshFromDocument(session: CompanionSession<LoState>, doc: BridgeDocument): Promise<string | null> {
+    return refreshFromStatus(session, doc.active, doc.url ?? '', doc.title ?? '', doc.module ?? 'unknown');
+  }
+
+  async function refreshFromStatus(
+    session: CompanionSession<LoState>,
+    active: boolean,
+    url: string,
+    title: string,
+    module: string,
+  ): Promise<string | null> {
+    if (!active) {
+      session.state.activeDoc = null;
+      await session.ensureConversation(UNSAVED_KEY);
+      return null;
+    }
+    session.state.activeDoc = { url, title, module };
+    const key = url || title || UNSAVED_KEY;
+    if (key !== UNSAVED_KEY) session.knownDocuments.add(key);
+    await session.ensureConversation(key);
+    return key;
+  }
+
+  return {
+    acp: { appName: 'libreoffice-acp-assist', writerName: 'LibreOffice' },
     mapStatus: (err) => (err instanceof BridgeError ? 503 : 500),
-  });
+    promptTimeoutMs: TIMINGS.promptTimeoutMs,
+    replayOptions: LO_REPLAY_OPTIONS,
 
-  // --- adapter selection ---------------------------------------------------
+    async createSessionState() {
+      return {
+        bridge: options.bridgeFactory
+          ? createHealingBridge(options.bridgeFactory())
+          : createHealingBridge(await pickBridge()),
+        activeDoc: null,
+      };
+    },
 
-  function adapterFor(module: string): ModuleAdapter {
-    if (module === 'writer') return writerAdapter;
-    if (module === 'calc') return calcAdapter;
-    if (module === 'impress' || module === 'draw') return impressAdapter;
-    return genericAdapter;
-  }
+    conversationKey(session) {
+      return conversationKeyOf(session);
+    },
 
-  /** Parse one agent reply with the active adapter's action grammar. */
-  function parseOutcome(adapter: ModuleAdapter, reply: string): ActionOutcome {
-    if (adapter.id === 'calc') return parseCalcAction(reply);
-    if (adapter.id === 'impress') return parseImpressAction(reply);
-    return parseAction(reply);
-  }
-
-  // --- status / settings ---------------------------------------------------
-
-  app.get('/api/status', async (_req, res) => {
-    try {
+    async statusSummary() {
       if (options.bridgeFactory) {
         // Test hook: a fake bridge is injected; discovery is bypassed.
-        res.json({ bridgeAvailable: true });
-        return;
+        return { bridgeAvailable: true };
       }
-      const bridges = await discoverBridges();
-      res.json({ bridgeAvailable: bridges.length > 0 });
-    } catch (e) {
-      logError('[api] status', e);
-      res.json({ bridgeAvailable: false });
-    }
-  });
+      try {
+        return { bridgeAvailable: (await discoverBridges()).length > 0 };
+      } catch (e) {
+        logError('[api] status', e);
+        return { bridgeAvailable: false };
+      }
+    },
 
-  // --- bridge extension install (one-click; touches the REAL profile) ----
+    async documents(session) {
+      const active = await refreshActiveDocument(session);
+      return { active, documents: [...session.knownDocuments] };
+    },
+
+    async switchDocument(session, target) {
+      await session.state.bridge.activate(target);
+      // Wait until the switch actually landed (bounded poll instead of a
+      // fixed sleep); on timeout fall through and report what is active.
+      await pollUntil(
+        async () => {
+          const st = await session.state.bridge.status();
+          return st.active && (st.url === target || st.title === target);
+        },
+        { timeoutMs: TIMINGS.documentSwitchPollMs, intervalMs: TIMINGS.pollIntervalMs },
+      );
+      const active = await refreshActiveDocument(session);
+      return { active, documents: [...session.knownDocuments] };
+    },
+
+    async selection(session) {
+      const sel = readSelection(await session.state.bridge.document());
+      const words = sel.text ? sel.text.trim().split(/\s+/).length : 0;
+      return { ...sel, stats: [words] };
+    },
+
+    async undo(session) {
+      const r = await session.state.bridge.undo();
+      return { ok: r.undone, ...(r.undone ? {} : { reason: r.reason ?? 'nothing to undo' }) };
+    },
+
+    async sessionInfo(session, opts) {
+      const docKey = await refreshActiveDocument(session);
+      let outline = '';
+      let layout: string | null = null;
+      let conversation: Turn[] = session.conversations.get(conversationKeyOf(session)) ?? [];
+      if (opts.outline) {
+        try {
+          const doc = await session.state.bridge.document();
+          const adapter = adapterFor(doc.module);
+          outline = adapter.renderOutline?.(doc) ?? '';
+          layout = doc.cursorStyle ?? null;
+        } catch {
+          /* bridge may be between documents; report what we have */
+        }
+      }
+      return {
+        sessionId: session.id,
+        documentPath: docKey,
+        documents: [...session.knownDocuments],
+        layout,
+        outline,
+        conversation,
+      };
+    },
+
+    async readStep(session): Promise<ReadStepResult<LoStepData>> {
+      // ONE /document read serves the whole step: session bookkeeping
+      // (active/module/url — /document carries everything /status does),
+      // context building, and the selection.
+      const doc = await session.state.bridge.document();
+      await refreshFromDocument(session, doc);
+      const adapter = adapterFor(doc.module);
+      return {
+        data: {
+          doc,
+          adapter,
+          contextText: adapter.buildContextBlock(doc, doc.url || null),
+          selection: readSelection(doc),
+        },
+      };
+    },
+
+    async buildAutoPrompt(_session, stepData, message, attachments, historyPrefix) {
+      const s = stepData as LoStepData;
+      return buildAutoPrompt(s.contextText, s.adapter, s.selection, message, attachments, historyPrefix);
+    },
+
+    async buildContinuationPrompt(_session, stepData, originalMessage, completed) {
+      const s = stepData as LoStepData;
+      return buildContinuationPrompt(s.contextText, s.adapter, s.selection, originalMessage, completed);
+    },
+
+    parseAction(_session, reply, stepData) {
+      return parseOutcome((stepData as LoStepData).adapter, reply);
+    },
+
+    async applyAction(session, outcome, stepData): Promise<AppliedResult> {
+      const s = stepData as LoStepData;
+      const applied = await s.adapter.applyAction(session.state.bridge, s.doc, s.selection, outcome);
+      return { ok: true, description: applied.description, target: outcome.target };
+    },
+
+    frame(_session, ctx) {
+      const outcome = ctx.outcome;
+      const step = ctx.step;
+      const stepField = step > 1 ? { step } : {};
+      switch (ctx.kind) {
+        case 'none':
+          return {
+            action: 'none',
+            ...(outcome.tagNote ? { tagNote: outcome.tagNote } : {}),
+            ...stepField,
+          };
+        case 'applied': {
+          const s = ctx.stepData as LoStepData;
+          return {
+            applied: outcome.action,
+            target: outcome.target,
+            address: outcome.address,
+            module: s.adapter.id === 'generic' ? 'other' : s.adapter.id,
+            ...(outcome.tagNote ? { tagNote: outcome.tagNote } : {}),
+            ...stepField,
+          };
+        }
+        case 'appliedStep':
+          return {
+            appliedStep: step,
+            action: outcome.action,
+            target: ctx.applied?.target ?? outcome.target,
+          };
+        default:
+          return null;
+      }
+    },
+
+    metaExtras(_session, outcome, stepData) {
+      if (stepData === undefined) return { address: outcome.address };
+      const s = stepData as LoStepData;
+      return {
+        address: outcome.address,
+        module: s.adapter.id === 'generic' ? 'other' : s.adapter.id,
+      };
+    },
+  };
+}
+
+/** The conversation key for a session's active document. */
+function conversationKeyOf(session: CompanionSession<LoState>): string {
+  const doc = session.state.activeDoc;
+  if (!doc) return UNSAVED_KEY;
+  return doc.url || doc.title || UNSAVED_KEY;
+}
+
+// --- adapter selection -----------------------------------------------------------
+
+function adapterFor(module: string): ModuleAdapter {
+  if (module === 'writer') return writerAdapter;
+  if (module === 'calc') return calcAdapter;
+  if (module === 'impress' || module === 'draw') return impressAdapter;
+  return genericAdapter;
+}
+
+/** Parse one agent reply with the active adapter's action grammar. */
+function parseOutcome(adapter: ModuleAdapter, reply: string): ActionOutcome {
+  if (adapter.id === 'calc') return parseCalcAction(reply);
+  if (adapter.id === 'impress') return parseImpressAction(reply);
+  return parseAction(reply);
+}
+
+// --- bridge extension install (one-click; touches the REAL profile) ---------------
+
+function registerInstallRoutes(
+  app: express.Express,
+  options: ServerOptions,
+): void {
+  const wrap = createWrap({
+    logError: createLogError(options.logDir),
+    mapStatus: (err) => (err instanceof BridgeError ? 503 : 500),
+  });
 
   app.get(
     '/api/bridge/install/preflight',
@@ -242,512 +490,33 @@ export function createServer(options: ServerOptions & {
       res.json(result);
     }),
   );
+}
 
-  const agentSettings = createAgentSettings(options.settingsDir);
-  agentSettings.register(app, wrap);
+// --- selection -----------------------------------------------------------------------
 
-  // --- session ---------------------------------------------------------------
-
-  app.post(
-    '/api/session',
-    wrap(async (req, res) => {
-      const persisted = await agentSettings.read();
-      const requested = req.body?.agent as Partial<AgentSettings> | undefined;
-      const settings: AgentSettings = {
-        command: requested?.command ?? persisted.command ?? 'vibe-acp',
-        args: requested?.args ?? persisted.args ?? [],
-        env: requested?.env ?? persisted.env ?? {},
-      };
-
-      const agent: AgentRunner = options.agentFactory
-        ? options.agentFactory(settings)
-        : new AcpClient({
-            ...settings,
-            appName: 'libreoffice-acp-assist',
-            writerName: 'LibreOffice',
-          });
-      await agent.start();
-
-      const id = randomUUID();
-      const session: Session = {
-        id,
-        bridge: options.bridgeFactory
-          ? createHealingBridge(options.bridgeFactory())
-          : createHealingBridge(await pickBridge()),
-        agent,
-        conversations: new Map(),
-        historyHandoff: new Map(),
-        knownDocuments: new Set(),
-        activeDoc: null,
-        cancelRequested: false,
-        attachments: [],
-      };
-      sessions.set(id, session);
-      await agent.createSession(id);
-
-      if (options.historyDir) {
-        for (const docPath of await listKnownDocuments(options.historyDir)) {
-          session.knownDocuments.add(docPath);
-        }
-      }
-
-      // First connect: the panel shows an outline-aware welcome message.
-      res.json(await sessionInfo(session, { outline: true }));
-    }),
-  );
-
-  /** Newest live bridge record, or throw a user-facing error. */
-  async function pickBridge(): Promise<BridgeClient> {
-    const bridges = await discoverBridges();
-    if (bridges.length === 0) {
-      throw new BridgeError(
-        'No LibreOffice bridge found. Start LibreOffice (with the ACP Assist ' +
-          'extension installed) and use menu ACP Assist > Start bridge.',
-      );
-    }
-    return new BridgeClient(bridges[0]!);
-  }
-
-  /**
-   * Audit B3: a session pinned its bridge record forever — restarting the
-   * bridge from the LO sidebar (new port + token) broke the session until
-   * a manual reconnect. This proxy wraps EVERY bridge call: on a
-   * BridgeError it re-discovers once (default pickBridge), swaps the
-   * target, and retries once. Non-bridge errors pass straight through,
-   * and the fake-bridge tests are unaffected (their errors are not
-   * BridgeErrors).
-   */
-  function createHealingBridge(initial: BridgeClient): BridgeClient {
-    let target = initial;
-    const recover = options.recoverBridge ?? pickBridge;
-    return new Proxy(initial, {
-      get(_t, prop) {
-        const value = Reflect.get(target, prop, target);
-        if (typeof value !== 'function') return value;
-        return async (...args: unknown[]) => {
-          try {
-            return await (value as (...a: unknown[]) => unknown).apply(target, args);
-          } catch (e) {
-            if (!(e instanceof BridgeError)) throw e;
-            target = await recover(target);
-            const fresh = Reflect.get(target, prop, target);
-            return (fresh as (...a: unknown[]) => unknown).apply(target, args);
-          }
-        };
-      },
-    }) as BridgeClient;
-  }
-
-  registerSessionRoutes(app, wrap, {
-    getSession,
-    sessions,
-    sessionInfo,
-  });
-
-  // --- attachments -----------------------------------------------------------
-
-  registerAttachmentRoutes(app, wrap, {
-    attachmentsDir: options.attachmentsDir,
-    getSession,
-    extractText: extractAttachmentText,
-  });
-
-  // --- documents ---------------------------------------------------------------
-
-  app.get(
-    '/api/session/:id/documents',
-    wrap(async (req, res) => {
-      const session = getSession(req.params['id']);
-      const active = await refreshActiveDocument(session);
-      res.json({
-        active,
-        documents: [...session.knownDocuments],
-      });
-    }),
-  );
-
-  /** Activate another open document inside LibreOffice (same bridge). */
-  app.post(
-    '/api/session/:id/documents/switch',
-    wrap(async (req, res) => {
-      const session = getSession(req.params['id']);
-      const target = req.body?.path as string | undefined;
-      if (!target) {
-        res.status(400).json({ error: 'path is required' });
-        return;
-      }
-      await session.bridge.activate(target);
-      // Wait until the switch actually landed (bounded poll instead of a
-      // fixed sleep); on timeout fall through and report what is active.
-      await pollUntil(
-        async () => {
-          const st = await session.bridge.status();
-          return st.active && (st.url === target || st.title === target);
-        },
-        { timeoutMs: TIMINGS.documentSwitchPollMs, intervalMs: TIMINGS.pollIntervalMs },
-      );
-      const active = await refreshActiveDocument(session);
-      res.json({ active, documents: [...session.knownDocuments] });
-    }),
-  );
-
-  // --- selection -------------------------------------------------------------
-
-  app.get(
-    '/api/session/:id/selection',
-    wrap(async (req, res) => {
-      const session = getSession(req.params['id']);
-      const sel = readSelection(await session.bridge.document());
-      const words = sel.text ? sel.text.trim().split(/\s+/).length : 0;
-      res.json({ ...sel, stats: [words] });
-    }),
-  );
-
-  // --- message (unified; the agent infers the action) --------------------------
-
-  /**
-   * Streaming message: one input for everything. The agent decides the
-   * intent and ends its reply with an action tag (see the Writer adapter).
-   * After a document action is applied, the app re-reads the document and
-   * prompts the agent again for the next edit (multi-action loop), up to
-   * MAX_ACTIONS_PER_MESSAGE edits.
-   *
-   * SSE frames: {"text": ...} chunks, {"tool": ...} agent tool activity,
-   * {"applied": action, "target": pN} per applied edit, {"appliedStep": n},
-   * {"stopped": reason}, {"done": true}. Errors: {"error": ...},
-   * {"cancelled": true}.
-   */
-  app.post('/api/session/:id/message/stream', async (req, res) => {
-    const maybeSession = sessions.get(param(req.params['id']));
-    if (!maybeSession) {
-      res.status(404).json({ error: 'Unknown session' });
-      return;
-    }
-    const session: Session = maybeSession;
-    const message = (req.body?.message as string | undefined)?.trim();
-    if (!message) {
-      res.status(400).json({ error: 'message is required' });
-      return;
-    }
-
-    let turnRecorded = false;
-    let lastAction: AgentAction = 'none';
-    let lastTarget: number | null = null;
-    let lastAddress: string | null = null;
-
-    try {
-      // ONE /document read serves the whole step: session bookkeeping
-      // (active/module/url — /document carries everything /status does),
-      // context building, and the selection.
-      const doc = await session.bridge.document();
-      await refreshFromDocument(session, doc);
-      const adapter = adapterFor(doc.module);
-      const contextText = adapter.buildContextBlock(doc, doc.url || null);
-      const selection = readSelection(doc);
-      const send = startSse(res);
-      session.cancelRequested = false;
-
-      const attachments = session.attachments;
-      session.attachments = [];
-
-      const historyPrefix = buildHistoryPrefix(session, conversationKey(session));
-      const initialPrompt = buildAutoPrompt(contextText, adapter, selection, message, attachments, historyPrefix);
-      if (historyPrefix) {
-        session.historyHandoff.delete(conversationKey(session));
-      }
-
-      const completed: string[] = [];
-      let step = 0;
-      let stoppedReason: 'done' | 'none' | 'cancelled' | 'error' | 'limit' = 'done';
-      // The step's document read + selection: fetched ONCE per step and
-      // reused for the continuation prompt AND the action application
-      // (previously re-read 3 more times via readSelection/applyAction).
-      let stepDoc = doc;
-      let stepSel = selection;
-
-      while (step < MAX_ACTIONS_PER_MESSAGE) {
-        step += 1;
-        if (session.cancelRequested) {
-          send({ cancelled: true });
-          stoppedReason = 'cancelled';
-          break;
-        }
-        let prompt: string;
-        if (step === 1) {
-          prompt = initialPrompt;
-        } else {
-          stepDoc = await session.bridge.document();
-          await refreshFromDocument(session, stepDoc);
-          stepSel = readSelection(stepDoc);
-          prompt = buildContinuationPrompt(
-            adapter.buildContextBlock(stepDoc, stepDoc.url || null),
-            adapter,
-            stepSel,
-            message,
-            completed,
-          );
-        }
-
-        // --- prompt once, parse the action, apply it ---------------------
-        const reply = await session.agent.prompt(session.id, [{ type: 'text', text: prompt }], {
-          onChunk: (chunk) => send({ text: chunk, ...(step > 1 ? { step } : {}) }),
-          onToolCall: (tool) => send({ tool }),
-          timeoutMs: TIMINGS.promptTimeoutMs,
-        });
-        const outcome = parseOutcome(adapter, reply);
-
-        if (step === 1) {
-          await recordTurn(session, message, reply);
-        } else {
-          await recordActionStep(session, reply, step);
-        }
-        turnRecorded = true;
-        lastAction = outcome.action;
-        lastTarget = outcome.target;
-        lastAddress = outcome.address;
-
-        const noteMeta = async (result: 'applied' | 'error' | 'cancelled', error?: string) => {
-          await recordTurnMeta(session, {
-            action: outcome.action,
-            target: outcome.target,
-            address: outcome.address,
-            module: adapter.id === 'generic' ? 'other' : adapter.id,
-            result,
-            ...(error ? { error } : {}),
-            ...(step > 1 ? { step } : {}),
-          });
-        };
-
-        if (session.cancelRequested) {
-          send({ cancelled: true, ...(step > 1 ? { step } : {}) });
-          await noteMeta('cancelled');
-          stoppedReason = 'cancelled';
-          break;
-        }
-        if (outcome.action === 'none' || outcome.action === 'continue') {
-          send({ action: 'none', ...(outcome.tagNote ? { tagNote: outcome.tagNote } : {}), ...(step > 1 ? { step } : {}) });
-          await noteMeta('applied');
-          stoppedReason = 'none';
-          break;
-        }
-
-        try {
-          const applied = await adapter.applyAction(session.bridge, stepDoc, stepSel, outcome);
-          send({
-            applied: outcome.action,
-            target: outcome.target,
-            address: outcome.address,
-            module: adapter.id === 'generic' ? 'other' : adapter.id,
-            ...(outcome.tagNote ? { tagNote: outcome.tagNote } : {}),
-            ...(step > 1 ? { step } : {}),
-          });
-          await noteMeta('applied');
-          completed.push(applied.description);
-          send({ appliedStep: step, action: outcome.action, target: outcome.target });
-        } catch (e) {
-          const message2 = e instanceof Error ? e.message : String(e);
-          send({ error: message2, ...(step > 1 ? { step } : {}) });
-          await noteMeta('error', message2);
-          stoppedReason = 'error';
-          break;
-        }
-      }
-
-      if (step >= MAX_ACTIONS_PER_MESSAGE && stoppedReason === 'done') {
-        stoppedReason = 'limit';
-        send({
-          text: `\nStopped after ${MAX_ACTIONS_PER_MESSAGE} document edits (safety limit). Send "continue" to apply more edits.`,
-        });
-      }
-      send({ stopped: stoppedReason, appliedCount: completed.length });
-      send({ done: true });
-      // History writes are debounced in the shared store; flush before the
-      // stream closes so a completed run is always on disk when the UI
-      // sees `done`.
-      await storeFor(session).flush().catch(() => undefined);
-      res.end();
-    } catch (err) {
-      const message2 = err instanceof Error ? err.message : String(err);
-      logError('[api] message/stream', err);
-      if (!res.headersSent) {
-        res.status(err instanceof BridgeError ? 503 : 500).json({ error: message2 });
-      } else {
-        sseFail(res, err);
-      }
-      if (turnRecorded) {
-        await recordTurnMeta(session, {
-          action: lastAction,
-          target: lastTarget,
-          address: lastAddress,
-          result: lastAction === 'none' ? 'applied' : 'error',
-          error: message2,
-        }).catch(() => undefined);
-        await storeFor(session).flush().catch(() => undefined);
-      }
-    }
-  });
-
-  // --- undo --------------------------------------------------------------------
-
-  app.post(
-    '/api/session/:id/undo',
-    wrap(async (req, res) => {
-      const session = getSession(req.params['id']);
-      const r = await session.bridge.undo();
-      res.json({ ok: r.undone, ...(r.undone ? {} : { reason: r.reason ?? 'nothing to undo' }) });
-    }),
-  );
-
-  // --- helpers -------------------------------------------------------------------
-
-  function param(id: string | string[] | undefined): string {
-    return Array.isArray(id) ? (id[0] ?? '') : (id ?? '');
-  }
-
-  function getSession(id: string | string[] | undefined): Session {
-    const session = sessions.get(param(id));
-    if (!session) throw new Error('Unknown session');
-    return session;
-  }
-
-  /** Re-read the active document from the bridge and track it. */
-  async function refreshActiveDocument(session: Session): Promise<string | null> {
-    const st = await session.bridge.status();
-    return refreshFromStatus(session, st.active, st.url ?? '', st.title ?? '', st.module ?? 'unknown');
-  }
-
-  /**
-   * Same bookkeeping as refreshActiveDocument, but from an already-fetched
-   * `/document` payload (it carries active/module/title/url too) — avoids
-   * the extra `/status` round-trip in the message loop.
-   */
-  async function refreshFromDocument(session: Session, doc: BridgeDocument): Promise<string | null> {
-    return refreshFromStatus(session, doc.active, doc.url ?? '', doc.title ?? '', doc.module ?? 'unknown');
-  }
-
-  async function refreshFromStatus(
-    session: Session,
-    active: boolean,
-    url: string,
-    title: string,
-    module: string,
-  ): Promise<string | null> {
-    if (!active) {
-      session.activeDoc = null;
-      await ensureConversation(session, UNSAVED_KEY);
-      return null;
-    }
-    session.activeDoc = { url, title, module };
-    const key = url || title || UNSAVED_KEY;
-    if (key !== UNSAVED_KEY) session.knownDocuments.add(key);
-    await ensureConversation(session, key);
-    return key;
-  }
-
-  function conversationKey(session: Session): string {
-    const doc = session.activeDoc;
-    if (!doc) return UNSAVED_KEY;
-    return doc.url || doc.title || UNSAVED_KEY;
-  }
-
-  const storeBySession = new WeakMap<Session, ConversationStore>();
-  function storeFor(session: Session): ConversationStore {
-    let store = storeBySession.get(session);
-    if (!store) {
-      store = createConversationStore({
-        historyDir: options.historyDir,
-        logError,
-        conversations: session.conversations,
-        historyHandoff: session.historyHandoff,
-        keyOf: () => conversationKey(session),
-        replayOptions: LO_REPLAY_OPTIONS,
-      });
-      storeBySession.set(session, store);
-    }
-    return store;
-  }
-
-  async function ensureConversation(session: Session, key: string): Promise<Turn[]> {
-    return storeFor(session).ensure(key);
-  }
-
-  function buildHistoryPrefix(session: Session, key: string): string {
-    return storeFor(session).buildHistoryPrefix(key);
-  }
-
-  async function recordTurn(session: Session, user: string, assistant: string) {
-    return storeFor(session).recordTurn(user, assistant);
-  }
-
-  async function recordActionStep(session: Session, assistant: string, _step: number) {
-    return storeFor(session).recordActionStep(assistant, _step);
-  }
-
-  /**
-   * Record the outcome of the action the assistant proposed in the LAST
-   * turn, so a failed or successful document action survives a restart.
-   */
-  async function recordTurnMeta(session: Session, meta: TurnMeta): Promise<void> {
-    return storeFor(session).recordTurnMeta(meta);
-  }
-
-  /**
-   * GET response body. By default the expensive full `/document` read is
-   * skipped: the panel's refresh chain calls this after every message and
-   * never displays the outline. `outline: true` (session creation,
-   * `?outline=1`) fetches it.
-   */
-  async function sessionInfo(session: Session, opts: { outline?: boolean } = {}) {
-    const docKey = await refreshActiveDocument(session);
-    let outline = '';
-    let layout: string | null = null;
-    let conversation: Turn[] = session.conversations.get(conversationKey(session)) ?? [];
-    if (opts.outline) {
-      try {
-        const doc = await session.bridge.document();
-        const adapter = adapterFor(doc.module);
-        outline = adapter.renderOutline?.(doc) ?? '';
-        layout = doc.cursorStyle ?? null;
-      } catch {
-        /* bridge may be between documents; report what we have */
-      }
-    }
-    return {
-      sessionId: session.id,
-      documentPath: docKey,
-      documents: [...session.knownDocuments],
-      layout,
-      outline,
-      conversation,
-    };
-  }
-
-  /**
-   * Extract the SelectionInfo from an already-fetched `/document` payload
-   * (pure — no extra bridge round-trip; the document was read once per
-   * step by the caller).
-   */
-  function readSelection(doc: BridgeDocument): SelectionInfo {
-    const texts = doc.selection ?? null;
-    const text = texts && texts.length > 0 && typeof texts[0] === 'string'
-      ? (texts as string[]).join('\n')
+/**
+ * Extract the SelectionInfo from an already-fetched `/document` payload
+ * (pure — no extra bridge round-trip; the document was read once per
+ * step by the caller).
+ */
+function readSelection(doc: BridgeDocument): SelectionInfo {
+  const texts = doc.selection ?? null;
+  const text = texts && texts.length > 0 && typeof texts[0] === 'string'
+    ? (texts as string[]).join('\n')
+    : null;
+  // Impress/Draw reuse the bridge's "selection" key with a different
+  // payload shape: selected frames as {slide, shape, kind, text}.
+  const slidesSelection =
+    doc.module === 'impress' || doc.module === 'draw'
+      ? ((doc.selection ?? null) as SelectionInfo['slidesSelection'])
       : null;
-    // Impress/Draw reuse the bridge's "selection" key with a different
-    // payload shape: selected frames as {slide, shape, kind, text}.
-    const slidesSelection =
-      doc.module === 'impress' || doc.module === 'draw'
-        ? ((doc.selection ?? null) as SelectionInfo['slidesSelection'])
-        : null;
-    return {
-      hasSelection: Boolean(doc.calc?.selection || slidesSelection?.length || (text && text.length > 0)),
-      text,
-      cursorStyle: doc.cursorStyle ?? null,
-      calc: doc.calc ?? null,
-      slidesSelection,
-    };
-  }
-
-  return app;
+  return {
+    hasSelection: Boolean(doc.calc?.selection || slidesSelection?.length || (text && text.length > 0)),
+    text,
+    cursorStyle: doc.cursorStyle ?? null,
+    calc: doc.calc ?? null,
+    slidesSelection,
+  };
 }
 
 // --- action parsing -----------------------------------------------------------
@@ -893,4 +662,3 @@ const extractAttachmentText = createAttachmentExtractor({
   ],
   envVar: 'LO_MARKITDOWN',
 });
-
