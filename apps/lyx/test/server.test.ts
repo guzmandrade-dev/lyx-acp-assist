@@ -1,4 +1,6 @@
 import { describe, it, expect, afterAll } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
 import http from 'node:http';
 import type { Server } from 'node:http';
 import type { Express } from 'express';
@@ -6,10 +8,34 @@ import { createServer, parseAction, normalizeForCompare, isLikelyMatch, verifyPa
 import type { RawClipboard } from '../src/clipboard/lyx-clipboard.js';
 import { PANEL_CONFIG } from '../src/panel-config.js';
 
-/** LyX panel config for the shared panel (Track C). */
+/**
+ * Root of the locally installed LyX (any 2.x version), or null when LyX
+ * is absent. Live tests skip on machines without it instead of pinning a
+ * specific version's install path.
+ */
+function findLyxInstall(): string | null {
+  const roots = [process.env.ProgramFiles, process.env['ProgramFiles(x86)']].filter(
+    (p): p is string => Boolean(p),
+  );
+  for (const root of roots) {
+    let versions: string[];
+    try {
+      versions = fs.readdirSync(root).filter((d) => /^LyX\s/i.test(d)).sort();
+    } catch {
+      continue; // unreadable root — try the next
+    }
+    const install = versions.at(-1);
+    if (install && fs.existsSync(path.join(root, install, 'Resources', 'layouts', 'article.layout'))) {
+      return path.join(root, install);
+    }
+  }
+  return null;
+}
+
+/** LyX panel config for the shared panel. */
 const TEST_PANEL_CONFIG = PANEL_CONFIG;
 
-/** Fixed API bearer token (audit B1) for these HTTP-level tests. */
+/** Fixed API bearer token for these HTTP-level tests. */
 const API_TOKEN = 'test-api-token';
 
 /** Stub raw clipboard: enough for routes that never touch LyX. */
@@ -57,7 +83,7 @@ afterAll(async () => {
 });
 
 describe('API surface', () => {
-  it('requires the API bearer token and a loopback Host (audit B1)', async () => {
+  it('requires the API bearer token and a loopback Host', async () => {
     await setup();
     // No token -> 401.
     const noAuth = await fetch(`${baseUrl}/api/status`);
@@ -210,10 +236,9 @@ describe('agent settings persistence', () => {
 
 describe('attachments', () => {
   it('resolves class layout vocabularies including Input chains', async () => {
-    // Uses the real LyX 2.5 install (skips where absent); custom user
-    // classes in %APPDATA%\LyX2.5\layouts take priority.
-    const { existsSync } = await import('node:fs');
-    if (!existsSync('C:\\Program Files\\LyX 2.5\\Resources\\layouts\\article.layout')) return;
+    // Uses the real installed LyX (skips where absent); custom user
+    // classes in %APPDATA%\LyX<version>\layouts take priority.
+    if (!findLyxInstall()) return;
     const article = await findClassLayouts('article');
     expect(article).toBeTruthy();
     expect(article).toContain('Standard');
@@ -260,8 +285,9 @@ describe('attachments', () => {
       os.homedir(), '.local', 'venvs', 'markitdown-mcp', 'Scripts', 'markitdown.exe',
     );
     // Windows-only live conversion; skips where LyX or markitdown is absent.
-    if (process.platform !== 'win32') return;
-    const fixture = 'C:\\Program Files\\LyX 2.5\\Resources\\doc\\clipart\\Abstract.pdf';
+    const lyx = findLyxInstall();
+    if (process.platform !== 'win32' || !lyx) return;
+    const fixture = path.join(lyx, 'Resources', 'doc', 'clipart', 'Abstract.pdf');
     if (!existsSync(venv) || !existsSync(fixture)) return;
     const text = await extractAttachmentText(fixture, 'Abstract.pdf');
     expect(text).toBeTruthy();
@@ -673,7 +699,7 @@ describe('verifyParagraphSelection', () => {
   });
 });
 
-describe('idle-session GC (audit B2)', () => {
+describe('idle-session GC', () => {
   it('tears down sessions idle past the window, freeing agent + pipe client', async () => {
     const stopped: string[] = [];
     const fakeAgent = {

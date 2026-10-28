@@ -1,9 +1,13 @@
 /**
- * Mock LyXServer for tests: a real named-pipe server speaking the LyXServer
+ * Mock LyXServer for tests: a real pipe server speaking the LyXServer
  * wire protocol (see src/lyxserver/client.ts and AGENTS.md), backed by a
  * small in-memory document model. Lets the full LFUN choreography (insert-
  * after, rewrite-at, ...) be regression-tested in vitest without a live
  * LyX instance.
+ *
+ * The transport mirrors LyX's pipe semantics per platform: Win32 named
+ * pipes (PowerShell helper) on Windows, FIFOs (Node helper) elsewhere —
+ * the same wire protocol on both, so the suite runs on every OS.
  *
  * Fidelity notes (live-verified LyX behaviors modeled here):
  * - Each reply is written to the .out connection, which is then ENDED
@@ -17,6 +21,8 @@
  *   it); mid-paragraph the text splits (cursor in the second half).
  */
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -62,14 +68,16 @@ export class MockLyxServer {
   private cursor: Cursor = { p: 0, offset: 0 };
   private selection: { p: number; start: number; end: number } | null = null;
   private readonly deaf: boolean;
-  /** PowerShell child process hosting the real named-pipe transport. */
+  /** Transport child: PowerShell named pipes (Win) or Node FIFOs (Unix). */
   private transport: ChildProcess | null = null;
   /** Writable fd of the transport's control pipe (reply channel). */
   private ctlFd: number | null = null;
 
   constructor(options: MockLyxOptions = {}) {
     instanceCounter++;
-    this.pipeBase = `\\\\.\\pipe\\lyxmock-${process.pid}-${instanceCounter}-${randomUUID().slice(0, 8)}`;
+    const unique = `lyxmock-${process.pid}-${instanceCounter}-${randomUUID().slice(0, 8)}`;
+    this.pipeBase =
+      process.platform === 'win32' ? `\\\\.\\pipe\\${unique}` : path.join(os.tmpdir(), unique);
     this.paragraphs = options.paragraphs ?? [{ layout: 'Standard', text: 'Hello mock' }];
     this.filename = options.filename ?? 'C:/mock/doc.lyx';
     this.deaf = options.deaf ?? false;
@@ -77,17 +85,28 @@ export class MockLyxServer {
   }
 
   /**
-   * Start the PowerShell pipe transport. NamedPipeServerStream gives the
-   * real Win32 pipe semantics the client (fs streams) needs: the .out pipe
-   * is OUTBOUND and .in is INBOUND, exactly like LyX; Node's net.Server
-   * creates duplex instances that fs clients half-close instantly.
+   * Start the pipe transport: Win32 named pipes (PowerShell) on Windows,
+   * FIFOs (Node) elsewhere. Both speak the same wire protocol and the
+   * same control channel, so the tests are identical on every OS.
    */
   async start(): Promise<void> {
     if (this.transport) return;
-    const script = fileURLToPath(new URL('./mock-lyx-transport.ps1', import.meta.url));
-    const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-PipeBase', this.pipeBase];
-    if (this.deaf) args.push('-Deaf');
-    const child = spawn('powershell', args, { windowsHide: true });
+    let child: ChildProcess;
+    if (process.platform === 'win32') {
+      // NamedPipeServerStream gives the real Win32 pipe semantics the
+      // client (fs streams) needs: the .out pipe is OUTBOUND and .in is
+      // INBOUND, exactly like LyX; Node's net.Server creates duplex
+      // instances that fs clients half-close instantly.
+      const script = fileURLToPath(new URL('./mock-lyx-transport.ps1', import.meta.url));
+      const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-PipeBase', this.pipeBase];
+      if (this.deaf) args.push('-Deaf');
+      child = spawn('powershell', args, { windowsHide: true });
+    } else {
+      const script = fileURLToPath(new URL('./mock-lyx-transport-fifo.mjs', import.meta.url));
+      const args = [script, '--base', this.pipeBase];
+      if (this.deaf) args.push('--deaf');
+      child = spawn(process.execPath, args, { windowsHide: true });
+    }
     this.transport = child;
 
     const ready = new Promise<void>((resolve, reject) => {
@@ -128,6 +147,18 @@ export class MockLyxServer {
       this.ctlFd = null;
     }
     child?.kill();
+    // Named pipes vanish with the transport process; FIFOs are files and
+    // need an explicit cleanup (the transport unlinks too, but it may be
+    // killed before it gets the chance).
+    if (process.platform !== 'win32') {
+      for (const suffix of ['.in', '.out', '.ctl']) {
+        try {
+          fs.rmSync(`${this.pipeBase}${suffix}`, { force: true });
+        } catch {
+          /* already gone */
+        }
+      }
+    }
   }
 
   private consumeStdout(child: ChildProcess, onLine: (line: string) => void): void {

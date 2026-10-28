@@ -1,13 +1,18 @@
 /**
  * Integration tests for LyxServerClient against the mock LyXServer: the
  * full LFUN choreography used by the app's paragraph-addressed actions,
- * exercised over real named pipes (with LyX's reply-then-disconnect quirk).
- * The mock transport is a PowerShell script speaking Win32 named pipes, so
- * the suite only runs on Windows (skipped on macOS/Linux CI).
+ * exercised over real pipes (with LyX's reply-then-disconnect quirk).
+ * The mock transport is PowerShell named pipes on Windows and Node FIFOs
+ * on Linux/macOS, so the suite runs everywhere.
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { LyxServerClient } from '../src/lyxserver/client.js';
 import { MockLyxServer } from './mock-lyx-server.js';
+
+// Integration suites drive dozens of real pipe round-trips (each ends the
+// connection and reconnects, like live LyX); under parallel test load the
+// default 5s can be too tight.
+vi.setConfig({ testTimeout: 20_000 });
 
 const activeMocks: Array<{ mock: MockLyxServer; client: LyxServerClient }> = [];
 
@@ -29,7 +34,7 @@ afterEach(async () => {
   }
 });
 
-describe.skipIf(process.platform !== 'win32')('LyxServerClient against mock LyX', () => {
+describe('LyXServerClient against mock LyX', () => {
   it('handshakes and round-trips filename and layout', async () => {
     const { client } = await startMock([{ layout: 'Standard', text: 'Hello mock' }]);
     expect(client.mode).toBe('pipe');
@@ -37,7 +42,7 @@ describe.skipIf(process.platform !== 'win32')('LyxServerClient against mock LyX'
     expect(await client.getLayout()).toBe('Standard');
   });
 
-  it('serializes overlapping same-func requests (B11)', async () => {
+  it('serializes overlapping same-func requests', async () => {
     // Replies match by client:func only; without per-func serialization
     // two overlapping same-func requests cross-resolve (one reply releases
     // both waiters' race, the other times out).

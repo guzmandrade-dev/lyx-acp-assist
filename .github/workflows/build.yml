@@ -16,11 +16,15 @@ env:
 
 jobs:
   test:
+    # Tests are cross-platform: the LyX pipe-mock uses named pipes on
+    # Windows and FIFOs on Linux/macOS, so both OSes exercise the real
+    # choreography suites (not skips).
     strategy:
       fail-fast: false
       matrix:
         app: [lyx, libreoffice]
-    runs-on: ubuntu-latest
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

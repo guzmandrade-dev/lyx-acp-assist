@@ -4,7 +4,7 @@
  * bytes (the upstream LyX bug signature), .in commands still dispatch.
  * The read paths must come from the injected fallbacks.
  *
- * Windows-only, like the mock transport (PowerShell named pipes).
+ * Runs on every OS (PowerShell named pipes on Windows, FIFOs elsewhere).
  */
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
@@ -12,6 +12,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { LyxServerClient, type LyxWriteOnlyFallbacks } from '../src/lyxserver/client.js';
 import { MockLyxServer } from './mock-lyx-server.js';
+
+// Integration suites drive dozens of real pipe round-trips (each ends the
+// connection and reconnects, like live LyX); under parallel test load the
+// default 5s can be too tight.
+vi.setConfig({ testTimeout: 20_000 });
 
 const active: Array<{ mock: MockLyxServer; client: LyxServerClient }> = [];
 
@@ -57,7 +62,7 @@ afterEach(async () => {
   }
 });
 
-describe.skipIf(process.platform !== 'win32')('write-only fallback mode', () => {
+describe('write-only fallback mode', () => {
   it('detects the deaf .out pipe and switches to write-only', async () => {
     const { client } = await startDeaf();
     expect(client.mode).toBe('write-only');
