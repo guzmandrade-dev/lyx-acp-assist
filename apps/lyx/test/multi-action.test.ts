@@ -310,7 +310,7 @@ afterEach(async () => {
 });
 
 describe('multi-action runs over the message stream', () => {
-  it('restores the user clipboard text after the run (B4)', async () => {
+  it('restores the user clipboard text after the run', async () => {
     const harness = await startHarness(['Just prose, no edit.\n[ACTION: none]']);
     cleanups.push(async () => {
       await new Promise<void>((resolve) => harness.server.close(() => resolve()));
@@ -329,7 +329,7 @@ describe('multi-action runs over the message stream', () => {
     expect((globalThis as { __clipText?: string }).__clipText).toBe('user copied this');
   });
 
-  it('restores the user clipboard text when the agent fails before the first turn (B4)', async () => {
+  it('restores the user clipboard text when the agent fails before the first turn', async () => {
     // Regression: readStep(1) saves the clipboard text BEFORE the first
     // agent prompt. A step-1 agent failure records no turn; the restore
     // must still run (it used to be gated on the recorded turn).

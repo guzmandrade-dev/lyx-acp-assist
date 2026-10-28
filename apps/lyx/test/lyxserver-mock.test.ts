@@ -45,11 +45,13 @@ describe('LyXServerClient against mock LyX', () => {
   it('serializes overlapping same-func requests', async () => {
     // Replies match by client:func only; without per-func serialization
     // two overlapping same-func requests cross-resolve (one reply releases
-    // both waiters' race, the other times out).
+    // both waiters' race, the other times out). Default 8s budget: each
+    // round-trip ends the .out connection, which can lag on a slow
+    // CI runner.
     const { client } = await startMock([{ layout: 'Standard', text: 'Hello mock' }]);
     const [a, b] = await Promise.all([
-      client.request('server-get-filename', '', 2000),
-      client.request('server-get-filename', '', 2000),
+      client.request('server-get-filename'),
+      client.request('server-get-filename'),
     ]);
     expect(a).toContain('INFO:');
     expect(b).toContain('INFO:');

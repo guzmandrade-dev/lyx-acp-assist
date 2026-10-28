@@ -46,7 +46,10 @@ async function startDeaf(options: { title?: string | null; candidates?: string[]
   await mock.start();
   const client = new LyxServerClient({
     pipeBase: mock.pipeBase,
-    deafProbeMs: 300,
+    // Generous probe window: the transport's accept loop can lag seconds
+    // behind a connection on a busy CI runner, and the deaf verdict
+    // resolves as soon as the zero-byte close actually lands.
+    deafProbeMs: 2_000,
     writeOnlyGraceMs: 50,
     fallbacks: fakeFallbacks(mock, options.title ?? null, options.candidates ?? []),
   });
