@@ -8,11 +8,11 @@
  * document reads go through the pipe + the saved `.lyx` file; all writes
  * go through the pipe (`paste` via the `application/x-lyx` clipboard).
  *
- * Phase B2 (audit Track D): the session lifecycle, shared routes, and the
+ * The session lifecycle, shared routes, and the
  * multi-action message loop live in core `createCompanionServer`; this
  * file is the app's `CompanionBackend` — the pipe + clipboard + verified
  * paste choreographies, the save-consent gate, and the LyX-only
- * markup-retry (VRP) step.
+ * markup-retry step.
  */
 
 import fsSync from 'node:fs';
@@ -27,25 +27,28 @@ import {
   renderOutline,
   assemblePasteDocument,
   extractBodyLayouts,
-  splitTopLevelLayouts,
-  normalizeMarkupBlock,
   findMarkupProblems,
   type DocumentContext,
 } from './lyx/context.js';
-import { CHAT_KNOWLEDGE } from './lyx/knowledge.js';
 import { discoverLyxEnvironment } from './lyxserver/pipe-config.js';
 import { TIMINGS } from './timings.js';
+import { parseAction, describeAction, type ActionOutcome } from './lyx/actions.js';
+import {
+  buildAutoPrompt,
+  buildContinuationPrompt,
+  buildMarkupRetryPrompt,
+  extractAttachmentText,
+  formatHistoryReplay,
+  LYX_REPLAY_OPTIONS,
+} from './lyx/prompts.js';
+import { verifyParagraphSelection, normalizeForCompare } from './lyx/verification.js';
+import { findClassLayouts } from './lyx/layouts.js';
 import {
   UNSAVED_KEY,
-  createParseActionTag,
-  createAttachmentExtractor,
   createCompanionServer,
   createWrap,
   isVersionControlled,
-  buildAttachmentBlock,
-  formatHistoryReplay as coreFormatHistoryReplay,
   listKnownDocuments as coreListKnownDocuments,
-  MAX_ACTIONS_PER_MESSAGE,
   pollUntil,
   type AppliedResult,
   type CompanionBackend,
@@ -68,6 +71,24 @@ export type {
   AgentRunner,
   Attachment,
 } from '@acp-assist/core';
+
+// Re-exported for the app's tests and dev tools; the implementations live
+// in their focused modules under src/lyx/.
+export {
+  parseAction,
+  describeAction,
+  type ActionOutcome,
+  buildAutoPrompt,
+  buildContinuationPrompt,
+  formatHistoryReplay,
+  extractAttachmentText,
+  normalizeForCompare,
+  isLikelyMatch,
+  verifyParagraphSelection,
+  type ParagraphSelectionInput,
+  type ParagraphVerification,
+  findClassLayouts,
+} from './lyx/index.js';
 
 
 /**
@@ -111,7 +132,7 @@ export interface LyxState {
    */
   saveConsent: Set<string>;
   /**
-   * Audit B4: restores the user's pre-run clipboard text at the end of a
+   * Restores the user's pre-run clipboard text at the end of a
    * message run; a no-op until readStep(1) saves the text (the choreography
    * clobbers the clipboard on every edit).
    */
@@ -132,7 +153,7 @@ interface LyxStepData {
 export interface ServerOptions {
   /**
    * The SHARED panel package's public dir (defaults to panelPublicDir()).
-   * Track C: one panel, config-injected.
+   * One panel for both apps, config-injected.
    */
   publicDir?: string;
   /**
@@ -140,7 +161,7 @@ export interface ServerOptions {
    * app's own logo.svg).
    */
   assetsDir?: string;
-  /** Panel config (Track C): injected into the served index.html. */
+  /** Panel config injected into the served index.html. */
   panelConfig: PanelConfig;
   clipboard: RawClipboard;
   /** Directory for persisted chat history (per document). Optional. */
@@ -155,12 +176,12 @@ export interface ServerOptions {
    */
   settingsDir?: string;
   /**
-   * API bearer token (audit B1). Generated at boot when absent; exposed as
+   * API bearer token. Generated at boot when absent; exposed as
    * `app.locals.apiToken` for the record writers / dev tools.
    */
   apiToken?: string;
   /**
-   * Idle-session GC (audit B2): sessions with no activity for this long
+   * Idle-session GC: sessions with no activity for this long
    * are torn down (agent process + pipe client included) — an F5 or
    * crash-reload of the panel otherwise orphans them forever. Default
    * 30 minutes; the sweep interval is idleMs/10.
@@ -787,7 +808,7 @@ function createLyxBackend(
         // buffers — buffer-write on an untitled buffer opens a Save As
         // dialog.
         if (session.state.documentPath) await saveDocument(session);
-        // Audit B4: the clipboard is both write channel and verification
+        // The clipboard is both write channel and verification
         // channel — every choreography clobbers the user's clipboard. Save
         // the pre-run TEXT flavor (non-text flavors cannot be preserved by
         // the adapter) and restore it when the run ends (see afterRun).
@@ -820,7 +841,7 @@ function createLyxBackend(
     },
 
     /**
-     * The LyX-only VRP step: validate the ```lyx markup and, when it has
+     * The LyX-only markup step: validate the ```lyx markup and, when it has
      * problems, prompt the agent once with a corrective retry. Returns
      * the reply to record and re-parse (the retried one when it ran).
      */
@@ -832,7 +853,7 @@ function createLyxBackend(
           return await session.agent.prompt(session.id, [{ type: 'text', text: retry }], {
             onChunk: (chunk) => send({ text: `\n${chunk}`, ...(step > 1 ? { step } : {}) }),
             onToolCall: (tool) => send({ tool }),
-            // Same budget as the main prompt (audit B8: this call had NO
+            // Same budget as the main prompt (this call originally had NO
             // timeoutMs, so a stuck retry could hang the stream).
             timeoutMs: TIMINGS.promptTimeoutMs,
           });
@@ -990,513 +1011,11 @@ function createLyxBackend(
     },
 
     async afterRun(session) {
-      // Audit B4: best-effort restore of the user's pre-run clipboard
+      // Best-effort restore of the user's pre-run clipboard
       // text; a no-op until readStep(1) saved something.
       await session.state.restoreClipboard();
     },
   };
-}
-
-// --- agent action parsing / prompt building -------------------------------
-
-type AgentAction =
-  | 'none'
-  | 'continue'
-  | 'insert'
-  | 'insert-top'
-  | 'insert-after'
-  | 'insert-before'
-  | 'rewrite'
-  | 'rewrite-at'
-  | 'delete-at'
-  | 'merge'
-  | 'move';
-
-interface ActionOutcome {
-  action: AgentAction;
-  body: string | null;
-  /** Paragraph address [pN] for rewrite-at / insert-after. */
-  target: number | null;
-  /** Destination address [pM] for move (0 = top of the document). */
-  target2: number | null;
-  /** Raw tag text when a near-miss tag (typo, missing colon) was
-   *  auto-corrected by the tolerant parser; null when the tag was
-   *  canonical or no tag matched. */
-  tagNote?: string | null;
-}
-
-/**
- * Extract the trailing [ACTION: ...] tag and the ```lyx block from a reply.
- * The header tolerates tag typos ("[AACTION:", doubled letters) and a
- * missing colon — tagNote reports the auto-correction. The regex itself
- * is assembled by the core factory (see parseTag below).
- */
-
-/**
- * Grammar: [ACTION: name pN (to )?pM] — the LyX vocabulary with two
- * paragraph targets (move). The B5 layered resolution and capture
- * extraction live in the core factory.
- */
-const parseTag = createParseActionTag({
-  actions: 'continue|merge|move|delete-at|rewrite-at|insert-before|insert-after|insert-top|rewrite|insert|none',
-  targetPattern: '(?:\\s+p(\\d+))?',
-  target2Pattern: '(?:\\s+(?:to\\s+)?p(\\d+))?',
-});
-
-export function parseAction(reply: string): ActionOutcome {
-  const tag = parseTag(reply);
-  const action = tag.action as AgentAction;
-  const target = tag.target !== null ? Number.parseInt(tag.target, 10) : null;
-  const target2 = tag.target2 !== null ? Number.parseInt(tag.target2, 10) : null;
-  // `continue` is accepted for forward-compatibility but is not a document
-  // edit: the server's multi-action loop drives continuations itself.
-  const body = action === 'none' || action === 'continue' ? null : extractBodyLayouts(reply);
-  const canonical =
-    `[ACTION: ${action}${target !== null ? ` p${target}` : ''}${target2 !== null ? ` p${target2}` : ''}]`;
-  // "move p3 to p5" is accepted grammar, not a typo: compare with the
-  // optional "to" stripped so it is not reported as an auto-correction.
-  const tagNote =
-    tag.rawTag !== null && tag.rawTag.replace(/\s+to\s+/i, ' ') !== canonical ? tag.rawTag : null;
-  return { action, body, target, target2, tagNote };
-}
-
-/** Describe one applied step compactly for the next continuation prompt. */
-export function describeAction(outcome: ActionOutcome): string {
-  const parts: string[] = [outcome.action];
-  if (outcome.target !== null) parts.push(`p${outcome.target}`);
-  if (outcome.target2 !== null) parts.push(`p${outcome.target2}`);
-  return `[ACTION: ${parts.join(' ')}]`;
-}
-
-/**
- * Continuation prompt after a successfully applied edit. The document was
- * just edited, so the fresh context below has the NEW paragraph numbering;
- * the agent must not reuse addresses from before the edit.
- */
-export function buildContinuationPrompt(
-  contextText: string,
-  selection: { hasSelection: boolean; lyxBody: string | null; text: string | null; layout: string | null },
-  originalMessage: string,
-  completed: string[],
-): string {
-  const parts = [
-    'You are continuing the SAME user request after one edit was applied ' +
-      'to the live LyX document. The document context below is FRESH: ' +
-      'paragraph addresses ([pN]) may have shifted because of the edit.',
-    '',
-    'Original user request:', originalMessage,
-    '',
-    'Edits already applied (do not repeat them):',
-    ...completed.map((entry) => `- ${entry}`),
-    '',
-    'If the request needs MORE edits, END your reply with exactly one ' +
-      'document action tag from the action list (rewrite-at, insert-after, ' +
-      'insert-before, insert-top, insert, rewrite, delete-at, merge, move) ' +
-      'on its own last line, and include the ```lyx block when the action ' +
-      'needs content.',
-    `If the request is now complete, or you need the user to answer a ` +
-      `question, reply in prose only and end with [ACTION: none].`,
-    `If you are not sure whether more edits remain, ask one short question ` +
-      `with [ACTION: none] instead of guessing.`,
-    `The app enforces a safety limit of ${MAX_ACTIONS_PER_MESSAGE} document ` +
-      `edits per user message; if that limit is reached it stops and tells ` +
-      `the user, who can ask you to continue in a follow-up message.`,
-    '',
-    CHAT_KNOWLEDGE,
-    '',
-    contextText,
-  ];
-  if (selection.hasSelection) {
-    parts.push(
-      '',
-      `Current LyX selection (cursor paragraph layout: ${selection.layout ?? 'unknown'}):`,
-      '```lyx',
-      selection.lyxBody ?? selection.text ?? '',
-      '```',
-    );
-  }
-  return parts.join('\n');
-}
-
-/**
- * Format the leading `unseen` turns of a conversation for replay into an
- * agent prompt: one compact line per turn (roles swapped to User/You),
- * action outcomes as short parenthetical notes, whitespace collapsed and
- * each turn truncated to HISTORY_REPLAY_CHAR_LIMIT. Pure and exported for
- * tests. `unseen` is the number of leading turns the agent has not seen
- * (restored from persisted history after an app restart); later turns
- * were produced live by this same agent process and are skipped.
- */
-/** Replay rendering shared by the history wrapper and the conversation store. */
-const LYX_REPLAY_OPTIONS = {
-  blockPattern: /```lyx[\s\S]*?```/g,
-  describeTarget: (m: TurnMeta) =>
-    `${m.target ? ` p${m.target}` : ''}${m.target2 ? ` p${m.target2}` : ''}`,
-};
-
-export function formatHistoryReplay(turns: Turn[], unseen: number): string {
-  return coreFormatHistoryReplay(turns, unseen, LYX_REPLAY_OPTIONS);
-}
-
-export function buildAutoPrompt(
-  contextText: string,
-  selection: {
-    hasSelection: boolean;
-    lyxBody: string | null;
-    text: string | null;
-    layout: string | null;
-  },
-  message: string,
-  attachments: Attachment[] = [],
-  historyPrefix = '',
-): string {
-  const parts: string[] = [
-    'You are assisting an author writing a document in LyX. Your reply is shown ' +
-      'in a chat panel, and you can also write content directly into the live ' +
-      'LyX document.',
-    '',
-    'Decide yourself what the user wants, and END your reply with exactly one ' +
-      'of these action tags on its own last line:',
-    '- [ACTION: none] to reply in prose only (questions, explanations, ' +
-      'discussion, outlines, planning).',
-    '- [ACTION: insert] to insert NEW content at the CURSOR (its current ' +
-      'position, which you do not control): include a ```lyx fenced block. ' +
-      'CAREFUL: the paste happens INSIDE the cursor\'s paragraph, so the ' +
-      'first pasted paragraph merges into it and takes that paragraph\'s ' +
-      'layout — only use this when the user clearly wants the content at ' +
-      'the cursor.',
-    '- [ACTION: insert-top] to insert NEW content at the VERY BEGINNING of ' +
-      'the document (titles, abstracts, anything that belongs above the ' +
-      'first paragraph): include a ```lyx fenced block.',
-    '- [ACTION: insert-after pN] to insert NEW content as its own ' +
-      'paragraph(s) right AFTER paragraph [pN] from the outline (use this ' +
-      'when the user asks to add a section/paragraph to the document and ' +
-      'the position follows from the outline): include a ```lyx fenced block.',
-    '- [ACTION: insert-before pN] to insert NEW content as its own ' +
-      'paragraph(s) right BEFORE paragraph [pN] from the outline (e.g. an ' +
-      'intro paragraph in front of [pN], or a heading above [pN]; use ' +
-      'insert-top for the very beginning of the document): include a ```lyx ' +
-      'fenced block.',
-    '- [ACTION: rewrite] to REPLACE the currently selected text (given ' +
-      'below): include a ```lyx fenced block with the complete replacement.',
-    '- [ACTION: delete-at pN] to DELETE the entire paragraph [pN] from the ' +
-      'outline (use when the user asks to remove a specific paragraph): ' +
-      'NO fenced block, just the tag.',
-    '- [ACTION: merge pN pM] to merge two ADJACENT paragraphs [pN] and ' +
-      '[pM] into ONE paragraph (M must be N+1; the merged paragraph keeps ' +
-      '[pN]\'s layout): NO fenced block, just the tag. To SPLIT one ' +
-      'paragraph instead, use [ACTION: rewrite-at pN] with two (or more) ' +
-      '```lyx paragraphs in the fenced block — the paragraph is replaced ' +
-      'by them, splitting it at the point you choose.',
-    '- [ACTION: move pN pM] to MOVE the entire paragraph [pN] so it ends ' +
-      'up right AFTER paragraph [pM] (p0 = the very top of the document; ' +
-      'use when the user asks to reorder or move a paragraph): NO fenced ' +
-      'block, just the tag. N and M are original outline numbers; the app ' +
-      'adjusts for the removal. Moving pN after p(N-1) changes nothing, ' +
-      'so never emit that.',
-    '- [ACTION: rewrite-at pN] to REPLACE the entire paragraph [pN] from ' +
-      'the outline (use this when the user asks to modify, fix or remove ' +
-      'content in a specific paragraph and nothing is selected): include a ' +
-      '```lyx fenced block with the complete replacement paragraph(s).', +
-      ' When one request needs SEVERAL edits, apply the FIRST edit now and ' +
-      'let the app ask you again with fresh paragraph numbers for the next ' +
-      'one — do not try to plan later edits against the current outline.',
-    '',
-    'Rules for document actions:',
-    '- The ```lyx block must contain just the \\begin_layout ... \\end_layout ' +
-      'paragraphs (no document header).',
-    '- Follow the .lyx cheat-sheet below (token-format emphasis, Formula ' +
-      'insets, ...).',
-    '- Match the document\'s own conventions: prefer layouts that appear in ' +
-      'the outline or in the class layout list of the document context, ' +
-      'never invent layout names.',
-    '- For a document title or similar front matter use the Title layout ' +
-      'and [ACTION: insert-top], NOT insert (insert would land wherever ' +
-      'the cursor happens to be).',
-    '- For rewrite: output the complete replacement, preserving references, ' +
-      'labels and citations unless asked otherwise.',
-    '- If nothing is selected you cannot rewrite; choose insert, ' +
-      'insert-top, or none.',
-    '- The action tag must be the very last line of your reply.',
-    '',
-    CHAT_KNOWLEDGE,
-    '',
-    contextText,
-  ];
-  if (selection.hasSelection) {
-    parts.push(
-      '',
-      `Current LyX selection (cursor paragraph layout: ${selection.layout ?? 'unknown'}). ` +
-        'The user may ask you to rewrite it:',
-      '```lyx',
-      selection.lyxBody ?? selection.text ?? '',
-      '```',
-    );
-  }
-  if (historyPrefix) parts.push(historyPrefix);
-  parts.push('', 'User message:', message);
-  parts.push(...buildAttachmentBlock(attachments));
-  return parts.join('\n');
-}
-
-/**
- * Best-effort text/markdown extraction for an uploaded attachment:
- * text formats are read directly; binary formats (PDF, DOCX, XLSX, ...)
- * go through the markitdown CLI when it is installed (see
- * @acp-assist/core for the converter chain).
- */
-export const extractAttachmentText = createAttachmentExtractor({
-  extensions: [
-    'txt', 'md', 'markdown', 'tex', 'lyx', 'csv', 'tsv', 'json', 'xml',
-    'bib', 'sty', 'cls', 'log', 'htm', 'html', 'yaml', 'yml', 'py', 'js', 'ts',
-  ],
-  envVar: 'LYX_MARKITDOWN',
-});
-
-/** Corrective retry prompt when the ```lyx block has markup problems. */
-function buildMarkupRetryPrompt(action: AgentAction, problems: string[]): string {
-  return (
-    `Your [ACTION: ${action}] content had problems and must be re-written in ` +
-    'valid LyX internal format (.lyx):\n' +
-    problems.map((p) => `- ${p}`).join('\n') +
-    '\n\nReference example of valid .lyx body markup with emphasis:\n' +
-    '```lyx\n\\begin_layout Standard\n\\emph on\nFuture work\n\\emph default\n' +
-    ' will explore larger datasets.\n\\end_layout\n```\n' +
-    'Math uses \\begin_inset Formula $x^2$\\end_inset. ' +
-    'Do NOT use LaTeX inline commands like \\emph{...}.\n' +
-    'Reply again with ONLY the corrected ```lyx fenced block ' +
-    '(just \\begin_layout...\\end_layout paragraphs, no header), followed by ' +
-    `the same action tag [ACTION: ${action}] on its own last line.`
-  );
-}
-
-/**
- * Normalize text for the paragraph-targeting comparison. Only letters and
- * digits survive (case-insensitive): the .lyx file stores straight quotes
- * and ASCII dashes, while LyX's clipboard text export uses typographic
- * ones, so any punctuation- or whitespace-sensitive comparison would
- * spuriously fail on the same paragraph.
- */
-export function normalizeForCompare(s: string): string {
-  return s.toLowerCase().replace(/[^a-z0-9]/g, '');
-}
-
-/**
- * Fuzzy paragraph-targeting match. LyX's UnicodeText export differs from
- * the file's text in ways we cannot normalize away: layout environment
- * labels are prepended ("Abstract", "Summary"), and math insets render
- * inline ($P$ -> "P") while the parser preview has no inset content. So
- * instead of a strict prefix compare, we slide overlapping windows over
- * the expected text and require most of them to appear in the actual
- * text. A genuinely different paragraph (disjoint text) still fails.
- */
-export function isLikelyMatch(expected: string, actual: string): boolean {
-  if (expected === '') return actual === '';
-  const e = expected.slice(0, 160);
-  const a = actual.slice(0, 400);
-  const WIN = 16;
-  const STRIDE = 12;
-  let total = 0;
-  let hits = 0;
-  for (let i = 0; i + WIN <= e.length; i += STRIDE) {
-    total++;
-    if (a.includes(e.slice(i, i + WIN))) hits++;
-  }
-  if (total === 0) return a.startsWith(e);
-  return hits / total >= 0.6;
-}
-
-/**
- * Structure-vs-structure paragraph verification (2026-10-10 refactor).
- *
- * The old check compared our parsed preview against LyX's RENDERED
- * UnicodeText clipboard export — two representations that can never fully
- * agree (math renders differently, typographic quotes, layout-label
- * prefixes, invisible inset properties), so formula-heavy paragraphs
- * failed targeting on the RIGHT paragraph. Now `copy` puts the raw
- * `application/x-lyx` payload of the selection on the clipboard, and we
- * compare markup against markup:
- *
- * 1. 'markup' — exact (whitespace-insensitive) comparison of the
- *    payload's first top-level layout block against the saved file's
- *    block at `index`. Lossless: formulas, notes, refs compare exactly.
- * 2. 'preview' — if LyX re-serialized the copy cosmetically, parse the
- *    payload with OUR parser and fuzzy-match its preview against the
- *    outline preview (both sides from the same parser — the rendered-
- *    text quirks are gone from the comparison).
- * 3. 'text' — legacy last resort when the clipboard holds no x-lyx
- *    payload: the old UnicodeText fuzzy match.
- */
-export interface ParagraphSelectionInput {
-  /** Raw .lyx clipboard payload of the copied selection, or null. */
-  payload: string | null;
-  /** UnicodeText clipboard flavor, used only when payload is null. */
-  clipboardText: string | null;
-  /** The SAVED .lyx file content (the walk addresses against the file). */
-  diskRaw: string;
-  /** 0-based index of the target paragraph. */
-  index: number;
-  /** Outline preview of the target paragraph (expected text). */
-  expectedPreview: string;
-}
-
-export interface ParagraphVerification {
-  ok: boolean;
-  /** How the match succeeded: 'markup' | 'preview' | 'text' | 'none'. */
-  via: 'markup' | 'preview' | 'text' | 'none';
-  /** Normalized text of what was actually found (for the error message). */
-  actual: string;
-}
-
-export function verifyParagraphSelection(
-  input: ParagraphSelectionInput,
-): ParagraphVerification {
-  const expected = normalizeForCompare(input.expectedPreview);
-
-  if (input.payload) {
-    const diskBlocks = splitTopLevelLayouts(extractBodyLayouts(input.diskRaw) ?? '');
-    const payloadBlocks = splitTopLevelLayouts(extractBodyLayouts(input.payload) ?? '');
-    const diskBlock = diskBlocks[input.index] ?? null;
-    const payloadBlock = payloadBlocks[0] ?? null;
-    if (diskBlock && payloadBlock) {
-      if (normalizeMarkupBlock(payloadBlock) === normalizeMarkupBlock(diskBlock)) {
-        return { ok: true, via: 'markup', actual: expected };
-      }
-    }
-    // Same-parser fuzzy fallback: tolerates cosmetic re-serialization by
-    // LyX, still rejects a genuinely different paragraph.
-    let payloadPreview = '';
-    try {
-      const payloadCtx = buildDocumentContext(input.payload);
-      payloadPreview = payloadCtx.outline[0]?.preview ?? '';
-    } catch {
-      payloadPreview = '';
-    }
-    const actual = normalizeForCompare(payloadPreview);
-    if (payloadPreview && isLikelyMatch(expected, actual)) {
-      return { ok: true, via: 'preview', actual };
-    }
-    return {
-      ok: false,
-      via: 'none',
-      actual: actual || normalizeForCompare(input.payload),
-    };
-  }
-
-  const actual = normalizeForCompare(input.clipboardText ?? '');
-  if (isLikelyMatch(expected, actual)) {
-    return { ok: true, via: 'text', actual };
-  }
-  return { ok: false, via: 'none', actual };
-}
-
-/**
- * Layout names defined by a LyX textclass, parsed from its .layout file.
- * Search order: the user's LyX layouts dir (custom/journal classes), then
- * the installation's Resources (article, beamer, ...), then common Linux
- * paths. Returns null when the class file cannot be found.
- *
- * Results are memoized per class: layout files never change mid-session,
- * and the read chain (up to 4-deep Input includes) ran on every prompt
- * build and every continuation step.
- */
-const classLayoutsCache = new Map<string, string[] | null>();
-
-/**
- * Candidate layout directories, version-agnostic (audit B10 — the list
- * used to pin `LyX 2.5`): the user's own layouts dir (via the same
- * version-globbing discovery as the pipe config), then every installed
- * `LyX*` under Program Files (newest version first), then Linux paths.
- * LYX_LAYOUTS_DIR always wins.
- */
-function layoutDirCandidates(): string[] {
-  const candidates: string[] = [];
-  if (process.env.LYX_LAYOUTS_DIR) candidates.push(process.env.LYX_LAYOUTS_DIR);
-  if (process.platform === 'win32') {
-    const env = discoverLyxEnvironment();
-    if (env.userDir) candidates.push(path.join(env.userDir, 'layouts'));
-    const programDirs = [process.env.ProgramFiles ?? 'C:\\Program Files', process.env['ProgramFiles(x86)'] ?? 'C:\\Program Files (x86)'];
-    for (const root of programDirs) {
-      try {
-        const installs = fsSync
-          .readdirSync(root)
-          .filter((name) => /^LyX \d+(\.\d+)*$/i.test(name))
-          .sort((a, b) => compareLyxDirsDesc(a, b));
-        for (const install of installs) {
-          candidates.push(path.join(root, install, 'Resources', 'layouts'));
-        }
-      } catch {
-        /* that Program Files root does not exist */
-      }
-    }
-  } else {
-    candidates.push(path.join(os.homedir(), '.lyx', 'layouts'));
-  }
-  candidates.push('/usr/share/lyx/layouts', '/usr/local/share/lyx/layouts');
-  return [...new Set(candidates)];
-}
-
-/** Sort helper: "LyX 2.5" > "LyX 2.4.1" > "LyX 2.4". */
-function compareLyxDirsDesc(a: string, b: string): number {
-  const ver = (s: string) => (s.match(/\d+(?:\.\d+)*/g)?.[0] ?? '').split('.').map(Number);
-  const va = ver(a);
-  const vb = ver(b);
-  for (let i = 0; i < Math.max(va.length, vb.length); i++) {
-    const d = (vb[i] ?? 0) - (va[i] ?? 0);
-    if (d !== 0) return d;
-  }
-  return 0;
-}
-
-export async function findClassLayouts(textclass: string): Promise<string[] | null> {
-  const safeClass = textclass.replace(/[^\w.-]+/g, '');
-  if (!safeClass) return null;
-  if (classLayoutsCache.has(safeClass)) return classLayoutsCache.get(safeClass) ?? null;
-  for (const dir of layoutDirCandidates()) {
-    const names = await collectStyles(path.join(dir, `${safeClass}.layout`), dir, 0);
-    if (names) {
-      classLayoutsCache.set(safeClass, names);
-      return names;
-    }
-  }
-  classLayoutsCache.set(safeClass, null);
-  return null;
-}
-
-/**
- * Parse Style names out of a .layout/.inc file, following `Input <file>`
- * includes (e.g. article.layout Inputs stdsections.inc for Section etc.).
- * Returns null if the file itself cannot be read.
- */
-async function collectStyles(file: string, dir: string, depth: number): Promise<string[] | null> {
-  let raw: string;
-  try {
-    raw = await fs.readFile(file, 'utf8');
-  } catch {
-    return null;
-  }
-  const names = new Set<string>();
-  const includes: string[] = [];
-  for (const m of raw.matchAll(/^(Input|Include)\s+(\S+)[^\r\n]*$/gm)) {
-    if (m[2]) includes.push(m[2]);
-  }
-  for (const m of raw.matchAll(/^Style\s+(\S[^\r\n]*?)\s*$/gm)) {
-    if (m[1]) names.add(m[1].trim());
-  }
-  if (depth < 4) {
-    for (const inc of includes) {
-      // Input targets usually already carry the extension (stdclass.inc);
-      // some don't. Try as-is, then with the common extensions.
-      for (const candidate of [inc, `${inc}.inc`, `${inc}.layout`]) {
-        const sub = await collectStyles(path.join(dir, candidate), dir, depth + 1);
-        if (sub) {
-          for (const n of sub) names.add(n);
-          break;
-        }
-      }
-    }
-  }
-  return [...names];
 }
 
 // --- history persistence ---------------------------------------------------
@@ -1523,7 +1042,7 @@ export async function listKnownDocuments(historyDir: string): Promise<string[]> 
 
 /** Minimal header used when the document has never been saved. */
 // Paste-document header when the real document header is unavailable
-// (unsaved buffer; audit B10 reviewed the pinning: LyX UPGRADES older
+// (unsaved buffer; LyX UPGRADES older
 // \lyxformat documents on read, so a slightly older pinned format is
 // safe across future LyX versions — no discovery needed).
 const FALLBACK_HEADER = [
