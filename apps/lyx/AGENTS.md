@@ -469,14 +469,17 @@ templates without any per-class work.
 
 ## Fake-LyX test harness (2026-10-04)
 
-`test/mock-lyx-server.ts` (`MockLyxServer`) + `test/mock-lyx-transport.ps1`
-regression-test the full LFUN choreography in vitest WITHOUT a live LyX:
-an in-memory document model (paragraphs, cursor, selection, clipboard)
-behind REAL Win32 named pipes speaking the wire protocol.
-`test/lyxserver-mock.test.ts` covers handshake, selection stats, disabled
-no-ops, and the insert-after / rewrite / insert-top sequences. Use this
-harness when adding new action verbs — never debug choreography only
-against live LyX.
+`test/mock-lyx-server.ts` (`MockLyxServer`) regression-tests the full LFUN
+choreography in vitest WITHOUT a live LyX: an in-memory document model
+(paragraphs, cursor, selection, clipboard) behind REAL pipes speaking the
+wire protocol. The transport is per-platform: `test/mock-lyx-transport.ps1`
+(Win32 named pipes) on Windows, `test/mock-lyx-transport-fifo.mjs` (FIFOs)
+on Linux/macOS; both expose the same stdout protocol and `<base>.ctl`
+control channel, so `test/lyxserver-mock.test.ts` (handshake, selection
+stats, disabled no-ops, insert-after / rewrite / insert-top sequences) and
+`test/lyxserver-write-only.test.ts` (deaf-pipe fallback) run on every OS.
+Use this harness when adding new action verbs — never debug choreography
+only against live LyX.
 
 Windows named-pipe findings (all live-verified while building this;
 each cost a debugging round):
@@ -1004,7 +1007,7 @@ probes (real PowerShell + real Windows clipboard) rather than LyX.
   full document read unless `?outline=1`; the session-creation response
   includes it. The core session route passes the flag; the panel's
   refresh chain uses the light GET.
-- **Panel streaming render (`public/app.js`)**: SSE text chunks coalesce
+- **Panel streaming render (`public/conversation.js`)**: SSE text chunks coalesce
   into one full fence-aware render at most every 100ms
   (`LIVE_RENDER_MS`); `appliedStep`/done/error/abort render immediately
   and cancel the pending timer; the abort path renders once more so a
@@ -1074,7 +1077,11 @@ any executable). Shared implementation in `@acp-assist/core` `auth.ts`:
 ## Shared panel package (audit Track C, 2026-10-26)
 
 The two ~85%-identical panels are now ONE panel in `@acp-assist/panel`
-(`packages/panel`): shared `public/app.js`/`style.css`/`index.html`,
+(`packages/panel`): shared `public/` assets — `app.js` (entry point) plus
+ES modules (`state`, `api`, `markdown`, `messages`, `typing`, `status`,
+`save-consent`, `install`, `documents`, `events`, `conversation`,
+`attachments`) loaded via `<script type="module">` — and
+`style.css`/`index.html`,
 config-driven via a `PanelConfig` injected at boot (`src/panel-config.ts`
 per app). LyX's config: fenceRe 'lyx', statusKey 'lyxPipeAvailable',
 cursorTerm 'layout', hasSaveConsent true, hasInstallFlow false,

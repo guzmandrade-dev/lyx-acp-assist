@@ -340,10 +340,10 @@ companion outside.**
     (rule 35).
   - `bridge_ctl.py` — start/stop the bridge over the UNO
     socket (test helper).
-  - `cursor_probe*.py` — the empirical UNO cursor-semantics
-    probes that produced rules 10–14 above (kept for reference; not part of
-    the pass/fail suites). `cursor_probe12*.py` (12, 12b–12l) did the same
-    for Impress/Draw and the sidebar deck and produced rules 22–44.
+  - The empirical UNO cursor-semantics probes (`cursor_probe*.py`,
+    including the 12-series for Impress/Draw) were removed 2026-10-28:
+    they were one-off repro scripts, not part of the pass/fail suites;
+    their findings live on as rules 10–14 and 22–44 above.
 - Re-run cycle: `npm run package:oxt`, `unopkg remove` + `add` with the
   scratch profile env, relaunch soffice with `--accept`, dispatch
   `service:org.libreofficeacp.bridge?start`, run the suites.
@@ -808,7 +808,11 @@ token from companion.json).
 ## Shared panel package (audit Track C, 2026-10-26)
 
 The panel is now SHARED across both apps: `@acp-assist/panel`
-(`packages/panel`) holds `public/app.js`/`style.css`/`index.html`,
+(`packages/panel`) holds the shared `public/` assets — `app.js` (entry
+point) plus ES modules (`state`, `api`, `markdown`, `messages`, `typing`,
+`status`, `save-consent`, `install`, `documents`, `events`,
+`conversation`, `attachments`) loaded via
+`<script type="module">` — and `style.css`/`index.html`,
 driven by this app's `src/panel-config.ts` (fenceRe
 '(?:writer|calc|impress)', statusKey 'bridgeAvailable', cursorTerm
 'style', hasInstallFlow true, hasSaveConsent false,

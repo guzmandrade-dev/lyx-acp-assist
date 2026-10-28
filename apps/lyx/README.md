@@ -62,39 +62,31 @@ https://github.com/user-attachments/assets/ce301d65-6185-4de0-8086-4a246bd8fc85
   LyXServer pipe). No manual configuration is normally needed: the app reads
   the pipe path from LyX's own preferences file
   (`%APPDATA%\LyX<version>\preferences` on Windows, `~/.lyx/preferences` on
-  Linux/macOS) and falls back to LyX's default pipe (\\.\pipe\lyxpipe on
-  Windows, `~/.lyxpipe` elsewhere), so whatever pipe name you configure in
-  LyX just works. The `LYX_PIPE` environment variable remains an escape
-  hatch for non-default setups.
+  Linux/macOS) and falls back to LyX's default pipe, so whatever pipe name
+  you configure in LyX just works. The `LYX_PIPE` environment variable
+  remains an escape hatch for non-default setups.
 
-  Only if you set the pipe by hand in the `preferences` file, use the
-  portable forward-slash form on Windows:
+  One caveat, if you ever set the pipe by hand in the `preferences` file:
+  use the forward-slash form on Windows —
 
   ```
   \serverpipe "//./pipe/lyxpipe"
   ```
 
-  The GUI dialog *displays* the OS-level name (\\.\pipe\lyxpipe), but LyX
-  stores and expects the forward-slash form in the `preferences` file — it
-  normalizes between the two on save. Don't be confused by the difference;
-  what matters is the forward-slash form: backslashes cannot round-trip
-  LyX's config lexer (typing \\\.\pipe\lyxpipe by hand in the file
-  silently breaks the pipe — LyX eats the backslashes as escapes). On
-  Linux/macOS use the path form LyX expects for your install
-  (e.g. `~/.lyxpipe`).
+  Backslashes cannot round-trip LyX's config lexer (LyX eats them as
+  escapes, so the pipe silently breaks). The GUI stores the correct form
+  by itself; this only matters for hand edits.
 
   If the LyXServer `.out` pipe is broken server-side (a LyX named-pipe bug
-  triggered by the Windows updates of 2026-10-17; see AGENTS.md), the app
-  detects it at startup and falls back to a degraded write-only mode:
-  commands still apply, while document/selection reads come from the window
-  title, the session file, and the clipboard.
+  triggered by the Windows updates of 2026-10-17; see AGENTS.md for the
+  full debugging trail), the app detects it at startup and falls back to
+  a degraded write-only mode: commands still apply, while document and
+  selection reads come from the window title, the session file, and the
+  clipboard.
 - **Node.js 22+**
-- **An ACP agent CLI** — any of:
-  - `vibe-acp` (no arguments)
-  - `copilot --acp`
-  - `goose acp`
-
-  Configurable at runtime in the app's "Agent settings" panel.
+- **An ACP agent CLI** — any of `vibe-acp`, `copilot --acp`, or
+  `goose acp`. Configurable at runtime in the app's "Agent settings"
+  panel.
 - **Native clipboard access** for the `application/x-lyx` custom format, via:
   - **Windows:** .NET WinForms (PowerShell helper; works out of the box)
   - **Linux:** `wl-copy`/`wl-paste` on Wayland, or `xclip` on X11
@@ -134,9 +126,11 @@ npm run package  # installers for Windows (nsis/portable/zip), macOS (dmg/zip),
                  # Linux (AppImage/deb/tar.gz) via electron-builder
 ```
 
-Build output goes to `dist-release/`, gitignored. GitHub Actions builds and
-uploads artifacts for all three OSes on every push, and publishes a draft
-release when a `v*` tag is pushed.
+Build output goes to `dist-release/`, gitignored. Tests run on any OS —
+the mock LyXServer transport uses named pipes on Windows and FIFOs
+elsewhere, and GitHub Actions runs the test suite on both Ubuntu and
+Windows. CI builds and uploads artifacts for all three OSes on every push,
+and publishes a draft release when a `v*` tag is pushed.
 
 The packaged app writes its data (chat history, attachments, logs) to the
 Electron user-data directory — `%APPDATA%\LyX ACP Assist` on Windows,

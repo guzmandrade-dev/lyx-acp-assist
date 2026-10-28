@@ -4,42 +4,11 @@ A Copilot-for-Office-style AI assistant for [LibreOffice](https://www.libreoffic
 — a floating companion panel that reads your document, chats, and writes
 **directly into the live LibreOffice document** across **Writer, Calc, and
 Impress**. All reasoning is delegated to an external agent over the
-[Agent Client Protocol](https://agentclientprotocol.com/) (ACP); there is no
-LLM and no API key inside this app.
+[Agent Client Protocol](https://agentclientprotocol.com/) (ACP); there is
+no LLM and no API key inside this app.
 
-This project mirrors the proven architecture of its sibling project
-**LyX ACP Assist** (`lyx-acp-assist`): the document stays the single writer of
-truth, all edits go through the application's own machinery, and the agent
-expresses intent through a small vocabulary of action tags that the app
-executes mechanically.
-
-> **Status: Phases 1–3 complete and live-tested** — the in-process bridge,
-> undo transactions, tracked changes, formatted inserts, live selection
-> events, Calc cell reads/writes, and the Impress/Draw slide actions all
-> pass their validation suites on LibreOffice 26.8.1.1 / Windows, and each
-> module's multi-action flow was verified live with an ACP agent
-> (vibe-acp). Developer-facing notes, decisions, and
-> verified technical facts live in [AGENTS.md](AGENTS.md).
-
-## Why this is *easier* than the LyX version
-
-LyX has no scripting API, so LyX ACP Assist reaches it through two awkward
-hacks: the LyXServer named pipe (LFUN dispatch strings) and a custom
-`application/x-lyx` clipboard format so that LyX itself performs every paste.
-
-LibreOffice is the opposite case: it has **UNO**, a mature, cross-module
-programmatic API. We read the document model (text, structure, selections,
-sheets, slides) directly and insert/replace content without touching the
-clipboard. UNO also gives us things LyX could never offer:
-
-- a real **undo manager** per document — every agent edit is one labeled,
-  one-click-undoable transaction;
-- **tracked changes** — every agent edit can land as a *pending change* the
-  user accepts or rejects, exactly like a code assistant's diff review;
-- **selection-change and document events** — the panel live-updates as you
-  move the cursor;
-- **one uniform API across all modules** — Writer, Calc, and Impress are
-  reachable from the same bridge.
+LibreOffice stays the editor. The app is a chat surface plus a context
+provider, and every edit is one labeled, one-click-undoable transaction.
 
 ## How it works
 
@@ -62,49 +31,51 @@ clipboard. UNO also gives us things LyX could never offer:
                                           └──────────────────┘
 ```
 
-- **Electron companion** (reused from the LyX app): floating chat panel,
+- **Electron companion** (shared with the LyX app): floating chat panel,
   Express API, streaming responses, file attachments, per-document history.
-- **ACP client** (reused verbatim): agent-agnostic — `vibe-acp`,
-  `copilot --acp`, `goose acp`, or any ACP-speaking CLI.
-- **UNO bridge** (new): a small Python `.oxt` extension that runs inside
-  LibreOffice and exposes read/write/event operations on the active document
-  over localhost HTTP. It is deliberately dumb — all intelligence lives in
-  the companion, and the same bridge serves every module.
-- **Module adapters** (new): per-module context building and action
-  execution (see below).
+- **ACP client** (shared): agent-agnostic — `vibe-acp`, `copilot --acp`,
+  `goose acp`, or any ACP-speaking CLI.
+- **UNO bridge**: a small Python `.oxt` extension that runs inside
+  LibreOffice and exposes read/write/event operations on the active
+  document over localhost HTTP. It is deliberately dumb — all intelligence
+  lives in the companion, and the same bridge serves every module.
+- **Module adapters**: per-module context building and action execution.
 
-### Multiple instances, ports, and discovery
+The document is never read or written behind LibreOffice's back: the
+companion talks to the bridge, and the bridge performs every operation
+through UNO in a single undo transaction per edit.
 
-No fixed ports anywhere — that's the class of bug that plagued earlier
-companion apps. Each bridge binds an OS-assigned localhost port and writes a
-discovery record (port + auth token) into a well-known per-user directory;
-the companion scans it, drops stale records, and shows every running
-LibreOffice instance. Multiple LibreOffice instances (separate profiles) and
-multiple companion instances side by side just work.
+## Requirements
 
-One companion session talks to **one** bridge at a time — it attaches to the
-most recently started LibreOffice instance it finds. All live instances are
-visible in the panel; switching to another one is a reconnect, not a
-simultaneous link.
+- **LibreOffice** (Writer, Calc, and/or Impress)
+- **Node.js 22+**
+- **An ACP agent CLI** — any of `vibe-acp`, `copilot --acp`, or
+  `goose acp`. Configurable at runtime in the app's "Agent settings"
+  panel.
 
-### Installing the bridge
+## Getting started
 
-If no bridge is found and LibreOffice is installed, the panel's status line
-shows an **Install bridge…** button. It installs the bundled `.oxt` into your
-LibreOffice profile in one click (after a confirmation): close LibreOffice
-first, click the button, restart LibreOffice, then start the bridge from the
-menu (**ACP Assist > Start bridge**). The install also clears LibreOffice's
-extension cache so the sidebar deck registers cleanly on the next launch.
-Manual install works too — LibreOffice's Extension Manager, or `unopkg add`
-from LibreOffice's `program` directory (delete `user/uno_packages/cache/`
-afterwards if the sidebar deck shows up empty).
+```bash
+npm install
+npm start        # builds TypeScript and launches the companion
+```
+
+The bridge extension is not installed automatically. If no bridge is
+found and LibreOffice is installed, the panel's status line shows an
+**Install bridge…** button: close LibreOffice first, click the button,
+restart LibreOffice, then start the bridge from the menu
+(**ACP Assist > Start bridge**).
+
+Manual install also works — LibreOffice's Extension Manager, or
+`unopkg add` from LibreOffice's `program` directory. If the sidebar deck
+shows up empty after an install, delete `user/uno_packages/cache/` in
+your LibreOffice profile and restart.
 
 ## One input box, agent-decided intent
 
-You type a single message; the agent decides whether to reply in chat or edit
-the document, and ends its reply with an action tag the app executes. The
-vocabulary is module-specific; **every edit lands as a pending tracked
-change with a one-click Undo.**
+You type a single message; the agent decides whether to reply in chat or
+edit the document, and ends its reply with an action tag the app executes.
+The vocabulary is module-specific.
 
 **Common:** `[ACTION: none]` — prose reply, document untouched.
 
@@ -136,84 +107,69 @@ formulas, cells addressed as `A1`):
 | `[ACTION: insert-after sN]` | New slide(s) after `[sN]` (title + body layout) |
 | `[ACTION: rewrite-slide sN]` | Replace a slide's outline text |
 
-### Pending changes, accept or reject
+Draw is reachable through the Impress adapter. Math and Base are out of
+scope for now.
 
-In **Writer and Calc**, agent edits are applied with change tracking on by
-default, so every insertion, rewrite, and deletion appears as a tracked
-change. You accept or reject each one in LibreOffice's own *Edit > Track
-Changes > Manage* — the code-assistant review workflow, with zero Git
-dependency. Each edit is also a single labeled undo transaction, so a quick
-Ctrl+Z also reverts it as a whole.
+## Reviewing and undoing edits
 
-In **Impress and Draw** these modules have no change tracking, so edits
-land directly: each edit is one entry in the bridge's undo journal, and the
-panel's Undo button reverts it as a whole (one click per edit). A
-per-document toggle is planned for users who prefer silent application.
+In **Writer and Calc**, agent edits land as tracked changes by default:
+you accept or reject each one in LibreOffice's *Edit > Track Changes >
+Manage*, like reviewing a diff. A quick Ctrl+Z also reverts an edit as a
+whole — every edit is one undo transaction.
 
-## Multi-module support
+**Impress and Draw** have no change tracking, so edits land directly;
+the panel's Undo button reverts them one edit per click, using the
+bridge's undo journal.
 
-The bridge reports the active module type (`Writer | Calc | Impress | Draw |
-other`), and the companion selects a **module adapter** that owns two jobs:
+## Multiple instances
 
-1. **Context building** — what the agent sees: Writer's outline + paragraph
-   text + selection; Calc's sheet inventory + selected range as TSV with
-   values *and* formulas; Impress's slide outline + selected frame text.
-2. **Action execution** — verify preconditions (e.g. "paragraph `[p5]` still
-   starts with the quoted text") before applying, then apply through UNO
-   inside one undo transaction.
+No fixed ports: each bridge binds an OS-assigned localhost port and
+writes a discovery record (port + auth token) into a well-known
+per-user directory (`%APPDATA%\<app>\bridges` on Windows,
+`~/Library/Application Support/<app>/bridges` on macOS,
+`~/.config/<app>/bridges` on Linux). The companion scans it, drops stale
+records, and lists every running LibreOffice instance. Multiple
+LibreOffice profiles and multiple companions side by side just work.
 
-Draw is reachable for free through the Impress adapter; Math and Base are
-out of scope for now.
+One companion session talks to one bridge at a time — it attaches to the
+most recently started LibreOffice instance it finds. All live instances
+are visible in the panel; switching to another one is a reconnect.
 
-## What we share with lyx-acp-assist
+## Features
 
-Shared code lives in the workspace package `@acp-assist/core`
-(`packages/core` at the monorepo root), used by both apps:
+- Multi-module support: Writer, Calc, Impress (and Draw via Impress)
+- Streaming responses, stop/cancel, one-click undo per edit
+- Live selection and cursor events update the panel as you move
+- File attachments (PDF, Office, text…) converted to text for the agent
+- Per-document chat history, persisted
 
-- ACP client over stdio (agent-agnostic), shared types, agent-process spawn
-- Attachment-to-text conversion (markitdown chain)
-- Chat-history persistence and restart replay
+## Development
 
-Also reused in spirit from the sibling app: `src/server.ts` — Express
-API: sessions, unified message stream, attachments — `src/electron/`
-(shell, floating-window logic), and `public/` (companion panel UI, with
-module-aware status/undo labels).
+```bash
+npm test         # vitest (unit + mocked-bridge integration)
+npm run typecheck
+npm run build
+npm run package  # installers for Windows (nsis/portable/zip), macOS (dmg/zip),
+                 # Linux (AppImage/deb/tar.gz) via electron-builder
+```
 
-Replaced: everything LyX-specific — the `.lyx` parser, the LyXServer pipe
-client, and the native clipboard adapters (the biggest platform-specific
-liability of the LyX app disappears entirely). The bridge already
-implements the replacement: a live in-process HTTP bridge in `extension/`.
+Tests are plain vitest and run on any OS. GitHub Actions runs the test
+suite on both Ubuntu and Windows, and builds installers for all three
+OSes on every push.
 
-## Roadmap
+```
+src/server.ts       Express API + bridge discovery/healing
+src/bridge/         bridge client, .oxt install (unopkg)
+src/modules/        per-module adapters (writer, calc, impress)
+extension/          the UNO bridge .oxt (Python)
+public/             companion panel UI (shared with the LyX app)
+```
 
-- **Phase 0 — feasibility spike: done.** All risks validated (see
-  [AGENTS.md](AGENTS.md) for the findings).
-- **Phase 1 — Writer MVP: done.** Chat + action loop ported and live-tested
-  against the bridge; parity with LyX ACP Assist for text documents.
-- **Phase 2 — Calc: done.** Sheet/selection context (TSV values +
-  formulas) and cell actions (write-cells, rewrite, insert-rows/cols),
-  bridge-validated end-to-end and live-tested with an ACP agent
-  (multi-action run, one undo per edit).
-- **Phase 3 — Impress/Draw: done.** Slide outline context and slide/frame
-  actions (rewrite, rewrite-slide, insert-after with s0 = insert at the
-  very start). These modules have no change tracking, so each edit is one
-  entry in the bridge's undo journal — one click on Undo reverts it
-  (42/42 e2e checks); live-tested with an ACP agent (two-action run,
-  both edits reverted one undo each).
-- **Phase 4 — polish:** one-click `.oxt` install from the panel, packaging
-  (Electron installers + `.oxt`), CI, and multi-instance discovery are
-  done; remaining: sidebar deck in LibreOffice (connection status,
-  launch/focus companion, restart bridge, refresh agent) and
-  multi-document tabs.
+Shared code (ACP client, attachment conversion, chat-history persistence,
+restart replay, the panel) lives in the workspace packages
+[`@acp-assist/core`](../../packages/core) and
+[`@acp-assist/panel`](../../packages/panel) at the monorepo root. The
+sibling app [LyX ACP Assist](../lyx) uses the same architecture.
 
-## Inspirations and differences
-
-- [LibreThinker](https://github.com/mihailthebuilder/librethinker-extension)
-  and [localwriter](https://github.com/balisujohn/localwriter) prove the
-  `.oxt` distribution model and the sidebar/hotkey UX, but both hard-wire
-  direct LLM API calls (BYOK or local Ollama/OpenAI-compatible servers). We
-  take their distribution/installation pattern, but **not** their LLM wiring:
-  here the agent is external, interchangeable, and the app contains no
-  model, no keys, no inference.
-- **LyX ACP Assist** contributes the whole companion architecture: Electron
-  panel, ACP client, action-tag protocol, undo UX.
+Status, decisions, and verified technical facts live in
+[AGENTS.md](AGENTS.md).
