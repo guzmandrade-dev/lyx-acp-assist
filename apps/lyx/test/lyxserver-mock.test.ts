@@ -21,7 +21,9 @@ async function startMock(paragraphs?: Array<{ layout: string; text: string }>) {
   await mock.start();
   // Small probe window: the mock never echoes the hello, so a healthy
   // start() always waits it out (the deaf case resolves instantly).
-  const client = new LyxServerClient({ pipeBase: mock.pipeBase, deafProbeMs: 60 });
+  // Generous round-trip budget: the transport's pipe pairing lags on a
+  // busy CI runner while all test files start in parallel.
+  const client = new LyxServerClient({ pipeBase: mock.pipeBase, deafProbeMs: 60, timeoutMs: 30_000 });
   activeMocks.push({ mock, client });
   await client.start();
   return { mock, client };
