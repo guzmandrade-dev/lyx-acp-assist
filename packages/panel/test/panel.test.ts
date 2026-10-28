@@ -1,13 +1,17 @@
 /**
- * Panel smoke tests (Track C gates): the shared assets are config-driven
- * and the index handler injects everything the panel needs at boot.
+ * Panel smoke tests: the shared assets are config-driven and the index
+ * handler injects everything the panel needs at boot.
  */
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import express from 'express';
 import { createPanelBootScript, createPanelIndexHandler, panelPublicDir, type PanelConfig } from '../src/index.js';
+
+const execFileAsync = promisify(execFile);
 
 
 const testConfig: PanelConfig = {
@@ -31,14 +35,40 @@ describe('shared panel assets', () => {
     await expect(fs.access(path.join(dir, 'index.html'))).resolves.toBeUndefined();
     await expect(fs.access(path.join(dir, 'app.js'))).resolves.toBeUndefined();
     await expect(fs.access(path.join(dir, 'style.css'))).resolves.toBeUndefined();
+    for (const name of [
+      'state.js', 'api.js', 'markdown.js', 'messages.js', 'typing.js',
+      'status.js', 'save-consent.js', 'install.js', 'documents.js',
+      'events.js', 'conversation.js', 'attachments.js',
+    ]) {
+      await expect(fs.access(path.join(dir, name))).resolves.toBeUndefined();
+    }
   });
 
-  it('shared app.js is syntactically valid and reads the injected config', async () => {
-    const source = await fs.readFile(path.join(panelPublicDir(), 'app.js'), 'utf8');
-    // Compile without running: a syntax error throws here.
-    new Function(source);
-    // The config seams the apps rely on.
+  it('shared modules are syntactically valid and carry the config seams', async () => {
+    const dir = panelPublicDir();
+    const entries = await fs.readdir(dir);
+    const modules = entries.filter((f) => f.endsWith('.js')).sort();
+    expect(modules.length).toBeGreaterThan(1);
+
+    // Syntax-check every module as an ES module: node --check validates
+    // import/export without executing the code.
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'panel-syntax-'));
+    try {
+      for (const name of modules) {
+        const target = path.join(tmp, name.replace(/\.js$/, '.mjs'));
+        await fs.copyFile(path.join(dir, name), target);
+        await execFileAsync(process.execPath, ['--check', target]);
+      }
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+
+    // The config seams the apps rely on, across the whole module set.
+    const source = (
+      await Promise.all(modules.map((name) => fs.readFile(path.join(dir, name), 'utf8')))
+    ).join('\n');
     expect(source).toContain('__ACP_PANEL_CONFIG__');
+    expect(source).toContain('__ACP_TOKEN__');
     expect(source).toContain('FENCE_RE');
     expect(source).toContain('hasSaveConsent');
     expect(source).toContain('hasInstallFlow');
