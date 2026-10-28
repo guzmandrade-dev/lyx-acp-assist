@@ -8,7 +8,7 @@ import { createServer, type AgentRunner, type AgentSettings } from '../src/serve
 import { PANEL_CONFIG } from '../src/panel-config.js';
 import { BridgeClient, BridgeError, type BridgeDocument, type EditPayload, type BridgeStatus, type BridgeDocumentEntry } from '../src/bridge/client.js';
 
-/** Fixed API bearer token (audit B1) for these HTTP-level tests. */
+/** Fixed API bearer token for these HTTP-level tests. */
 const API_TOKEN = 'test-api-token';
 
 /**
@@ -99,7 +99,7 @@ class FakeBridge extends BridgeClient {
     return Promise.resolve({ undone: true });
   }
 
-  // --- Track D: the /events long-poll feed (server-push channel) -----------
+  // --- /events long-poll feed (server-push channel) ---------------------
   private eventsQueue: Array<{ seq: number; type: string; ts: string }> = [];
   private eventsWaiters: Array<() => void> = [];
 
@@ -157,7 +157,7 @@ describe('server message loop (fake agent + fake bridge)', () => {
   const publicDir = path.join(os.tmpdir(), 'lo-acp-test-public');
   const historyDir = path.join(os.tmpdir(), 'lo-acp-test-history');
 
-  it('requires the API bearer token and a loopback Host (audit B1)', async () => {    const noAuth = await fetch(`${baseUrl}/api/status`);
+  it('requires the API bearer token and a loopback Host', async () => {    const noAuth = await fetch(`${baseUrl}/api/status`);
     expect(noAuth.status).toBe(401);
     const wrong = await fetch(`${baseUrl}/api/status`, { headers: { authorization: 'Bearer nope' } });
     expect(wrong.status).toBe(401);
@@ -214,7 +214,7 @@ describe('server message loop (fake agent + fake bridge)', () => {
     await fs.rm(historyDir, { recursive: true, force: true });
   });
 
-  it('pushes bridge events to the panel channel (Track D /events feed)', async () => {
+  it('pushes bridge events to the panel channel (/events feed)', async () => {
     // One session; the panel subscribes to the SSE push channel; a
     // selection change in the "editor" must arrive as a refresh frame
     // without any panel interaction (this replaces the typing-debounce

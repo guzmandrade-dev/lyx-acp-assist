@@ -1,5 +1,5 @@
 /**
- * Shared standalone dev entry (audit Track C): the two apps' standalone.ts
+ * Shared standalone dev entry: the two apps' standalone.ts
  * differed only in the server construction and the companion-record
  * writer. Serves the panel + API on a dynamic port (PORT overrides),
  * used for development and for driving the app end-to-end from

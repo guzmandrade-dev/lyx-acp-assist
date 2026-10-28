@@ -45,7 +45,7 @@ export function parseImpressAction(reply: string): ActionOutcome {
     action,
     target,
     address: null,
-    // Plain single-run paragraphs: Phase 3 slides carry no inline
+    // Plain single-run paragraphs: slides carry no inline
     // formatting. First entry = the title line, the rest = body.
     block:
       needsContent && lines !== null

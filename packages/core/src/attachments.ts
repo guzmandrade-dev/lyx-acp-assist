@@ -54,7 +54,7 @@ export async function extractAttachmentText(
   return null;
 }
 
-/** Options for the per-app extractor factory (audit Track D). */
+/** Options for the per-app extractor factory. */
 export interface AttachmentExtractorOptions {
   /**
    * File extensions (WITHOUT the leading dot) the app reads as text
@@ -70,7 +70,7 @@ export interface AttachmentExtractorOptions {
 }
 
 /**
- * Audit Track D: factory for the apps' identical `extractAttachmentText`
+ * Factory for the apps' identical `extractAttachmentText`
  * wrappers — they differ only in the textual-extension list and the
  * env var name, so each app keeps just that pair.
  */
@@ -132,7 +132,7 @@ function runCommand(command: string, timeoutMs: number): Promise<string> {
   });
 }
 /**
- * Audit Track D: the attachment prompt section, character-identical in
+ * The attachment prompt section, character-identical in
  * both apps' buildAutoPrompt — extracted here once.
  */
 export function buildAttachmentBlock(attachments: Attachment[]): string[] {

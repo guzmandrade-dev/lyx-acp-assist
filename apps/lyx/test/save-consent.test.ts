@@ -16,10 +16,10 @@ import type { LyxServerClient } from '../src/lyxserver/client.js';
 import type { RawClipboard } from '../src/clipboard/lyx-clipboard.js';
 import { PANEL_CONFIG } from '../src/panel-config.js';
 
-/** LyX panel config for the shared panel (Track C). */
+/** LyX panel config for the shared panel. */
 const TEST_PANEL_CONFIG = PANEL_CONFIG;
 
-/** Fixed API bearer token (audit B1) for these HTTP-level tests. */
+/** Fixed API bearer token for these HTTP-level tests. */
 const API_TOKEN = 'test-api-token';
 
 const fakeDocText = () =>

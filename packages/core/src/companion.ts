@@ -1,5 +1,5 @@
 /**
- * The unified companion server (audit Track D / Phase B2): ONE server in
+ * The unified companion server: ONE server in core owning the session
  * core owning the session lifecycle, the shared routes, and the
  * multi-action message loop. Each app injects a `CompanionBackend` that
  * carries its document-source specifics (bridge vs pipe, module adapters
@@ -58,7 +58,7 @@ export interface CompanionSession<TState = unknown> {
   cancelRequested: boolean;
   /** Files waiting to be included with the next message. */
   attachments: Attachment[];
-  /** Last request/SSE-frame time; drives the idle-session GC (audit B2). */
+  /** Last request/SSE-frame time; drives the idle-session GC. */
   lastActive: number;
   /**
    * Ensure (eagerly load persisted history for) a conversation key. The
@@ -125,7 +125,7 @@ export interface CompanionBackend<
   acp: { appName: string; writerName: string };
   /** Error → HTTP status (transport errors → 503). */
   mapStatus: (err: unknown) => number;
-  /** Prompt timeout budget (audit B8 per-app timings). */
+  /** Prompt timeout budget (per-app timings). */
   promptTimeoutMs: number;
 
   // --- per-session lifecycle -------------------------------------------------
@@ -185,7 +185,7 @@ export interface CompanionBackend<
   /** Parse one reply against the app's action vocabulary. */
   parseAction(session: CompanionSession<TState>, reply: string, stepData: unknown): TOutcome;
   /**
-   * LyX-only VRP step: validate the ```lyx markup and, when it has
+   * LyX-only markup step: validate the ```lyx markup and, when it has
    * problems, prompt the agent once with a corrective retry. Returns the
    * reply to record (the retried one when a retry ran).
    */
@@ -227,8 +227,8 @@ export interface CompanionBackend<
    */
   afterRun?(session: CompanionSession<TState>): Promise<void>;
   /**
-   * Server-push watcher (audit Track D: the LO bridge's /events long-poll,
-   * BUILT BUT previously UNUSED by the product). The core starts it once
+   * Server-push watcher (the LO bridge's /events long-poll). The core
+   * starts it once
    * per session and forwards every pushed frame to the panel over the
    * GET /api/session/:id/events SSE channel. Return the stop function;
    * it is called on session teardown (reconnect + idle GC). Apps without
@@ -241,7 +241,7 @@ export interface CompanionBackend<
 }
 
 export interface CompanionServerOptions<TState = unknown> {
-  /** Panel config (Track C) injected into the served index.html. */
+  /** Panel config injected into the served index.html. */
   panelConfig: PanelConfig;
   /** The SHARED panel public dir (defaults to panelPublicDir()). */
   publicDir?: string;
@@ -251,10 +251,10 @@ export interface CompanionServerOptions<TState = unknown> {
   attachmentsDir?: string;
   logDir?: string;
   settingsDir?: string;
-  /** API bearer token (audit B1); generated at boot when absent. */
+  /** API bearer token; generated at boot when absent. */
   apiToken?: string;
   /**
-   * Idle-session GC (audit B2): sessions with no activity for this long
+   * Idle-session GC: sessions with no activity for this long
    * are torn down (agent process + backend session state included) — an
    * F5 or crash-reload of the panel otherwise orphans them forever.
    * Default 30 minutes; the sweep interval is idleMs/10.
@@ -280,7 +280,7 @@ export function createCompanionServer<TState>(
 ): express.Express {
   const backend = options.backend;
   const app = express();
-  // API auth (audit B1): random bearer token + loopback Host check; the
+  // API auth: random bearer token + loopback Host check; the
   // panel gets the token same-origin via the served index.html. Static
   // assets sit BEFORE the guard (not sensitive), all /api routes after.
   const apiToken = options.apiToken ?? generateApiToken();
@@ -331,7 +331,7 @@ export function createCompanionServer<TState>(
     eventListeners.delete(session.id);
   }
 
-  // Idle-session GC (audit B2): F5 / crash-reload of the panel orphans the
+  // Idle-session GC: F5 / crash-reload of the panel orphans the
   // running agent process + backend session state (only an explicit
   // Reconnect tears the old session down). Track per-request activity and
   // sweep idle sessions.
@@ -416,7 +416,7 @@ export function createCompanionServer<TState>(
       sessions.set(id, session);
       await agent.createSession(id);
 
-      // Server-push watcher (audit Track D: the LO bridge /events
+      // Server-push watcher (the LO bridge /events
       // long-poll). Frames go to the panel's /events SSE channel.
       if (backend.watchEvents) {
         eventWatchers.set(
@@ -496,14 +496,14 @@ export function createCompanionServer<TState>(
     }),
   );
 
-  // --- server-push event channel (audit Track D) -----------------------------------
+  // --- server-push event channel ---------------------------------------------
 
   /**
    * SSE channel the panel subscribes to: every frame the backend's
    * watchEvents pushes (e.g. {refresh: true} when the bridge reports a
    * selection change or an edit) is forwarded here live. This replaces
    * the panel's typing-debounce/focus refresh heuristics for apps with
-   * push events, and makes bridge recovery (audit B3) natural: when the
+   * push events, and makes bridge recovery natural: when the
    * bridge comes back, events flow again and the panel refreshes itself.
    */
   app.get('/api/session/:id/events', (req, res) => {
@@ -626,7 +626,7 @@ export function createCompanionServer<TState>(
           timeoutMs: backend.promptTimeoutMs,
         });
         let outcome = backend.parseAction(session, reply, stepData);
-        // LyX-only VRP step: validate the markup, retry once with a
+        // LyX-only markup step: validate the markup, retry once with a
         // corrective prompt (the hook decides; returns the final reply).
         if (backend.retryReply) {
           const retried = await backend.retryReply(session, outcome, reply, send, step);
@@ -755,7 +755,7 @@ export function createCompanionServer<TState>(
       }
       // End-of-run hook even when the run failed before the first turn
       // was recorded: the backend saved its pre-run state in readStep(1)
-      // BEFORE the first agent prompt (audit B4: the LyX clipboard text),
+      // BEFORE the first agent prompt (e.g. the LyX clipboard text),
       // so a step-1 agent failure must still restore it. afterRun is a
       // no-op until the backend saved something.
       await backend.afterRun?.(session).catch(() => {

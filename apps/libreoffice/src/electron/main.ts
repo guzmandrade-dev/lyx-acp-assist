@@ -1,5 +1,5 @@
 /**
- * Electron main (thin, Track C): everything shared lives in
+ * Electron main (thin): everything shared lives in
  * @acp-assist/panel createElectronMain; this file only supplies the
  * LibreOffice specifics. preload.ts stays here (see the panel package
  * note).

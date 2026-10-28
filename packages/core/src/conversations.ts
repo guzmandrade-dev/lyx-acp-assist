@@ -44,7 +44,7 @@ export interface WrapOptions {
 }
 
 /**
- * Audit Track D: the apps' identical async route wrappers — try/catch,
+ * The apps' identical async route wrappers — try/catch,
  * log via the app's logError, respond `{ error }` with the mapped
  * status. They differed only in the Error→503 mapping.
  */

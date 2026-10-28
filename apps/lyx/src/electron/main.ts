@@ -1,5 +1,5 @@
 /**
- * Electron main (thin, Track C): everything shared lives in
+ * Electron main (thin): everything shared lives in
  * @acp-assist/panel createElectronMain; this file only supplies the LyX
  * specifics. preload.ts stays here (see the panel package note).
  */
@@ -36,7 +36,7 @@ createElectronMain({
       logDir: paths.logDir,
       settingsDir: paths.userDataDir,
     }),
-  // Companion record (audit B1 handshake): dev tools read the port +
+  // Companion record: dev tools read the port +
   // API bearer token from <userData>/companion.json. The LyX app has no
   // in-editor consumer yet (unlike LO's sidebar); the record exists so
   // scripts can auth.

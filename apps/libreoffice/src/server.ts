@@ -8,8 +8,8 @@
  * bridge is the only thing that touches UNO, and LibreOffice remains the
  * single writer of truth.
  *
- * Phase B2 (audit Track D): the session lifecycle, shared routes, and
- * the multi-action message loop live in core `createCompanionServer`;
+ * The session lifecycle, shared routes, and the multi-action message loop
+ * live in core `createCompanionServer`;
  * this file is the app's `CompanionBackend` (bridge + module adapters)
  * plus the LO-only bridge-extension install routes.
  */
@@ -72,7 +72,7 @@ export { listKnownDocuments } from '@acp-assist/core';
 export interface ServerOptions {
   /**
    * The SHARED panel package's public dir (defaults to panelPublicDir()).
-   * Track C: one panel, config-injected.
+   * One panel for both apps, config-injected.
    */
   publicDir?: string;
   /**
@@ -80,7 +80,7 @@ export interface ServerOptions {
    * app's own logo.svg).
    */
   assetsDir?: string;
-  /** Panel config (Track C): injected into the served index.html. */
+  /** Panel config injected into the served index.html. */
   panelConfig: PanelConfig;
   historyDir?: string;
   attachmentsDir?: string;
@@ -96,21 +96,21 @@ export interface ServerOptions {
   installBridge?: (unopkgPath: string, oxtPath: string) => Promise<InstallResult>;
   /**
    * Test hook: how a stale bridge is recovered (default: pickBridge).
-   * See createHealingBridge (audit B3).
+   * See createHealingBridge.
    */
   recoverBridge?: (failed: BridgeClient) => Promise<BridgeClient>;
   /**
-   * API bearer token (audit B1). Generated at boot when absent; exposed as
+   * API bearer token. Generated at boot when absent; exposed as
    * `app.locals.apiToken` for the companion record writers / dev tools.
    */
   apiToken?: string;
-  /** Idle-session GC (audit B2); see createCompanionServer. */
+  /** Idle-session GC; see createCompanionServer. */
   sessionIdleMs?: number;
 }
 
 /** The app backend's per-session state (opaque to the core server). */
 interface LoState {
-  /** The healing proxy (audit B3) around this session's bridge. */
+  /** The healing proxy around this session's bridge. */
   bridge: BridgeClient;
   /** Active document {url,title,module}; refreshed from the bridge. */
   activeDoc: { url: string; title: string; module: string } | null;
@@ -157,7 +157,7 @@ function createLoBackend(
 ): CompanionBackend<LoState, ActionOutcome> {
   const logError = createLogError(options.logDir);
 
-  // --- bridge discovery / healing (audit B3) ------------------------------
+  // --- bridge discovery / healing ------------------------------------------
 
   /** Newest live bridge record, or throw a user-facing error. */
   async function pickBridge(): Promise<BridgeClient> {
@@ -172,7 +172,7 @@ function createLoBackend(
   }
 
   /**
-   * Audit B3: a session pinned its bridge record forever — restarting the
+   * A session used to pin its bridge record forever — restarting the
    * bridge from the LO sidebar (new port + token) broke the session until
    * a manual reconnect. This proxy wraps EVERY bridge call: on a
    * BridgeError it re-discovers once (default pickBridge), swaps the
@@ -405,13 +405,13 @@ function createLoBackend(
     },
 
     /**
-     * Audit Track D: the bridge's /events long-poll was BUILT BUT UNUSED
-     * by the product — the panel refreshed on composer/focus heuristics
+     * The bridge's /events long-poll — the panel used to refresh on
+     * composer/focus heuristics
      * instead. ONE long-poll per session now consumes the feed
      * (selection-changed, document-edited) and pushes {refresh} frames to
      * the panel's SSE channel. When the bridge dies the poll fails and
-     * retries (see TIMINGS.eventRetryMs) — after a bridge restart (audit
-     * B3) events flow again and the panel refreshes itself.
+     * retries (see TIMINGS.eventRetryMs) — after a bridge restart
+     * events flow again and the panel refreshes itself.
      */
     watchEvents(session, push) {
       let stopped = false;

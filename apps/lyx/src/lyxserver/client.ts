@@ -117,7 +117,7 @@ export class LyxServerClient extends EventEmitter {
 
   private shuttingDown = false;
   private waiters = new Set<Waiter>();
-  /** Per-func request serialization (audit B11 — see request()). */
+  /** Per-func request serialization (see request()). */
   private requestQueue = new Map<string, Promise<unknown>>();
 
   private inFd: number | null = null;
@@ -309,7 +309,7 @@ export class LyxServerClient extends EventEmitter {
       // overridden wrappers below instead.
       return `INFO:${this.clientName}:${func}:`;
     }
-    // Audit B11: replies match by client:func ONLY (the wire protocol has
+    // Replies match by client:func ONLY (the wire protocol has
     // no request id), so two overlapping same-func requests would
     // cross-resolve — one reply would release the wrong waiter and the
     // other would time out. Serialize per func; different funcs still

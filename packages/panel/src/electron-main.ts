@@ -1,5 +1,5 @@
 /**
- * Shared Electron main (audit Track C): both companion apps' mains were
+ * Shared Electron main: both companion apps' mains were
  * ~190 lines differing only in window title, watched foreground process
  * name, the server construction, and the discovery record. The app's
  * main.ts shrinks to a createElectronMain(options) call.

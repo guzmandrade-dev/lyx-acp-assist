@@ -30,7 +30,7 @@ createStandaloneServer({
       logDir: paths.logDir,
       settingsDir: paths.settingsDir,
     }),
-  // Companion record (audit B1 handshake): dev tools (live_drive.mjs)
+  // Companion record: dev tools (live_drive.mjs)
   // read the port + API bearer token from <dev dataDir>/companion.json.
   writeRecord: ({ url, port, token, dataDir }) =>
     writeCompanionRecord(path.join(dataDir, 'companion.json'), {

@@ -1,5 +1,5 @@
 /**
- * Bearer-token auth for the companion Express API (audit item B1).
+ * Bearer-token auth for the companion Express API.
  *
  * The API binds to 127.0.0.1 on a random port, but that alone does not
  * make it private: any local process — or a DNS-rebinding web page, which
@@ -67,7 +67,7 @@ export interface CompanionRecord {
   url: string;
   /** Executable to launch for "open companion" (null in dev/browser mode). */
   exe: string | null;
-  /** API bearer token (audit B1) — external probes read it from the record. */
+  /** API bearer token — external probes read it from the record. */
   token: string;
 }
 

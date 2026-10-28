@@ -62,7 +62,7 @@ export interface CompanionRecord {
   /** Executable to launch for "open companion" (null in dev/browser mode). */
   exe: string | null;
   /**
-   * Companion API bearer token (audit B1): the LO sidebar's status probe
+   * Companion API bearer token: the LO sidebar's status probe
    * reads it from this record and sends it as Authorization.
    */
   token: string;
@@ -109,7 +109,7 @@ export async function discoverBridges(dir: string = bridgesDir()): Promise<Bridg
     try {
       const raw = JSON.parse(await fs.readFile(file, 'utf8')) as BridgeRecord;
       if (typeof raw !== 'object' || typeof raw.port !== 'number' || typeof raw.token !== 'string') continue;
-      // Audit B6: a record from a different discovery-protocol version
+      // A record from a different discovery-protocol version
       // may carry fields we do not understand — ignore it instead of
       // talking to it (the protocol field exists for exactly this).
       if (raw.protocol !== BRIDGE_PROTOCOL) continue;
@@ -355,7 +355,7 @@ export class BridgeClient {
   }
 
   /**
-   * Track D: the bridge's /events long-poll — the selection-changed and
+   * The bridge's /events long-poll — the selection-changed and
    * document-edited feed the server watcher consumes (one long-poll per
    * session; see acpbridge.py `_events`). Returns the fresh events and
    * the new cursor.

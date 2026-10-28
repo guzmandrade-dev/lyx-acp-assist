@@ -1,4 +1,4 @@
-/** LibreOffice panel configuration (Track C): consumed by the shared
+/** LibreOffice panel configuration: consumed by the shared
  * @acp-assist/panel assets via the injected index.html. */
 import type { PanelConfig } from '@acp-assist/panel';
 

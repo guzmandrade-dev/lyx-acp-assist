@@ -88,7 +88,7 @@ export interface ModuleAdapter {
   applyAction(bridge: BridgeClient, doc: BridgeDocument, sel: SelectionInfo, outcome: ActionOutcome): Promise<AppliedAction>;
 }
 
-/** The built-in adapters: Writer (Phase 1), Calc (Phase 2), Impress (Phase 3). */
+/** The built-in module adapters: Writer, Calc, Impress. */
 export { writerAdapter } from './writer.js';
 export { calcAdapter } from './calc.js';
 export { impressAdapter } from './impress.js';

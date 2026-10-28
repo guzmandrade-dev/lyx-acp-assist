@@ -1,7 +1,7 @@
 /**
- * One place for the app's magic timings (audit B8 — they were scattered
- * as inline literals: 240s prompts, 8s pipe, 500ms deaf probe, 150/600ms
- * write-only graces, poll caps from the A-L6 poll-verify work).
+ * One place for the app's magic timings (they were scattered
+ * as inline literals before: 240s prompts, 8s pipe, 500ms deaf probe,
+ * 150/600ms write-only graces, poll caps).
  */
 
 export const TIMINGS = {
@@ -13,9 +13,9 @@ export const TIMINGS = {
   deafProbeMs: 500,
   /** Write-only mode: blind-command grace (file ops use 4x, see graceFor). */
   writeOnlyGraceMs: 150,
-  /** A-L6: wait for the x-lyx payload to appear after a copy LFUN. */
+  /** Wait for the x-lyx payload to appear after a copy LFUN. */
   clipboardPayloadPollMs: 500,
-  /** A-L6: wait for the switched document to become active. */
+  /** Wait for the switched document to become active. */
   documentSwitchPollMs: 2_000,
   /** pollUntil() cadence. */
   pollIntervalMs: 25,

@@ -1,5 +1,5 @@
 /**
- * Shared panel assets + config (audit Track C). The two companion apps'
+ * Shared panel assets + config. The two companion apps'
  * panels were ~85% identical; the shared `public/` here is served by
  * express.static exactly like the per-app copies were, parameterized by
  * a small config injected same-origin into index.html together with the
@@ -63,7 +63,7 @@ export function panelPublicDir(): string {
  * and applies the theme class. It is an EXTERNAL same-origin script on
  * purpose — the panel's tight CSP (`default-src 'self'`, no
  * 'unsafe-inline') blocks inline scripts, and an injected inline
- * <script> silently never ran (found by the Track C live browser
+ * <script> silently never ran (found by a live browser
  * check). A cross-origin page still cannot read this response.
  */
 export function createPanelBootScript(options: {

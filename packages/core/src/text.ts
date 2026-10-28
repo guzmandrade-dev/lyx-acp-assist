@@ -1,6 +1,6 @@
 /**
- * Small text helpers shared by the companion apps (audit Track D: the
- * two identical module-local `preview` helpers in the LibreOffice app).
+ * Small text helpers shared by the companion apps
+ * (the two identical module-local `preview` helpers in the LibreOffice app).
  */
 
 /**

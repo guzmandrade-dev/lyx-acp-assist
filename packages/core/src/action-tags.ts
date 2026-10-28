@@ -17,8 +17,8 @@ export const ACTION_HEADER = '\\[+\\s*A+C+T+I+O+N+\\s*:?';
 
 /**
  * The reply's last non-empty line — the ONLY line the action-tag parsers
- * consider (audit B5: a quoted example mid-reply used to be misparsed as
- * the operative tag; the agent instructions already demand the tag be the
+ * consider (a quoted example mid-reply used to be misparsed as the
+ * operative tag; the agent instructions already demand the tag be the
  * reply's last line).
  */
 export function lastNonEmptyLine(reply: string): string {
@@ -34,8 +34,8 @@ export function lastNonEmptyLine(reply: string): string {
  * The LAST tag match INSIDE a fenced (``` ... ```) block. Live-observed
  * 2026-10-24: agents sometimes leave the action tag inside their content
  * fence with no trailing tag line — the parsers recover the action from
- * there. Prose OUTSIDE fences is never searched as a fallback (audit B5:
- * a quoted example mid-reply must not be misparsed as the operative tag).
+ * there. Prose OUTSIDE fences is never searched as a fallback (a quoted
+ * example mid-reply must not be misparsed as the operative tag).
  */
 export function lastFencedMatch(reply: string, tagRe: RegExp): RegExpMatchArray | null {
   let last: RegExpMatchArray | null = null;
@@ -51,11 +51,11 @@ export function lastFencedMatch(reply: string, tagRe: RegExp): RegExpMatchArray 
 }
 
 /**
- * Audit Track D: factory for the apps' action-tag parsers. The four
+ * Factory for the apps' action-tag parsers. The four
  * near-identical parsers (LyX, LO writer, calc, impress) differ only in
- * vocabulary and target grammar; the B5 layered resolution (last
- * non-empty line, then inside a fence, never bare prose) and the capture
- * extraction live HERE once.
+ * vocabulary and target grammar; the layered resolution (last
+ * non-empty line, then inside a fence, never bare prose) and the
+ * capture extraction live HERE once.
  *
  * `actions` is a pipe-separated alternation, longest-first when actions
  * share prefixes (e.g. `rewrite-at|rewrite`). `targetPattern` /
@@ -107,7 +107,7 @@ export function actionTagNote(raw: string | undefined, canonical: string): strin
   return tag === canonical ? null : tag;
 }
 /**
- * Audit Track D: shared frame for the apps' action-tag instruction
+ * Shared frame for the apps' action-tag instruction
  * blocks (the LibreOffice writer/calc/impress adapters were ~60%
  * identical prose). The builder assembles the fixed protocol frame —
  * the header, the [ACTION: none] line, the "Rules for document
